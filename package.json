@@ -1,0 +1,43 @@
+{
+  "name": "team_pr_management",
+  "version": "1.0.0",
+  "description": "Slack app to monitor PR review status and send reminders",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/src/index.js",
+    "dev": "ts-node src/index.ts",
+    "check-reminders": "node dist/scripts/checkReminders.js",
+    "migrate": "ts-node src/db/migrate.ts",
+    "postinstall": "npm run build"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/barkkar/team_pr_management.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/barkkar/team_pr_management/issues"
+  },
+  "homepage": "https://github.com/barkkar/team_pr_management#readme",
+  "dependencies": {
+    "@slack/bolt": "^4.6.0",
+    "axios": "^1.13.4",
+    "dotenv": "^17.2.3",
+    "luxon": "^3.7.2",
+    "pg": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/luxon": "^3.4.0",
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.7.0"
+  }
+}
