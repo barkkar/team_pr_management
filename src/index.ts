@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import * as http from 'http';
 import { createApp } from './app';
 
 async function main(): Promise<void> {
@@ -13,10 +14,25 @@ async function main(): Promise<void> {
 
   const app = createApp();
 
-  const port = parseInt(process.env.PORT || '3000', 10);
+  // Start the Slack app (Socket Mode - connects via WebSocket)
+  await app.start();
+  console.log('⚡️ PR Review Reminder bot connected to Slack via Socket Mode!');
 
-  await app.start(port);
-  console.log(`⚡️ PR Review Reminder bot is running on port ${port}!`);
+  // Create a simple HTTP server for Heroku health checks
+  const port = parseInt(process.env.PORT || '3000', 10);
+  const server = http.createServer((req, res) => {
+    if (req.url === '/health' || req.url === '/') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok', app: 'pr-review-reminder' }));
+    } else {
+      res.writeHead(404);
+      res.end('Not Found');
+    }
+  });
+
+  server.listen(port, () => {
+    console.log(`Health check server listening on port ${port}`);
+  });
 }
 
 main().catch((error) => {
