@@ -12,7 +12,8 @@
     "heroku-postbuild": "echo 'Build skipped - using pre-compiled dist'"
   },
   "engines": {
-    "node": "20.x"
+    "node": "20.x",
+    "npm": "10.x"
   },
   "repository": {
     "type": "git",
