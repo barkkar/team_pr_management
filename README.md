@@ -121,7 +121,7 @@ heroku config:set NODE_ENV=production
 git push heroku main
 
 # Run database migrations
-heroku run npm run migrate
+heroku run "npm run migrate" -a pr-manager
 
 # Check logs
 heroku logs --tail
