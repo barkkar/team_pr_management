@@ -4,11 +4,11 @@
   "description": "Slack app to monitor PR review status and send reminders",
   "main": "dist/src/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "npx tsc",
     "start": "node dist/src/index.js",
-    "dev": "ts-node src/index.ts",
+    "dev": "npx ts-node src/index.ts",
     "check-reminders": "node dist/scripts/checkReminders.js",
-    "migrate": "ts-node src/db/migrate.ts",
+    "migrate": "npx ts-node src/db/migrate.ts",
     "heroku-postbuild": "npm run build"
   },
   "engines": {
@@ -32,12 +32,12 @@
     "dotenv": "^17.2.3",
     "luxon": "^3.7.2",
     "pg": "^8.18.0",
+    "ts-node": "^10.9.0",
     "typescript": "^5.7.0"
   },
   "devDependencies": {
     "@types/luxon": "^3.4.0",
     "@types/node": "^22.0.0",
-    "@types/pg": "^8.11.0",
-    "ts-node": "^10.9.0"
+    "@types/pg": "^8.11.0"
   }
 }
