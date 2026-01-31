@@ -4,11 +4,12 @@
   "description": "Slack app to monitor PR review status and send reminders",
   "main": "dist/src/index.js",
   "scripts": {
-    "build": "npx tsc && cp -r src/db/migrations dist/src/db/",
+    "compile": "npx tsc && cp -r src/db/migrations dist/src/db/",
     "start": "node dist/src/index.js",
     "dev": "npx ts-node src/index.ts",
     "check-reminders": "node dist/scripts/checkReminders.js",
-    "migrate": "node dist/src/db/migrate.js"
+    "migrate": "node dist/src/db/migrate.js",
+    "heroku-postbuild": "echo 'Build skipped - using pre-compiled dist'"
   },
   "engines": {
     "node": "20.x"
@@ -30,13 +31,13 @@
     "axios": "^1.13.4",
     "dotenv": "^17.2.3",
     "luxon": "^3.7.2",
-    "pg": "^8.18.0",
-    "ts-node": "^10.9.0",
-    "typescript": "^5.7.0"
+    "pg": "^8.18.0"
   },
   "devDependencies": {
     "@types/luxon": "^3.4.0",
     "@types/node": "^22.0.0",
-    "@types/pg": "^8.11.0"
+    "@types/pg": "^8.11.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.7.0"
   }
 }
