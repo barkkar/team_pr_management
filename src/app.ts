@@ -12,7 +12,7 @@ export function createApp(): App {
   });
 
   // Listen for messages in channels
-  app.message(async ({ message, say }) => {
+  app.message(async ({ message, client }) => {
     // Only process regular messages (not edits, deletes, etc.)
     if (message.subtype) {
       return;
@@ -42,6 +42,18 @@ export function createApp(): App {
 
       if (result.tracked.length > 0) {
         console.log(`Tracked ${result.tracked.length} new PR(s) from message`);
+
+        // Add robot_face reaction to acknowledge the PR has been noticed
+        try {
+          await client.reactions.add({
+            channel: channelId,
+            timestamp: messageTs,
+            name: 'robot_face',
+          });
+        } catch (reactionError) {
+          // Ignore if reaction already exists or other minor errors
+          console.log('Could not add reaction:', reactionError);
+        }
       }
     } catch (error) {
       console.error('Error tracking PRs from message:', error);

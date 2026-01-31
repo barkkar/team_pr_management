@@ -13,7 +13,7 @@ function createApp() {
         logLevel: process.env.NODE_ENV === 'production' ? bolt_1.LogLevel.INFO : bolt_1.LogLevel.DEBUG,
     });
     // Listen for messages in channels
-    app.message(async ({ message, say }) => {
+    app.message(async ({ message, client }) => {
         // Only process regular messages (not edits, deletes, etc.)
         if (message.subtype) {
             return;
@@ -36,6 +36,18 @@ function createApp() {
             const result = await (0, prTracker_1.trackPRsFromMessage)(text, channelId, messageTs, postedAt);
             if (result.tracked.length > 0) {
                 console.log(`Tracked ${result.tracked.length} new PR(s) from message`);
+                // Add robot_face reaction to acknowledge the PR has been noticed
+                try {
+                    await client.reactions.add({
+                        channel: channelId,
+                        timestamp: messageTs,
+                        name: 'robot_face',
+                    });
+                }
+                catch (reactionError) {
+                    // Ignore if reaction already exists or other minor errors
+                    console.log('Could not add reaction:', reactionError);
+                }
             }
         }
         catch (error) {

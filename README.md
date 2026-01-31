@@ -5,6 +5,7 @@ A Slack bot that monitors team channels for GitHub Enterprise PR links and sends
 ## Features
 
 - Monitors Slack channels for PR links from `git.soma.salesforce.com`
+- Adds a robot face reaction to acknowledge PR posts
 - Tracks PRs and checks review status via GitHub Enterprise API
 - Sends reminder after 2 hours if no reviews received
 - Respects business hours: PRs posted after 4 PM PST wait until 10 AM next day
@@ -32,6 +33,7 @@ Navigate to **OAuth & Permissions** and add these Bot Token Scopes:
 - `channels:history` - Read messages in public channels
 - `channels:read` - List channels
 - `chat:write` - Post reminder messages
+- `reactions:write` - Add emoji reactions to messages
 - `app_mentions:read` - (Optional) Respond to @mentions
 
 #### Enable Socket Mode
