@@ -10,23 +10,38 @@ function createApp() {
         signingSecret: process.env.SLACK_SIGNING_SECRET,
         socketMode: true,
         appToken: process.env.SLACK_APP_TOKEN,
-        logLevel: process.env.NODE_ENV === 'production' ? bolt_1.LogLevel.INFO : bolt_1.LogLevel.DEBUG,
+        logLevel: bolt_1.LogLevel.DEBUG, // Always debug for now
+    });
+    // Debug: Log all incoming events
+    app.use(async ({ payload, next }) => {
+        console.log(`[DEBUG] Received event type: ${payload.type || 'unknown'}`);
+        await next();
     });
     // Listen for messages in channels
     app.message(async ({ message, client }) => {
+        console.log(`[DEBUG] Message received:`, JSON.stringify({
+            channel: message.channel,
+            subtype: message.subtype,
+            hasText: 'text' in message,
+            textPreview: ('text' in message && message.text) ? message.text.substring(0, 100) : 'N/A'
+        }));
         // Only process regular messages (not edits, deletes, etc.)
         if (message.subtype) {
+            console.log(`[DEBUG] Skipping message with subtype: ${message.subtype}`);
             return;
         }
         // Type guard for message with text
         if (!('text' in message) || !message.text) {
+            console.log(`[DEBUG] Skipping message without text`);
             return;
         }
         const text = message.text;
         const channelId = message.channel;
         const messageTs = message.ts;
         // Quick check if message contains a PR link
-        if (!(0, prParser_1.containsPRLink)(text)) {
+        const hasPRLink = (0, prParser_1.containsPRLink)(text);
+        console.log(`[DEBUG] Contains PR link: ${hasPRLink}, text: ${text.substring(0, 100)}`);
+        if (!hasPRLink) {
             return;
         }
         console.log(`Detected PR link in channel ${channelId}`);
