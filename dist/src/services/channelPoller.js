@@ -17,10 +17,10 @@ async function setLastPollTime(channelId, ts) {
 async function pollChannelsForPRs(client) {
     console.log('Polling channels for PR messages...');
     try {
-        // Get list of public channels the bot is a member of
-        // Note: Private channels require 'groups:read' scope
+        // Get list of all channels the bot is a member of
+        // Requires scopes: channels:read (public) and groups:read (private)
         const channelsResult = await client.conversations.list({
-            types: 'public_channel',
+            types: 'public_channel,private_channel',
             exclude_archived: true,
         });
         if (!channelsResult.channels) {
