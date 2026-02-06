@@ -25,9 +25,10 @@ export async function pollChannelsForPRs(client: WebClient): Promise<void> {
   console.log('Polling channels for PR messages...');
 
   try {
-    // Get list of channels the bot is a member of
+    // Get list of public channels the bot is a member of
+    // Note: Private channels require 'groups:read' scope
     const channelsResult = await client.conversations.list({
-      types: 'public_channel,private_channel',
+      types: 'public_channel',
       exclude_archived: true,
     });
 
