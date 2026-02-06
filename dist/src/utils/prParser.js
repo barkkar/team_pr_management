@@ -4,7 +4,8 @@ exports.parsePRsFromMessage = parsePRsFromMessage;
 exports.containsPRLink = containsPRLink;
 // Regex to match GitHub Enterprise PR URLs
 // Matches: https://git.soma.salesforce.com/{org}/{repo}/pull/{number}
-const GHE_PR_REGEX = /https:\/\/git\.soma\.salesforce\.com\/([^\/]+)\/([^\/]+)\/pull\/(\d+)/g;
+// Also matches: https://gitcore.soma.salesforce.com/{org}/{repo}/pull/{number}
+const GHE_PR_REGEX = /https:\/\/git(?:core)?\.soma\.salesforce\.com\/([^\/]+)\/([^\/]+)\/pull\/(\d+)/g;
 /**
  * Parse PR URLs from a message text
  * Returns all unique PRs found in the message
