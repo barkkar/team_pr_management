@@ -6,9 +6,9 @@ export interface ParsedPR {
 }
 
 // Regex to match GitHub Enterprise PR URLs
-// Matches: https://git.soma.salesforce.com/{org}/{repo}/pull/{number}
-// Also matches: https://gitcore.soma.salesforce.com/{org}/{repo}/pull/{number}
-const GHE_PR_REGEX = /https:\/\/git(?:core)?\.soma\.salesforce\.com\/([^\/]+)\/([^\/]+)\/pull\/(\d+)/g;
+// Matches any subdomain: https://*.soma.salesforce.com/{org}/{repo}/pull/{number}
+// Examples: git.soma, gitcore.soma, gus.soma, etc.
+const GHE_PR_REGEX = /https:\/\/[a-zA-Z0-9-]+\.soma\.salesforce\.com\/([^\/]+)\/([^\/]+)\/pull\/(\d+)/g;
 
 /**
  * Parse PR URLs from a message text
