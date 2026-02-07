@@ -72,10 +72,7 @@ async function main() {
         process.exit(1);
     }
     const app = (0, app_1.createApp)();
-    // Start the Slack app (Socket Mode - connects via WebSocket)
-    await app.start();
-    console.log('[Socket Mode] PR Review Reminder bot started');
-    // Add Socket Mode connection event listeners
+    // Add Socket Mode connection event listeners BEFORE starting
     const socketModeClient = app.receiver?.client;
     if (socketModeClient) {
         socketModeClient.on('connected', () => {
@@ -90,11 +87,17 @@ async function main() {
         socketModeClient.on('error', (error) => {
             console.error('[Socket Mode] Error:', error.message);
         });
-        console.log('[Socket Mode] Connection event listeners registered');
+        socketModeClient.on('unable_to_socket_mode_start', (error) => {
+            console.error('[Socket Mode] Unable to start:', error.message);
+        });
+        console.log('[Socket Mode] Event listeners registered');
     }
     else {
         console.warn('[Socket Mode] Could not access socket client for event listeners');
     }
+    // Start the Slack app (Socket Mode - connects via WebSocket)
+    await app.start();
+    console.log('[Socket Mode] PR Review Reminder bot started');
     // Create HTTP server for health checks and worker API
     const port = parseInt(process.env.PORT || '3000', 10);
     const server = http.createServer(async (req, res) => {
