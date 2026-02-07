@@ -11,7 +11,7 @@ export declare function getEligibleReminderTime(postedAt: Date): Date;
  */
 export declare function isWithinBusinessHours(): boolean;
 /**
- * Format a date for display in messages
+ * Format a duration for display in messages (e.g., "2 hours", "19 minutes")
  */
 export declare function formatTimeAgo(date: Date): string;
 //# sourceMappingURL=timezone.d.ts.map

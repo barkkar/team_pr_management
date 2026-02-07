@@ -64,19 +64,23 @@ function isWithinBusinessHours() {
     return now.hour >= NEXT_DAY_START_HOUR && now.hour < CUTOFF_HOUR;
 }
 /**
- * Format a date for display in messages
+ * Format a duration for display in messages (e.g., "2 hours", "19 minutes")
  */
 function formatTimeAgo(date) {
     const now = luxon_1.DateTime.now();
     const then = luxon_1.DateTime.fromJSDate(date);
-    const diff = now.diff(then, ['hours', 'minutes']);
-    if (diff.hours >= 1) {
+    const diff = now.diff(then, ['days', 'hours', 'minutes']);
+    if (diff.days >= 1) {
+        const days = Math.floor(diff.days);
+        return `${days} day${days !== 1 ? 's' : ''}`;
+    }
+    else if (diff.hours >= 1) {
         const hours = Math.floor(diff.hours);
-        return `${hours} hour${hours !== 1 ? 's' : ''} ago`;
+        return `${hours} hour${hours !== 1 ? 's' : ''}`;
     }
     else {
         const minutes = Math.floor(diff.minutes);
-        return `${minutes} minute${minutes !== 1 ? 's' : ''} ago`;
+        return `${minutes} minute${minutes !== 1 ? 's' : ''}`;
     }
 }
 //# sourceMappingURL=timezone.js.map

@@ -71,18 +71,21 @@ export function isWithinBusinessHours(): boolean {
 }
 
 /**
- * Format a date for display in messages
+ * Format a duration for display in messages (e.g., "2 hours", "19 minutes")
  */
 export function formatTimeAgo(date: Date): string {
   const now = DateTime.now();
   const then = DateTime.fromJSDate(date);
-  const diff = now.diff(then, ['hours', 'minutes']);
+  const diff = now.diff(then, ['days', 'hours', 'minutes']);
   
-  if (diff.hours >= 1) {
+  if (diff.days >= 1) {
+    const days = Math.floor(diff.days);
+    return `${days} day${days !== 1 ? 's' : ''}`;
+  } else if (diff.hours >= 1) {
     const hours = Math.floor(diff.hours);
-    return `${hours} hour${hours !== 1 ? 's' : ''} ago`;
+    return `${hours} hour${hours !== 1 ? 's' : ''}`;
   } else {
     const minutes = Math.floor(diff.minutes);
-    return `${minutes} minute${minutes !== 1 ? 's' : ''} ago`;
+    return `${minutes} minute${minutes !== 1 ? 's' : ''}`;
   }
 }

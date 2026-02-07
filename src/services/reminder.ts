@@ -126,7 +126,7 @@ async function processReminder(app: App, github: GitHubEnterpriseClient, pr: Tra
 }
 
 function buildReminderMessage(pr: TrackedPR, timeAgo: string, apiNotChecked: boolean = false): { text: string; blocks: any[] } {
-  const text = `👀 Reminder: This PR has been waiting for review for ${timeAgo}`;
+  const text = `:attentionspan: Reminder: This PR has been waiting for review for ${timeAgo}`;
   
   const contextText = apiNotChecked 
     ? `Posted in this channel • Could not check review status`
@@ -137,7 +137,7 @@ function buildReminderMessage(pr: TrackedPR, timeAgo: string, apiNotChecked: boo
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `👀 *PR Review Reminder*\n\nThis pull request has been waiting for review for *${timeAgo}*:`,
+        text: `:attentionspan: *PR Review Reminder*\n\nThis pull request has been waiting for review for *${timeAgo}*:`,
       },
     },
     {
