@@ -25,25 +25,41 @@ export async function pollChannelsForPRs(client: WebClient): Promise<void> {
   console.log('Polling channels for PR messages...');
 
   try {
-    // Get list of all channels the bot is a member of
-    // Requires scopes: channels:read (public) and groups:read (private)
-    const channelsResult = await client.conversations.list({
-      types: 'public_channel,private_channel',
-      exclude_archived: true,
-    });
+    // Get all channels with pagination
+    const allChannels: any[] = [];
+    let cursor: string | undefined;
 
-    if (!channelsResult.channels || channelsResult.channels.length === 0) {
+    do {
+      const channelsResult = await client.conversations.list({
+        types: 'public_channel,private_channel',
+        exclude_archived: true,
+        limit: 200,
+        cursor: cursor,
+      });
+
+      if (channelsResult.channels) {
+        allChannels.push(...channelsResult.channels);
+      }
+
+      cursor = channelsResult.response_metadata?.next_cursor;
+    } while (cursor);
+
+    if (allChannels.length === 0) {
       console.log('No channels found');
       return;
     }
 
-    console.log(`Found ${channelsResult.channels.length} channels, will try to poll each one`);
-    
-    // Note: is_member is unreliable for bots, so we try all channels
-    // and handle "not_in_channel" errors gracefully
-    const memberChannels = channelsResult.channels;
+    console.log(`Found ${allChannels.length} total channels, will try to poll each one`);
 
-    for (const channel of memberChannels) {
+    // Log if we find the test channel
+    const testChannel = allChannels.find(ch => ch.name?.includes('pr-test'));
+    if (testChannel) {
+      console.log(`[DEBUG] Found pr-test channel: ${testChannel.name} (${testChannel.id})`);
+    } else {
+      console.log(`[DEBUG] pr-test channel NOT found in channel list`);
+    }
+
+    for (const channel of allChannels) {
       if (!channel.id) continue;
 
       try {
