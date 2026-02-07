@@ -15,25 +15,30 @@ interface PRDetails {
     };
 }
 export declare class GitHubEnterpriseClient {
-    private client;
+    private token;
+    private clientCache;
     constructor();
+    /**
+     * Get or create an axios client for a specific hostname
+     */
+    private getClient;
     /**
      * Get reviews for a pull request
      */
-    getReviews(org: string, repo: string, prNumber: number): Promise<Review[]>;
+    getReviews(hostname: string, org: string, repo: string, prNumber: number): Promise<Review[]>;
     /**
      * Check if a PR has received any reviews
      * Excludes PENDING reviews (drafts that haven't been submitted)
      */
-    hasReviews(org: string, repo: string, prNumber: number): Promise<boolean>;
+    hasReviews(hostname: string, org: string, repo: string, prNumber: number): Promise<boolean>;
     /**
      * Get PR details to check if it's still open
      */
-    getPRDetails(org: string, repo: string, prNumber: number): Promise<PRDetails>;
+    getPRDetails(hostname: string, org: string, repo: string, prNumber: number): Promise<PRDetails>;
     /**
      * Check if a PR is still open (not merged or closed)
      */
-    isPROpen(org: string, repo: string, prNumber: number): Promise<boolean>;
+    isPROpen(hostname: string, org: string, repo: string, prNumber: number): Promise<boolean>;
 }
 export {};
 //# sourceMappingURL=github.d.ts.map

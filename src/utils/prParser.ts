@@ -1,5 +1,6 @@
 export interface ParsedPR {
   url: string;
+  hostname: string;  // e.g., "gitcore.soma.salesforce.com"
   org: string;
   repo: string;
   prNumber: number;
@@ -8,7 +9,8 @@ export interface ParsedPR {
 // Regex to match GitHub Enterprise PR URLs
 // Matches any subdomain: https://*.soma.salesforce.com/{org}/{repo}/pull/{number}
 // Examples: git.soma, gitcore.soma, gus.soma, etc.
-const GHE_PR_REGEX = /https:\/\/[a-zA-Z0-9-]+\.soma\.salesforce\.com\/([^\/]+)\/([^\/]+)\/pull\/(\d+)/g;
+// Captures: (1) hostname, (2) org, (3) repo, (4) prNumber
+const GHE_PR_REGEX = /https:\/\/([a-zA-Z0-9-]+\.soma\.salesforce\.com)\/([^\/]+)\/([^\/]+)\/pull\/(\d+)/g;
 
 /**
  * Parse PR URLs from a message text
@@ -32,9 +34,10 @@ export function parsePRsFromMessage(text: string): ParsedPR[] {
     
     prs.push({
       url,
-      org: match[1],
-      repo: match[2],
-      prNumber: parseInt(match[3], 10),
+      hostname: match[1],
+      org: match[2],
+      repo: match[3],
+      prNumber: parseInt(match[4], 10),
     });
   }
   

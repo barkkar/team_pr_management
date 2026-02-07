@@ -4,6 +4,15 @@ import { GitHubEnterpriseClient } from './github';
 import { formatTimeAgo } from '../utils/timezone';
 
 /**
+ * Extract hostname from a PR URL
+ * e.g., "https://gitcore.soma.salesforce.com/org/repo/pull/123" -> "gitcore.soma.salesforce.com"
+ */
+function extractHostname(prUrl: string): string | null {
+  const match = prUrl.match(/https:\/\/([a-zA-Z0-9-]+\.soma\.salesforce\.com)/);
+  return match ? match[1] : null;
+}
+
+/**
  * Process pending reminders and send messages for PRs without reviews
  */
 export async function processPendingReminders(app: App): Promise<void> {
@@ -26,29 +35,55 @@ export async function processPendingReminders(app: App): Promise<void> {
 }
 
 async function processReminder(app: App, github: GitHubEnterpriseClient, pr: TrackedPR): Promise<void> {
-  // Check if PR is still open
-  const isOpen = await github.isPROpen(pr.org, pr.repo, pr.pr_number);
+  // Extract hostname from PR URL
+  const hostname = extractHostname(pr.pr_url);
   
-  if (!isOpen) {
-    console.log(`PR ${pr.pr_url} is closed/merged, marking as closed`);
-    await markPRClosed(pr.id);
+  if (!hostname) {
+    console.error(`Could not extract hostname from PR URL: ${pr.pr_url}`);
     return;
   }
   
-  // Check if PR has received reviews
-  const hasReviews = await github.hasReviews(pr.org, pr.repo, pr.pr_number);
+  console.log(`Processing PR ${pr.pr_url} (hostname: ${hostname})`);
   
-  if (hasReviews) {
-    console.log(`PR ${pr.pr_url} has reviews, marking reminder as sent`);
-    await markReminderSent(pr.id);
-    return;
+  let isOpen = true;
+  let hasReviews = false;
+  let apiAccessible = true;
+  
+  try {
+    // Check if PR is still open
+    isOpen = await github.isPROpen(hostname, pr.org, pr.repo, pr.pr_number);
+    
+    if (!isOpen) {
+      console.log(`PR ${pr.pr_url} is closed/merged, marking as closed`);
+      await markPRClosed(pr.id);
+      return;
+    }
+    
+    // Check if PR has received reviews
+    hasReviews = await github.hasReviews(hostname, pr.org, pr.repo, pr.pr_number);
+    
+    if (hasReviews) {
+      console.log(`PR ${pr.pr_url} has reviews, marking reminder as sent`);
+      await markReminderSent(pr.id);
+      return;
+    }
+  } catch (error: any) {
+    // If we can't reach the GitHub API, still send the reminder (fail open)
+    if (error.code === 'ENOTFOUND' || error.code === 'ETIMEDOUT' || error.code === 'ECONNREFUSED') {
+      console.warn(`GitHub API not reachable for ${hostname}, sending reminder anyway (fail open)`);
+      apiAccessible = false;
+    } else {
+      // For other errors (e.g., 404, 401), skip the reminder
+      console.error(`GitHub API error for ${pr.pr_url}:`, error.message || error);
+      return;
+    }
   }
   
   // No reviews - send reminder
   console.log(`Sending reminder for PR ${pr.pr_url}`);
   
   const timeAgo = formatTimeAgo(pr.posted_at);
-  const message = buildReminderMessage(pr, timeAgo);
+  const message = buildReminderMessage(pr, timeAgo, !apiAccessible);
   
   await app.client.chat.postMessage({
     channel: pr.channel_id,
@@ -61,8 +96,12 @@ async function processReminder(app: App, github: GitHubEnterpriseClient, pr: Tra
   console.log(`Reminder sent for PR ${pr.pr_url}`);
 }
 
-function buildReminderMessage(pr: TrackedPR, timeAgo: string): { text: string; blocks: any[] } {
+function buildReminderMessage(pr: TrackedPR, timeAgo: string, apiNotChecked: boolean = false): { text: string; blocks: any[] } {
   const text = `👀 Reminder: This PR has been waiting for review for ${timeAgo}`;
+  
+  const contextText = apiNotChecked 
+    ? `Posted in this channel • Could not check review status`
+    : `Posted in this channel • No reviews yet`;
   
   const blocks = [
     {
@@ -84,7 +123,7 @@ function buildReminderMessage(pr: TrackedPR, timeAgo: string): { text: string; b
       elements: [
         {
           type: 'mrkdwn',
-          text: `Posted in this channel • No reviews yet`,
+          text: contextText,
         },
       ],
     },

@@ -1,5 +1,6 @@
 export interface ParsedPR {
     url: string;
+    hostname: string;
     org: string;
     repo: string;
     prNumber: number;
