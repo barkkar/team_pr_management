@@ -1,6 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.pollChannelsForPRs = pollChannelsForPRs;
+// Helper to add delay between API calls
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const prTracker_1 = require("./prTracker");
 const prParser_1 = require("../utils/prParser");
 const client_1 = require("../db/client");
@@ -56,6 +58,8 @@ async function pollChannelsForPRs(client) {
                 continue;
             try {
                 await pollChannel(client, channel.id, channel.name || channel.id);
+                // Small delay between channels to avoid rate limits
+                await delay(200);
             }
             catch (error) {
                 console.error(`Error polling channel ${channel.name || channel.id}:`, error);

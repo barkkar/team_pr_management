@@ -1,4 +1,7 @@
 import { WebClient } from '@slack/web-api';
+
+// Helper to add delay between API calls
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 import { trackPRsFromMessage } from './prTracker';
 import { containsPRLink } from '../utils/prParser';
 import { pool } from '../db/client';
@@ -70,6 +73,8 @@ export async function pollChannelsForPRs(client: WebClient): Promise<void> {
 
       try {
         await pollChannel(client, channel.id, channel.name || channel.id);
+        // Small delay between channels to avoid rate limits
+        await delay(200);
       } catch (error) {
         console.error(`Error polling channel ${channel.name || channel.id}:`, error);
       }
