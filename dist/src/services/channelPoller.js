@@ -18,56 +18,24 @@ async function setLastPollTime(channelId, ts) {
 }
 async function pollChannelsForPRs(client) {
     console.log('Polling channels for PR messages...');
-    try {
-        // Get all channels with pagination
-        const allChannels = [];
-        let cursor;
-        do {
-            const channelsResult = await client.conversations.list({
-                types: 'public_channel,private_channel',
-                exclude_archived: true,
-                limit: 200,
-                cursor: cursor,
-            });
-            if (channelsResult.channels) {
-                allChannels.push(...channelsResult.channels);
-            }
-            cursor = channelsResult.response_metadata?.next_cursor;
-        } while (cursor);
-        if (allChannels.length === 0) {
-            console.log('No channels found');
-            return;
-        }
-        // Count channel types
-        const publicCount = allChannels.filter(ch => !ch.is_private).length;
-        const privateCount = allChannels.filter(ch => ch.is_private).length;
-        console.log(`Found ${allChannels.length} total channels (${publicCount} public, ${privateCount} private)`);
-        // Log if we find the test channel
-        const testChannel = allChannels.find(ch => ch.name?.includes('pr-test'));
-        if (testChannel) {
-            console.log(`[DEBUG] Found pr-test channel: ${testChannel.name} (${testChannel.id}), is_private: ${testChannel.is_private}`);
-        }
-        else {
-            console.log(`[DEBUG] pr-test channel NOT found in channel list`);
-            // List all private channels for debugging
-            const privateChannels = allChannels.filter(ch => ch.is_private);
-            console.log(`[DEBUG] Private channels found: ${privateChannels.map(ch => ch.name).join(', ') || 'none'}`);
-        }
-        for (const channel of allChannels) {
-            if (!channel.id)
-                continue;
-            try {
-                await pollChannel(client, channel.id, channel.name || channel.id);
-                // Small delay between channels to avoid rate limits
-                await delay(200);
-            }
-            catch (error) {
-                console.error(`Error polling channel ${channel.name || channel.id}:`, error);
-            }
-        }
+    // Get channel IDs from environment variable
+    // Format: comma-separated channel IDs, e.g., "C123456,C789012"
+    const channelIds = process.env.POLL_CHANNEL_IDS?.split(',').map(id => id.trim()).filter(Boolean);
+    if (!channelIds || channelIds.length === 0) {
+        console.log('No channels configured. Set POLL_CHANNEL_IDS environment variable.');
+        console.log('Example: heroku config:set POLL_CHANNEL_IDS=C123456,C789012');
+        console.log('You can find channel IDs by right-clicking a channel in Slack → Copy → Copy link');
+        return;
     }
-    catch (error) {
-        console.error('Error listing channels:', error);
+    console.log(`Polling ${channelIds.length} configured channel(s)`);
+    for (const channelId of channelIds) {
+        try {
+            await pollChannel(client, channelId, channelId);
+            await delay(500); // Delay between channels
+        }
+        catch (error) {
+            console.error(`Error polling channel ${channelId}:`, error);
+        }
     }
 }
 async function pollChannel(client, channelId, channelName) {
