@@ -4,19 +4,40 @@ A Slack bot that monitors team channels for GitHub Enterprise PR links and sends
 
 ## Features
 
-- Monitors Slack channels for PR links from `git.soma.salesforce.com`
-- Adds a robot face reaction to acknowledge PR posts
+- Monitors Slack channels for PR links from `*.soma.salesforce.com` (any subdomain)
+- Adds a :robot_face: reaction to acknowledge PR posts
 - Tracks PRs and checks review status via GitHub Enterprise API
 - Sends reminder after 2 hours if no reviews received
 - Respects business hours: PRs posted after 4 PM PST wait until 10 AM next day
 - Skips weekends for reminder scheduling
+- **Slash commands** to configure which channels to monitor
+- **Local VPN worker** to check PR status from internal GitHub Enterprise
+
+## Architecture
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  Slack Channel  │────▶│  Heroku App      │────▶│  PostgreSQL     │
+│  (PR Links)     │     │  (Node.js/Bolt)  │     │  (Tracked PRs)  │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+                                 ▲
+                                 │ API
+                                 ▼
+                        ┌──────────────────┐     ┌─────────────────┐
+                        │  Local Worker    │────▶│ GitHub Enterprise│
+                        │  (Your Laptop)   │     │ (VPN Required)   │
+                        └──────────────────┘     └─────────────────┘
+```
+
+The local worker runs on your VPN-connected laptop to check PR status from internal GitHub Enterprise servers, then reports the status back to Heroku.
 
 ## Prerequisites
 
-- Node.js 18+
-- PostgreSQL database
+- Node.js 20+
+- PostgreSQL database (provided by Heroku)
 - Slack workspace with admin access
 - GitHub Enterprise Personal Access Token
+- VPN access to GitHub Enterprise (for local worker)
 
 ## Setup
 
@@ -32,9 +53,11 @@ Navigate to **OAuth & Permissions** and add these Bot Token Scopes:
 
 - `channels:history` - Read messages in public channels
 - `channels:read` - List channels
+- `groups:history` - Read messages in private channels
+- `groups:read` - List private channels
 - `chat:write` - Post reminder messages
 - `reactions:write` - Add emoji reactions to messages
-- `app_mentions:read` - (Optional) Respond to @mentions
+- `commands` - Handle slash commands
 
 #### Enable Socket Mode
 
@@ -49,7 +72,17 @@ Navigate to **OAuth & Permissions** and add these Bot Token Scopes:
 2. Enable Events
 3. Subscribe to bot events:
    - `message.channels`
+   - `message.groups`
    - `app_home_opened` (optional)
+
+#### Create Slash Command
+
+1. Navigate to **Slash Commands**
+2. Click "Create New Command"
+3. Configure:
+   - **Command**: `/pr-monitor`
+   - **Short Description**: `Manage PR monitoring for this channel`
+   - **Usage Hint**: `add | remove | list | status | help`
 
 #### Install App
 
@@ -59,46 +92,12 @@ Navigate to **OAuth & Permissions** and add these Bot Token Scopes:
 
 ### 2. Generate GitHub Enterprise Token
 
-1. Go to [git.soma.salesforce.com/settings/tokens](https://git.soma.salesforce.com/settings/tokens)
+1. Go to your GitHub Enterprise settings (e.g., `https://gitcore.soma.salesforce.com/settings/tokens`)
 2. Click "Generate new token"
 3. Select scope: `repo` (full repository access)
 4. Copy the generated token
 
-### 3. Local Development
-
-```bash
-# Clone the repository
-git clone <repo-url>
-cd team_pr_management
-
-# Install dependencies
-npm install
-
-# Copy environment template
-cp .env.example .env
-
-# Edit .env with your credentials
-```
-
-Configure `.env`:
-```
-SLACK_BOT_TOKEN=xoxb-your-bot-token
-SLACK_SIGNING_SECRET=your-signing-secret
-SLACK_APP_TOKEN=xapp-your-app-token
-GHE_TOKEN=your-github-enterprise-token
-GHE_BASE_URL=https://git.soma.salesforce.com/api/v3
-DATABASE_URL=postgres://localhost:5432/pr_reminders
-```
-
-```bash
-# Run database migrations
-npm run migrate
-
-# Start development server
-npm run dev
-```
-
-### 4. Deploy to Heroku
+### 3. Deploy to Heroku
 
 ```bash
 # Login to Heroku
@@ -115,21 +114,20 @@ heroku config:set SLACK_BOT_TOKEN=xoxb-your-bot-token
 heroku config:set SLACK_SIGNING_SECRET=your-signing-secret
 heroku config:set SLACK_APP_TOKEN=xapp-your-app-token
 heroku config:set GHE_TOKEN=your-github-enterprise-token
-heroku config:set GHE_BASE_URL=https://git.soma.salesforce.com/api/v3
 heroku config:set TZ=America/Los_Angeles
 heroku config:set NODE_ENV=production
+
+# Generate and set worker API key
+heroku config:set WORKER_API_KEY=$(openssl rand -hex 32)
 
 # Deploy
 git push heroku main
 
 # Run database migrations
-heroku run "npm run migrate" -a pr-manager
-
-# Check logs
-heroku logs --tail
+heroku run "npm run migrate" -a your-app-name
 ```
 
-### 5. Set Up Heroku Scheduler
+### 4. Set Up Heroku Scheduler
 
 1. Add the Scheduler add-on:
    ```bash
@@ -145,61 +143,143 @@ heroku logs --tail
    - **Command**: `npm run check-reminders`
    - **Frequency**: Every 10 minutes
 
+### 5. Set Up Local VPN Worker
+
+The local worker runs on your laptop (behind VPN) to check PR status from internal GitHub Enterprise.
+
+1. Clone the repository to your local machine
+
+2. Create a local `.env` file:
+   ```bash
+   cp .env.example .env
+   ```
+
+3. Configure local `.env`:
+   ```
+   GHE_TOKEN=your-github-enterprise-token
+   HEROKU_API_URL=https://your-app-name.herokuapp.com
+   WORKER_API_KEY=<same-key-as-heroku>
+   ```
+
+4. Get the worker API key from Heroku:
+   ```bash
+   heroku config:get WORKER_API_KEY -a your-app-name
+   ```
+
+5. Run the worker:
+   ```bash
+   # Single run
+   npm run worker
+
+   # Continuous (every 5 minutes)
+   npm run worker:watch
+   ```
+
+#### Optional: Run Worker as Background Service (macOS)
+
+Create `~/Library/LaunchAgents/com.pr-worker.plist`:
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.pr-worker</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>source ~/.nvm/nvm.sh && cd /path/to/team_pr_management && npm run worker</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>300</integer>
+    <key>StandardOutPath</key>
+    <string>/tmp/pr-worker.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/pr-worker.log</string>
+</dict>
+</plist>
+```
+
+Load the service:
+```bash
+launchctl load ~/Library/LaunchAgents/com.pr-worker.plist
+```
+
 ## Usage
 
-1. Add the bot to channels where your team posts PR links
-2. When someone posts a PR link from `git.soma.salesforce.com`, the bot will track it
-3. After 2 hours (or 10 AM next day if posted after 4 PM PST), if no reviews are found, a reminder is posted
+### Slash Commands
 
-## Architecture
+| Command | Description |
+|---------|-------------|
+| `/pr-monitor add` | Start monitoring the current channel |
+| `/pr-monitor remove` | Stop monitoring the current channel |
+| `/pr-monitor list` | Show all monitored channels |
+| `/pr-monitor status` | Show bot status and statistics |
+| `/pr-monitor help` | Show help message |
 
-```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Slack Channel  │────▶│  Node.js App     │────▶│  PostgreSQL     │
-│  (PR Links)     │     │  (Bolt SDK)      │     │  (Tracked PRs)  │
-└─────────────────┘     └──────────────────┘     └─────────────────┘
-                                 │
-                                 ▼
-                        ┌──────────────────┐
-                        │  GitHub Enterprise│
-                        │  API (Reviews)    │
-                        └──────────────────┘
-```
+### Workflow
+
+1. In a Slack channel, run `/pr-monitor add` to start monitoring
+2. When someone posts a PR link (e.g., `https://gitcore.soma.salesforce.com/org/repo/pull/123`), the bot adds a :robot_face: reaction
+3. The local worker checks PR status every 5 minutes and reports to Heroku
+4. After 2 hours (or 10 AM next day if posted after 4 PM PST), if no reviews are found, a reminder is posted
 
 ## Project Structure
 
 ```
 ├── src/
-│   ├── app.ts              # Slack Bolt app setup
-│   ├── index.ts            # Entry point
+│   ├── app.ts                    # Slack Bolt app setup + slash commands
+│   ├── index.ts                  # Entry point + Worker API endpoints
 │   ├── services/
-│   │   ├── github.ts       # GitHub Enterprise API client
-│   │   ├── prTracker.ts    # PR tracking logic
-│   │   └── reminder.ts     # Reminder processing
+│   │   ├── github.ts             # GitHub Enterprise API client
+│   │   ├── prTracker.ts          # PR tracking logic
+│   │   ├── reminder.ts           # Reminder processing
+│   │   └── channelPoller.ts      # Channel polling for PRs
 │   ├── db/
-│   │   ├── client.ts       # PostgreSQL client
-│   │   ├── migrate.ts      # Migration runner
-│   │   └── migrations/     # SQL migrations
+│   │   ├── client.ts             # PostgreSQL client + queries
+│   │   ├── migrate.ts            # Migration runner
+│   │   └── migrations/           # SQL migrations
 │   └── utils/
-│       ├── timezone.ts     # Business hours logic
-│       └── prParser.ts     # PR URL parser
+│       ├── timezone.ts           # Business hours logic
+│       └── prParser.ts           # PR URL parser
 ├── scripts/
-│   └── checkReminders.ts   # Scheduled job
+│   └── checkReminders.ts         # Scheduled job (Heroku Scheduler)
+├── worker/
+│   └── localPRChecker.ts         # Local VPN worker script
 ├── package.json
 ├── tsconfig.json
 ├── Procfile
 └── .env.example
 ```
 
+## API Endpoints
+
+The Heroku app exposes these endpoints for the local worker:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/pending-prs` | GET | Get PRs needing status check |
+| `/api/pr-status` | POST | Report PR status from worker |
+| `/health` | GET | Health check |
+
+All `/api/*` endpoints require the `X-Worker-API-Key` header.
+
 ## Scripts
 
-- `npm run build` - Compile TypeScript
-- `npm run start` - Start production server
-- `npm run dev` - Start development server
-- `npm run migrate` - Run database migrations
-- `npm run check-reminders` - Run reminder check (for scheduler)
+| Script | Description |
+|--------|-------------|
+| `npm run compile` | Compile TypeScript |
+| `npm run start` | Start production server |
+| `npm run dev` | Start development server |
+| `npm run migrate` | Run database migrations |
+| `npm run check-reminders` | Run reminder check (for scheduler) |
+| `npm run worker` | Run local VPN worker once |
+| `npm run worker:watch` | Run local VPN worker continuously |
 
 ## Environment Variables
+
+### Heroku (Required)
 
 | Variable | Description |
 |----------|-------------|
@@ -207,10 +287,43 @@ heroku logs --tail
 | `SLACK_SIGNING_SECRET` | Signing secret from app settings |
 | `SLACK_APP_TOKEN` | App-level token for Socket Mode (xapp-...) |
 | `GHE_TOKEN` | GitHub Enterprise Personal Access Token |
-| `GHE_BASE_URL` | GitHub Enterprise API URL |
-| `DATABASE_URL` | PostgreSQL connection string |
+| `DATABASE_URL` | PostgreSQL connection string (auto-set by Heroku) |
 | `TZ` | Timezone (America/Los_Angeles) |
-| `NODE_ENV` | Environment (production/development) |
+| `WORKER_API_KEY` | API key for local worker authentication |
+
+### Local Worker (Required)
+
+| Variable | Description |
+|----------|-------------|
+| `GHE_TOKEN` | GitHub Enterprise Personal Access Token |
+| `HEROKU_API_URL` | URL of your Heroku app |
+| `WORKER_API_KEY` | Same API key as configured on Heroku |
+
+## Troubleshooting
+
+### Worker can't connect to GitHub Enterprise
+- Ensure you're connected to VPN
+- Verify `GHE_TOKEN` is valid: `curl -H "Authorization: token YOUR_TOKEN" https://gitcore.soma.salesforce.com/api/v3/user`
+
+### Slash command not working
+- Ensure `commands` scope is added in Slack app settings
+- Reinstall the app to your workspace after adding the scope
+
+### Reminders not being sent
+- Check if the PR's `eligible_reminder_at` time has passed
+- Verify the local worker is running and reporting status
+- Check Heroku logs: `heroku logs --tail -a your-app-name`
+
+### View database contents
+```bash
+heroku run "node -e \"
+const { Pool } = require('pg');
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+pool.query('SELECT * FROM tracked_prs ORDER BY created_at DESC LIMIT 10')
+  .then(r => console.table(r.rows))
+  .finally(() => pool.end());
+\"" -a your-app-name
+```
 
 ## License
 
