@@ -35,55 +35,84 @@ export async function processPendingReminders(app: App): Promise<void> {
 }
 
 async function processReminder(app: App, github: GitHubEnterpriseClient, pr: TrackedPR): Promise<void> {
-  // Extract hostname from PR URL
-  const hostname = extractHostname(pr.pr_url);
-  
-  if (!hostname) {
-    console.error(`Could not extract hostname from PR URL: ${pr.pr_url}`);
-    return;
-  }
-  
-  console.log(`Processing PR ${pr.pr_url} (hostname: ${hostname})`);
+  console.log(`Processing PR ${pr.pr_url}`);
   
   let isOpen = true;
   let hasReviews = false;
-  let apiAccessible = true;
+  let statusFromWorker = false;
   
-  try {
-    // Check if PR is still open
-    isOpen = await github.isPROpen(hostname, pr.org, pr.repo, pr.pr_number);
+  // Check if we have recent worker-reported status (within last 10 minutes)
+  const workerStatusFresh = pr.status_checked_at && 
+    (Date.now() - new Date(pr.status_checked_at).getTime()) < 10 * 60 * 1000;
+  
+  if (workerStatusFresh && pr.is_open !== undefined && pr.has_reviews !== undefined) {
+    // Use worker-reported status
+    console.log(`  Using worker-reported status (checked ${Math.round((Date.now() - new Date(pr.status_checked_at!).getTime()) / 1000)}s ago)`);
+    isOpen = pr.is_open;
+    hasReviews = pr.has_reviews;
+    statusFromWorker = true;
+  } else {
+    // Fall back to direct GitHub API call (will fail if not on VPN)
+    const hostname = extractHostname(pr.pr_url);
     
-    if (!isOpen) {
-      console.log(`PR ${pr.pr_url} is closed/merged, marking as closed`);
-      await markPRClosed(pr.id);
+    if (!hostname) {
+      console.error(`Could not extract hostname from PR URL: ${pr.pr_url}`);
       return;
     }
     
-    // Check if PR has received reviews
-    hasReviews = await github.hasReviews(hostname, pr.org, pr.repo, pr.pr_number);
+    console.log(`  No recent worker status, trying direct GitHub API (hostname: ${hostname})`);
     
-    if (hasReviews) {
-      console.log(`PR ${pr.pr_url} has reviews, marking reminder as sent`);
-      await markReminderSent(pr.id);
-      return;
-    }
-  } catch (error: any) {
-    // If we can't reach the GitHub API, still send the reminder (fail open)
-    if (error.code === 'ENOTFOUND' || error.code === 'ETIMEDOUT' || error.code === 'ECONNREFUSED') {
-      console.warn(`GitHub API not reachable for ${hostname}, sending reminder anyway (fail open)`);
-      apiAccessible = false;
-    } else {
-      // For other errors (e.g., 404, 401), skip the reminder
-      console.error(`GitHub API error for ${pr.pr_url}:`, error.message || error);
-      return;
+    try {
+      isOpen = await github.isPROpen(hostname, pr.org, pr.repo, pr.pr_number);
+      
+      if (isOpen) {
+        hasReviews = await github.hasReviews(hostname, pr.org, pr.repo, pr.pr_number);
+      }
+    } catch (error: any) {
+      // If we can't reach the GitHub API, still send the reminder (fail open)
+      if (error.code === 'ENOTFOUND' || error.code === 'ETIMEDOUT' || error.code === 'ECONNREFUSED') {
+        console.warn(`  GitHub API not reachable, sending reminder anyway (fail open)`);
+        // Send reminder with unknown status
+        const timeAgo = formatTimeAgo(pr.posted_at);
+        const message = buildReminderMessage(pr, timeAgo, true);
+        
+        await app.client.chat.postMessage({
+          channel: pr.channel_id,
+          text: message.text,
+          blocks: message.blocks,
+          unfurl_links: false,
+        });
+        
+        await markReminderSent(pr.id);
+        console.log(`  Reminder sent for PR ${pr.pr_url} (status unknown)`);
+        return;
+      } else {
+        // For other errors (e.g., 404, 401), skip the reminder
+        console.error(`  GitHub API error for ${pr.pr_url}:`, error.message || error);
+        return;
+      }
     }
   }
   
+  // Handle closed/merged PR
+  if (!isOpen) {
+    console.log(`  PR is closed/merged, marking as closed`);
+    await markPRClosed(pr.id);
+    return;
+  }
+  
+  // Handle PR with reviews
+  if (hasReviews) {
+    console.log(`  PR has reviews, marking reminder as sent`);
+    await markReminderSent(pr.id);
+    return;
+  }
+  
   // No reviews - send reminder
-  console.log(`Sending reminder for PR ${pr.pr_url}`);
+  console.log(`  Sending reminder for PR ${pr.pr_url}`);
   
   const timeAgo = formatTimeAgo(pr.posted_at);
-  const message = buildReminderMessage(pr, timeAgo, !apiAccessible);
+  const message = buildReminderMessage(pr, timeAgo, false);
   
   await app.client.chat.postMessage({
     channel: pr.channel_id,
@@ -93,7 +122,7 @@ async function processReminder(app: App, github: GitHubEnterpriseClient, pr: Tra
   });
   
   await markReminderSent(pr.id);
-  console.log(`Reminder sent for PR ${pr.pr_url}`);
+  console.log(`  Reminder sent for PR ${pr.pr_url}`);
 }
 
 function buildReminderMessage(pr: TrackedPR, timeAgo: string, apiNotChecked: boolean = false): { text: string; blocks: any[] } {

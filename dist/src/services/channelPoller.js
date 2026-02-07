@@ -18,19 +18,29 @@ async function setLastPollTime(channelId, ts) {
 }
 async function pollChannelsForPRs(client) {
     console.log('Polling channels for PR messages...');
-    // Get channel IDs from environment variable
-    // Format: comma-separated channel IDs, e.g., "C123456,C789012"
-    const channelIds = process.env.POLL_CHANNEL_IDS?.split(',').map(id => id.trim()).filter(Boolean);
-    if (!channelIds || channelIds.length === 0) {
-        console.log('No channels configured. Set POLL_CHANNEL_IDS environment variable.');
-        console.log('Example: heroku config:set POLL_CHANNEL_IDS=C123456,C789012');
-        console.log('You can find channel IDs by right-clicking a channel in Slack → Copy → Copy link');
+    // Get monitored channels from database
+    const monitoredChannels = await (0, client_1.getMonitoredChannels)();
+    // Also check for legacy env var (for backward compatibility)
+    const envChannelIds = process.env.POLL_CHANNEL_IDS?.split(',').map(id => id.trim()).filter(Boolean) || [];
+    // Combine both sources, avoiding duplicates
+    const channelMap = new Map();
+    for (const channel of monitoredChannels) {
+        channelMap.set(channel.channel_id, channel.channel_name || channel.channel_id);
+    }
+    for (const channelId of envChannelIds) {
+        if (!channelMap.has(channelId)) {
+            channelMap.set(channelId, channelId);
+        }
+    }
+    if (channelMap.size === 0) {
+        console.log('No channels configured.');
+        console.log('Use /pr-monitor add in a Slack channel to start monitoring it.');
         return;
     }
-    console.log(`Polling ${channelIds.length} configured channel(s)`);
-    for (const channelId of channelIds) {
+    console.log(`Polling ${channelMap.size} channel(s)`);
+    for (const [channelId, channelName] of channelMap) {
         try {
-            await pollChannel(client, channelId, channelId);
+            await pollChannel(client, channelId, channelName);
             await delay(500); // Delay between channels
         }
         catch (error) {

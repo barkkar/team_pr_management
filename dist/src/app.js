@@ -4,6 +4,7 @@ exports.createApp = createApp;
 const bolt_1 = require("@slack/bolt");
 const prTracker_1 = require("./services/prTracker");
 const prParser_1 = require("./utils/prParser");
+const client_1 = require("./db/client");
 function createApp() {
     const app = new bolt_1.App({
         token: process.env.SLACK_BOT_TOKEN,
@@ -67,6 +68,103 @@ function createApp() {
         }
         catch (error) {
             console.error('Error tracking PRs from message:', error);
+        }
+    });
+    // Slash command: /pr-monitor
+    app.command('/pr-monitor', async ({ command, ack, respond, client }) => {
+        await ack();
+        const args = command.text.trim().split(/\s+/);
+        const subcommand = args[0]?.toLowerCase() || 'help';
+        const channelId = command.channel_id;
+        const userId = command.user_id;
+        try {
+            switch (subcommand) {
+                case 'add': {
+                    // Get channel info for the name
+                    let channelName = null;
+                    try {
+                        const info = await client.conversations.info({ channel: channelId });
+                        channelName = info.channel?.name || null;
+                    }
+                    catch (e) {
+                        // Ignore - channel name is optional
+                    }
+                    const added = await (0, client_1.addMonitoredChannel)(channelId, channelName, userId);
+                    if (added) {
+                        await respond({
+                            response_type: 'in_channel',
+                            text: `✅ This channel is now being monitored for PR review requests. I'll track PRs and send reminders when they need reviews.`,
+                        });
+                    }
+                    else {
+                        await respond({
+                            text: `This channel is already being monitored.`,
+                        });
+                    }
+                    break;
+                }
+                case 'remove': {
+                    const removed = await (0, client_1.removeMonitoredChannel)(channelId);
+                    if (removed) {
+                        await respond({
+                            response_type: 'in_channel',
+                            text: `🛑 This channel is no longer being monitored for PR review requests.`,
+                        });
+                    }
+                    else {
+                        await respond({
+                            text: `This channel was not being monitored.`,
+                        });
+                    }
+                    break;
+                }
+                case 'list': {
+                    const channels = await (0, client_1.getMonitoredChannels)();
+                    if (channels.length === 0) {
+                        await respond({
+                            text: `No channels are currently being monitored.\n\nUse \`/pr-monitor add\` in a channel to start monitoring it.`,
+                        });
+                    }
+                    else {
+                        const channelList = channels.map(c => `• <#${c.channel_id}>${c.channel_name ? ` (${c.channel_name})` : ''}`).join('\n');
+                        await respond({
+                            text: `*Monitored Channels (${channels.length}):*\n${channelList}`,
+                        });
+                    }
+                    break;
+                }
+                case 'status': {
+                    const channels = await (0, client_1.getMonitoredChannels)();
+                    const pendingPRs = await (0, client_1.getPendingReminders)();
+                    const isMonitored = await (0, client_1.isChannelMonitored)(channelId);
+                    await respond({
+                        text: `*PR Monitor Status*\n\n` +
+                            `• This channel: ${isMonitored ? '✅ Monitored' : '❌ Not monitored'}\n` +
+                            `• Total monitored channels: ${channels.length}\n` +
+                            `• PRs awaiting review: ${pendingPRs.length}\n\n` +
+                            `_Use \`/pr-monitor help\` for available commands._`,
+                    });
+                    break;
+                }
+                case 'help':
+                default: {
+                    await respond({
+                        text: `*PR Monitor Commands:*\n\n` +
+                            `• \`/pr-monitor add\` - Start monitoring this channel for PRs\n` +
+                            `• \`/pr-monitor remove\` - Stop monitoring this channel\n` +
+                            `• \`/pr-monitor list\` - Show all monitored channels\n` +
+                            `• \`/pr-monitor status\` - Show current status\n` +
+                            `• \`/pr-monitor help\` - Show this help message`,
+                    });
+                    break;
+                }
+            }
+        }
+        catch (error) {
+            console.error('Error handling /pr-monitor command:', error);
+            await respond({
+                text: `❌ An error occurred: ${error.message}`,
+            });
         }
     });
     // Handle app_home_opened event (optional - for app home tab)

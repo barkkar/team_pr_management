@@ -9,7 +9,9 @@
     "dev": "npx ts-node src/index.ts",
     "check-reminders": "node dist/scripts/checkReminders.js",
     "migrate": "node dist/src/db/migrate.js",
-    "heroku-postbuild": "echo 'Build skipped - using pre-compiled dist'"
+    "heroku-postbuild": "echo 'Build skipped - using pre-compiled dist'",
+    "worker": "npx ts-node worker/localPRChecker.ts",
+    "worker:watch": "npx ts-node worker/localPRChecker.ts --watch"
   },
   "engines": {
     "node": "20.x",

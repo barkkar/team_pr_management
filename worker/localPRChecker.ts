@@ -1,0 +1,260 @@
+#!/usr/bin/env npx ts-node
+/**
+ * Local PR Status Checker Worker
+ * 
+ * This script runs on your local machine (behind VPN) to check PR status
+ * from GitHub Enterprise and report back to the Heroku app.
+ * 
+ * Usage:
+ *   npm run worker          # Run once
+ *   npm run worker:watch    # Run every 5 minutes
+ * 
+ * Required environment variables:
+ *   HEROKU_API_URL    - URL of your Heroku app (e.g., https://pr-manager.herokuapp.com)
+ *   WORKER_API_KEY    - API key for authentication (must match Heroku config)
+ *   GHE_TOKEN         - GitHub Enterprise personal access token
+ */
+
+import 'dotenv/config';
+import axios from 'axios';
+
+// Configuration
+const HEROKU_API_URL = process.env.HEROKU_API_URL;
+const WORKER_API_KEY = process.env.WORKER_API_KEY;
+const GHE_TOKEN = process.env.GHE_TOKEN;
+const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
+interface PendingPR {
+  id: number;
+  pr_url: string;
+  org: string;
+  repo: string;
+  pr_number: number;
+}
+
+interface PRStatusResult {
+  pr_url: string;
+  is_open: boolean;
+  has_reviews: boolean;
+  error?: string;
+}
+
+/**
+ * Extract hostname from a PR URL
+ */
+function extractHostname(prUrl: string): string | null {
+  const match = prUrl.match(/https:\/\/([a-zA-Z0-9-]+\.soma\.salesforce\.com)/);
+  return match ? match[1] : null;
+}
+
+/**
+ * Fetch pending PRs from Heroku API
+ */
+async function fetchPendingPRs(): Promise<PendingPR[]> {
+  const response = await axios.get(`${HEROKU_API_URL}/api/pending-prs`, {
+    headers: {
+      'X-Worker-API-Key': WORKER_API_KEY,
+    },
+    timeout: 30000,
+  });
+  return response.data.prs || [];
+}
+
+/**
+ * Check PR status from GitHub Enterprise
+ */
+async function checkPRStatus(pr: PendingPR): Promise<PRStatusResult> {
+  const hostname = extractHostname(pr.pr_url);
+  
+  if (!hostname) {
+    return {
+      pr_url: pr.pr_url,
+      is_open: true,
+      has_reviews: false,
+      error: 'Could not extract hostname',
+    };
+  }
+
+  const baseURL = `https://${hostname}/api/v3`;
+  
+  try {
+    // Get PR details
+    const prResponse = await axios.get(
+      `${baseURL}/repos/${pr.org}/${pr.repo}/pulls/${pr.pr_number}`,
+      {
+        headers: {
+          Authorization: `token ${GHE_TOKEN}`,
+          Accept: 'application/vnd.github.v3+json',
+        },
+        timeout: 10000,
+      }
+    );
+
+    const isOpen = prResponse.data.state === 'open' && !prResponse.data.merged;
+
+    // Get reviews
+    let hasReviews = false;
+    if (isOpen) {
+      const reviewsResponse = await axios.get(
+        `${baseURL}/repos/${pr.org}/${pr.repo}/pulls/${pr.pr_number}/reviews`,
+        {
+          headers: {
+            Authorization: `token ${GHE_TOKEN}`,
+            Accept: 'application/vnd.github.v3+json',
+          },
+          timeout: 10000,
+        }
+      );
+
+      // Count submitted reviews (not pending)
+      const submittedReviews = (reviewsResponse.data || []).filter(
+        (r: any) => r.state !== 'PENDING'
+      );
+      hasReviews = submittedReviews.length > 0;
+    }
+
+    return {
+      pr_url: pr.pr_url,
+      is_open: isOpen,
+      has_reviews: hasReviews,
+    };
+  } catch (error: any) {
+    console.error(`  Error checking ${pr.pr_url}: ${error.message}`);
+    return {
+      pr_url: pr.pr_url,
+      is_open: true,
+      has_reviews: false,
+      error: error.message,
+    };
+  }
+}
+
+/**
+ * Report PR status back to Heroku
+ */
+async function reportStatus(results: PRStatusResult[]): Promise<number> {
+  const validResults = results.filter(r => !r.error);
+  
+  if (validResults.length === 0) {
+    return 0;
+  }
+
+  const response = await axios.post(
+    `${HEROKU_API_URL}/api/pr-status`,
+    { results: validResults },
+    {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Worker-API-Key': WORKER_API_KEY,
+      },
+      timeout: 30000,
+    }
+  );
+
+  return response.data.updated || 0;
+}
+
+/**
+ * Main worker function
+ */
+async function runWorker(): Promise<void> {
+  console.log(`\n${'='.repeat(50)}`);
+  console.log(`[${new Date().toISOString()}] PR Status Worker starting...`);
+  console.log(`${'='.repeat(50)}`);
+
+  // Validate configuration
+  if (!HEROKU_API_URL) {
+    console.error('ERROR: HEROKU_API_URL environment variable is required');
+    console.error('Example: HEROKU_API_URL=https://pr-manager.herokuapp.com');
+    process.exit(1);
+  }
+
+  if (!WORKER_API_KEY) {
+    console.error('ERROR: WORKER_API_KEY environment variable is required');
+    process.exit(1);
+  }
+
+  if (!GHE_TOKEN) {
+    console.error('ERROR: GHE_TOKEN environment variable is required');
+    process.exit(1);
+  }
+
+  try {
+    // Fetch pending PRs from Heroku
+    console.log(`\nFetching pending PRs from ${HEROKU_API_URL}...`);
+    const pendingPRs = await fetchPendingPRs();
+    console.log(`Found ${pendingPRs.length} PRs to check`);
+
+    if (pendingPRs.length === 0) {
+      console.log('No PRs need status checking. Done!');
+      return;
+    }
+
+    // Check each PR
+    console.log('\nChecking PR status from GitHub Enterprise...');
+    const results: PRStatusResult[] = [];
+    
+    for (const pr of pendingPRs) {
+      console.log(`  Checking ${pr.org}/${pr.repo}#${pr.pr_number}...`);
+      const result = await checkPRStatus(pr);
+      results.push(result);
+      
+      if (result.error) {
+        console.log(`    ERROR: ${result.error}`);
+      } else {
+        console.log(`    is_open: ${result.is_open}, has_reviews: ${result.has_reviews}`);
+      }
+      
+      // Small delay between API calls
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+
+    // Report status back to Heroku
+    console.log('\nReporting status to Heroku...');
+    const updated = await reportStatus(results);
+    console.log(`Updated ${updated} PRs`);
+
+    console.log('\nWorker completed successfully!');
+  } catch (error: any) {
+    console.error('Worker error:', error.message);
+    if (error.response) {
+      console.error('Response status:', error.response.status);
+      console.error('Response data:', error.response.data);
+    }
+    process.exit(1);
+  }
+}
+
+/**
+ * Run in watch mode (continuously every 5 minutes)
+ */
+async function runWatchMode(): Promise<void> {
+  console.log('Starting worker in watch mode (every 5 minutes)...');
+  console.log('Press Ctrl+C to stop.\n');
+
+  // Run immediately
+  await runWorker();
+
+  // Then run every 5 minutes
+  setInterval(async () => {
+    try {
+      await runWorker();
+    } catch (error) {
+      console.error('Worker run failed:', error);
+    }
+  }, POLL_INTERVAL_MS);
+}
+
+// Check if running in watch mode
+const isWatchMode = process.argv.includes('--watch') || process.argv.includes('-w');
+
+if (isWatchMode) {
+  runWatchMode();
+} else {
+  runWorker().then(() => {
+    process.exit(0);
+  }).catch((error) => {
+    console.error('Fatal error:', error);
+    process.exit(1);
+  });
+}
