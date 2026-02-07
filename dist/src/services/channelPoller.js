@@ -17,7 +17,7 @@ async function setLastPollTime(channelId, ts) {
      ON CONFLICT (channel_id) DO UPDATE SET last_poll_ts = $2, updated_at = NOW()`, [channelId, ts]);
 }
 async function pollChannelsForPRs(client) {
-    console.log('Polling channels for PR messages...');
+    console.log('[Polling] Starting channel poll for PR messages...');
     // Get monitored channels from database
     const monitoredChannels = await (0, client_1.getMonitoredChannels)();
     // Also check for legacy env var (for backward compatibility)
@@ -33,24 +33,24 @@ async function pollChannelsForPRs(client) {
         }
     }
     if (channelMap.size === 0) {
-        console.log('No channels configured.');
-        console.log('Use /pr-monitor add in a Slack channel to start monitoring it.');
+        console.log('[Polling] No channels configured.');
+        console.log('[Polling] Use /pr-monitor add in a Slack channel to start monitoring.');
         return;
     }
-    console.log(`Polling ${channelMap.size} channel(s)`);
+    console.log(`[Polling] Checking ${channelMap.size} channel(s)`);
     for (const [channelId, channelName] of channelMap) {
         try {
             await pollChannel(client, channelId, channelName);
             await delay(500); // Delay between channels
         }
         catch (error) {
-            console.error(`Error polling channel ${channelId}:`, error);
+            console.error(`[Polling] Error polling channel ${channelId}:`, error);
         }
     }
 }
 async function pollChannel(client, channelId, channelName) {
     const lastPollTs = await getLastPollTime(channelId);
-    console.log(`Polling channel #${channelName} (${channelId}), last poll: ${lastPollTs || 'never'}`);
+    console.log(`[Polling] Channel #${channelName} (${channelId}), last poll: ${lastPollTs || 'never'}`);
     try {
         // Get messages since last poll (or last 100 messages if first poll)
         const historyResult = await client.conversations.history({
@@ -59,10 +59,10 @@ async function pollChannel(client, channelId, channelName) {
             limit: 100,
         });
         if (!historyResult.messages || historyResult.messages.length === 0) {
-            console.log(`  No new messages in #${channelName}`);
+            console.log(`[Polling] No new messages in #${channelName}`);
             return;
         }
-        console.log(`  Found ${historyResult.messages.length} messages to check`);
+        console.log(`[Polling] Found ${historyResult.messages.length} messages to check in #${channelName}`);
         let newestTs = lastPollTs;
         let prCount = 0;
         for (const message of historyResult.messages) {
@@ -76,7 +76,7 @@ async function pollChannel(client, channelId, channelName) {
             // Check for PR links
             if (!(0, prParser_1.containsPRLink)(message.text))
                 continue;
-            console.log(`  Found PR link in message from ${message.user}`);
+            console.log(`[Polling] Found PR link in message from ${message.user}`);
             const postedAt = new Date(parseFloat(message.ts) * 1000);
             try {
                 const result = await (0, prTracker_1.trackPRsFromMessage)(message.text, channelId, message.ts, postedAt);
@@ -93,13 +93,13 @@ async function pollChannel(client, channelId, channelName) {
                     catch (reactionError) {
                         // Ignore "already_reacted" errors
                         if (reactionError?.data?.error !== 'already_reacted') {
-                            console.log('  Could not add reaction:', reactionError?.data?.error || reactionError);
+                            console.log('[Polling] Could not add reaction:', reactionError?.data?.error || reactionError);
                         }
                     }
                 }
             }
             catch (error) {
-                console.error(`  Error tracking PR from message:`, error);
+                console.error(`[Polling] Error tracking PR from message:`, error);
             }
         }
         // Update last poll timestamp
@@ -107,12 +107,12 @@ async function pollChannel(client, channelId, channelName) {
             await setLastPollTime(channelId, newestTs);
         }
         if (prCount > 0) {
-            console.log(`  Tracked ${prCount} new PR(s) in #${channelName}`);
+            console.log(`[Polling] Tracked ${prCount} new PR(s) in #${channelName}`);
         }
     }
     catch (error) {
         if (error?.data?.error === 'not_in_channel') {
-            console.log(`  Bot is not in channel #${channelName}, skipping`);
+            console.log(`[Polling] Bot is not in channel #${channelName}, skipping`);
         }
         else {
             throw error;

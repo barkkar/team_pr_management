@@ -1,57 +1,61 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.socketModeStats = void 0;
 exports.createApp = createApp;
 const bolt_1 = require("@slack/bolt");
 const prTracker_1 = require("./services/prTracker");
 const prParser_1 = require("./utils/prParser");
 const client_1 = require("./db/client");
+// Socket Mode statistics (exported for status command)
+exports.socketModeStats = {
+    messagesReceived: 0,
+    prsTracked: 0,
+    lastMessageAt: null,
+    startedAt: new Date(),
+};
 function createApp() {
     const app = new bolt_1.App({
         token: process.env.SLACK_BOT_TOKEN,
         signingSecret: process.env.SLACK_SIGNING_SECRET,
         socketMode: true,
         appToken: process.env.SLACK_APP_TOKEN,
-        logLevel: bolt_1.LogLevel.DEBUG, // Always debug for now
+        logLevel: bolt_1.LogLevel.INFO, // Reduced from DEBUG to INFO
     });
-    // Debug: Log all incoming events
+    // Log all incoming events via Socket Mode
     app.use(async ({ payload, next }) => {
-        console.log(`[DEBUG] Received event type: ${payload.type || 'unknown'}`);
+        const eventType = payload.type || 'unknown';
+        if (eventType === 'message') {
+            exports.socketModeStats.messagesReceived++;
+            exports.socketModeStats.lastMessageAt = new Date();
+        }
+        console.log(`[Socket Mode] Received event: ${eventType}`);
         await next();
     });
-    // Listen for messages in channels
+    // Listen for messages in channels (via Socket Mode - real-time)
     app.message(async ({ message, client }) => {
-        console.log(`[DEBUG] Message received:`, JSON.stringify({
-            channel: message.channel,
-            subtype: message.subtype,
-            hasText: 'text' in message,
-            textPreview: ('text' in message && message.text) ? message.text.substring(0, 100) : 'N/A'
-        }));
         // Only process regular messages (not edits, deletes, etc.)
         if (message.subtype) {
-            console.log(`[DEBUG] Skipping message with subtype: ${message.subtype}`);
             return;
         }
         // Type guard for message with text
         if (!('text' in message) || !message.text) {
-            console.log(`[DEBUG] Skipping message without text`);
             return;
         }
         const text = message.text;
         const channelId = message.channel;
         const messageTs = message.ts;
         // Quick check if message contains a PR link
-        const hasPRLink = (0, prParser_1.containsPRLink)(text);
-        console.log(`[DEBUG] Contains PR link: ${hasPRLink}, text: ${text.substring(0, 100)}`);
-        if (!hasPRLink) {
+        if (!(0, prParser_1.containsPRLink)(text)) {
             return;
         }
-        console.log(`Detected PR link in channel ${channelId}`);
+        console.log(`[Socket Mode] PR link detected in channel ${channelId}`);
         // Parse timestamp to Date
         const postedAt = new Date(parseFloat(messageTs) * 1000);
         try {
             const result = await (0, prTracker_1.trackPRsFromMessage)(text, channelId, messageTs, postedAt);
             if (result.tracked.length > 0) {
-                console.log(`Tracked ${result.tracked.length} new PR(s) from message`);
+                exports.socketModeStats.prsTracked += result.tracked.length;
+                console.log(`[Socket Mode] Tracked ${result.tracked.length} new PR(s)`);
                 // Add robot_face reaction to acknowledge the PR has been noticed
                 try {
                     await client.reactions.add({
@@ -61,13 +65,18 @@ function createApp() {
                     });
                 }
                 catch (reactionError) {
-                    // Ignore if reaction already exists or other minor errors
-                    console.log('Could not add reaction:', reactionError);
+                    // Ignore if reaction already exists
+                    if (reactionError?.data?.error !== 'already_reacted') {
+                        console.log('[Socket Mode] Could not add reaction:', reactionError?.data?.error || reactionError);
+                    }
                 }
+            }
+            else if (result.skipped.length > 0) {
+                console.log(`[Socket Mode] Skipped ${result.skipped.length} PR(s) (already tracked)`);
             }
         }
         catch (error) {
-            console.error('Error tracking PRs from message:', error);
+            console.error('[Socket Mode] Error tracking PRs:', error);
         }
     });
     // Slash command: /pr-monitor
@@ -137,12 +146,27 @@ function createApp() {
                     const channels = await (0, client_1.getMonitoredChannels)();
                     const pendingPRs = await (0, client_1.getPendingReminders)();
                     const isMonitored = await (0, client_1.isChannelMonitored)(channelId);
+                    // Calculate uptime
+                    const uptimeMs = Date.now() - exports.socketModeStats.startedAt.getTime();
+                    const uptimeHours = Math.floor(uptimeMs / (1000 * 60 * 60));
+                    const uptimeMinutes = Math.floor((uptimeMs % (1000 * 60 * 60)) / (1000 * 60));
+                    const uptimeStr = uptimeHours > 0 ? `${uptimeHours}h ${uptimeMinutes}m` : `${uptimeMinutes}m`;
+                    // Format last message time
+                    const lastMsgStr = exports.socketModeStats.lastMessageAt
+                        ? `${Math.round((Date.now() - exports.socketModeStats.lastMessageAt.getTime()) / 1000)}s ago`
+                        : 'never';
                     await respond({
                         text: `*PR Monitor Status*\n\n` +
+                            `*Channel:*\n` +
                             `• This channel: ${isMonitored ? '✅ Monitored' : '❌ Not monitored'}\n` +
                             `• Total monitored channels: ${channels.length}\n` +
                             `• PRs awaiting review: ${pendingPRs.length}\n\n` +
-                            `_Use \`/pr-monitor help\` for available commands._`,
+                            `*Socket Mode (Real-time):*\n` +
+                            `• Uptime: ${uptimeStr}\n` +
+                            `• Messages received: ${exports.socketModeStats.messagesReceived}\n` +
+                            `• PRs tracked via Socket Mode: ${exports.socketModeStats.prsTracked}\n` +
+                            `• Last message: ${lastMsgStr}\n\n` +
+                            `_Polling runs every 10 min as backup. Use \`/pr-monitor help\` for commands._`,
                     });
                     break;
                 }

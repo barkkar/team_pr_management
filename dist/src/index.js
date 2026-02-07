@@ -74,7 +74,27 @@ async function main() {
     const app = (0, app_1.createApp)();
     // Start the Slack app (Socket Mode - connects via WebSocket)
     await app.start();
-    console.log('⚡️ PR Review Reminder bot connected to Slack via Socket Mode!');
+    console.log('[Socket Mode] PR Review Reminder bot started');
+    // Add Socket Mode connection event listeners
+    const socketModeClient = app.receiver?.client;
+    if (socketModeClient) {
+        socketModeClient.on('connected', () => {
+            console.log('[Socket Mode] Connected to Slack');
+        });
+        socketModeClient.on('disconnected', () => {
+            console.log('[Socket Mode] Disconnected from Slack');
+        });
+        socketModeClient.on('reconnecting', () => {
+            console.log('[Socket Mode] Reconnecting...');
+        });
+        socketModeClient.on('error', (error) => {
+            console.error('[Socket Mode] Error:', error.message);
+        });
+        console.log('[Socket Mode] Connection event listeners registered');
+    }
+    else {
+        console.warn('[Socket Mode] Could not access socket client for event listeners');
+    }
     // Create HTTP server for health checks and worker API
     const port = parseInt(process.env.PORT || '3000', 10);
     const server = http.createServer(async (req, res) => {

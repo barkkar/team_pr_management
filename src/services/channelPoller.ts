@@ -25,7 +25,7 @@ async function setLastPollTime(channelId: string, ts: string): Promise<void> {
 }
 
 export async function pollChannelsForPRs(client: WebClient): Promise<void> {
-  console.log('Polling channels for PR messages...');
+  console.log('[Polling] Starting channel poll for PR messages...');
 
   // Get monitored channels from database
   const monitoredChannels = await getMonitoredChannels();
@@ -47,19 +47,19 @@ export async function pollChannelsForPRs(client: WebClient): Promise<void> {
   }
 
   if (channelMap.size === 0) {
-    console.log('No channels configured.');
-    console.log('Use /pr-monitor add in a Slack channel to start monitoring it.');
+    console.log('[Polling] No channels configured.');
+    console.log('[Polling] Use /pr-monitor add in a Slack channel to start monitoring.');
     return;
   }
 
-  console.log(`Polling ${channelMap.size} channel(s)`);
+  console.log(`[Polling] Checking ${channelMap.size} channel(s)`);
 
   for (const [channelId, channelName] of channelMap) {
     try {
       await pollChannel(client, channelId, channelName);
       await delay(500); // Delay between channels
     } catch (error) {
-      console.error(`Error polling channel ${channelId}:`, error);
+      console.error(`[Polling] Error polling channel ${channelId}:`, error);
     }
   }
 }
@@ -67,7 +67,7 @@ export async function pollChannelsForPRs(client: WebClient): Promise<void> {
 async function pollChannel(client: WebClient, channelId: string, channelName: string): Promise<void> {
   const lastPollTs = await getLastPollTime(channelId);
   
-  console.log(`Polling channel #${channelName} (${channelId}), last poll: ${lastPollTs || 'never'}`);
+  console.log(`[Polling] Channel #${channelName} (${channelId}), last poll: ${lastPollTs || 'never'}`);
 
   try {
     // Get messages since last poll (or last 100 messages if first poll)
@@ -78,11 +78,11 @@ async function pollChannel(client: WebClient, channelId: string, channelName: st
     });
 
     if (!historyResult.messages || historyResult.messages.length === 0) {
-      console.log(`  No new messages in #${channelName}`);
+      console.log(`[Polling] No new messages in #${channelName}`);
       return;
     }
 
-    console.log(`  Found ${historyResult.messages.length} messages to check`);
+    console.log(`[Polling] Found ${historyResult.messages.length} messages to check in #${channelName}`);
 
     let newestTs = lastPollTs;
     let prCount = 0;
@@ -99,7 +99,7 @@ async function pollChannel(client: WebClient, channelId: string, channelName: st
       // Check for PR links
       if (!containsPRLink(message.text)) continue;
 
-      console.log(`  Found PR link in message from ${message.user}`);
+      console.log(`[Polling] Found PR link in message from ${message.user}`);
 
       const postedAt = new Date(parseFloat(message.ts) * 1000);
       
@@ -119,12 +119,12 @@ async function pollChannel(client: WebClient, channelId: string, channelName: st
           } catch (reactionError: any) {
             // Ignore "already_reacted" errors
             if (reactionError?.data?.error !== 'already_reacted') {
-              console.log('  Could not add reaction:', reactionError?.data?.error || reactionError);
+              console.log('[Polling] Could not add reaction:', reactionError?.data?.error || reactionError);
             }
           }
         }
       } catch (error) {
-        console.error(`  Error tracking PR from message:`, error);
+        console.error(`[Polling] Error tracking PR from message:`, error);
       }
     }
 
@@ -134,11 +134,11 @@ async function pollChannel(client: WebClient, channelId: string, channelName: st
     }
 
     if (prCount > 0) {
-      console.log(`  Tracked ${prCount} new PR(s) in #${channelName}`);
+      console.log(`[Polling] Tracked ${prCount} new PR(s) in #${channelName}`);
     }
   } catch (error: any) {
     if (error?.data?.error === 'not_in_channel') {
-      console.log(`  Bot is not in channel #${channelName}, skipping`);
+      console.log(`[Polling] Bot is not in channel #${channelName}, skipping`);
     } else {
       throw error;
     }
