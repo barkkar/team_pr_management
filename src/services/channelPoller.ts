@@ -32,14 +32,21 @@ export async function pollChannelsForPRs(client: WebClient): Promise<void> {
       exclude_archived: true,
     });
 
+    console.log(`[DEBUG] API returned ${channelsResult.channels?.length || 0} total channels`);
+
     if (!channelsResult.channels) {
       console.log('No channels found');
       return;
     }
 
+    // Log first few channels for debugging
+    channelsResult.channels.slice(0, 5).forEach(ch => {
+      console.log(`[DEBUG] Channel: ${ch.name} (${ch.id}), is_member: ${ch.is_member}`);
+    });
+
     // Filter to channels the bot is a member of
     const memberChannels = channelsResult.channels.filter(ch => ch.is_member);
-    console.log(`Found ${memberChannels.length} channels to poll`);
+    console.log(`Found ${memberChannels.length} channels to poll (bot is member)`);
 
     for (const channel of memberChannels) {
       if (!channel.id) continue;
