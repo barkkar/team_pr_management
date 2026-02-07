@@ -49,14 +49,20 @@ export async function pollChannelsForPRs(client: WebClient): Promise<void> {
       return;
     }
 
-    console.log(`Found ${allChannels.length} total channels, will try to poll each one`);
+    // Count channel types
+    const publicCount = allChannels.filter(ch => !ch.is_private).length;
+    const privateCount = allChannels.filter(ch => ch.is_private).length;
+    console.log(`Found ${allChannels.length} total channels (${publicCount} public, ${privateCount} private)`);
 
     // Log if we find the test channel
     const testChannel = allChannels.find(ch => ch.name?.includes('pr-test'));
     if (testChannel) {
-      console.log(`[DEBUG] Found pr-test channel: ${testChannel.name} (${testChannel.id})`);
+      console.log(`[DEBUG] Found pr-test channel: ${testChannel.name} (${testChannel.id}), is_private: ${testChannel.is_private}`);
     } else {
       console.log(`[DEBUG] pr-test channel NOT found in channel list`);
+      // List all private channels for debugging
+      const privateChannels = allChannels.filter(ch => ch.is_private);
+      console.log(`[DEBUG] Private channels found: ${privateChannels.map(ch => ch.name).join(', ') || 'none'}`);
     }
 
     for (const channel of allChannels) {
