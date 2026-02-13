@@ -5,6 +5,7 @@ const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 import { trackPRsFromMessage } from './prTracker';
 import { containsPRLink } from '../utils/prParser';
 import { pool, getMonitoredChannels } from '../db/client';
+import { isChannelAllowed } from './channelAccessControl';
 
 // Store last poll timestamp per channel
 async function getLastPollTime(channelId: string): Promise<string | null> {
@@ -55,6 +56,15 @@ export async function pollChannelsForPRs(client: WebClient): Promise<void> {
   console.log(`[Polling] Checking ${channelMap.size} channel(s)`);
 
   for (const [channelId, channelName] of channelMap) {
+    // --- Channel allowlist enforcement (groups:history / channels:history) ---
+    if (!isChannelAllowed(channelId)) {
+      console.error(
+        `[Polling] BLOCKED: Channel #${channelName} (${channelId}) is not in the allowlist. ` +
+        `Skipping conversations.history call per channel access control policy.`,
+      );
+      continue;
+    }
+
     try {
       await pollChannel(client, channelId, channelName);
       await delay(500); // Delay between channels

@@ -2,6 +2,7 @@ import { App, LogLevel } from '@slack/bolt';
 import { trackPRsFromMessage } from './services/prTracker';
 import { containsPRLink } from './utils/prParser';
 import { addMonitoredChannel, removeMonitoredChannel, getMonitoredChannels, isChannelMonitored, getPendingReminders } from './db/client';
+import { isChannelAllowed, getAllowedChannelIds } from './services/channelAccessControl';
 
 // Socket Mode statistics (exported for status command)
 export const socketModeStats = {
@@ -46,6 +47,15 @@ export function createApp(): App {
     const text = message.text;
     const channelId = message.channel;
     const messageTs = message.ts;
+
+    // --- Channel allowlist enforcement (groups:history / channels:history) ---
+    if (!isChannelAllowed(channelId)) {
+      console.warn(
+        `[Socket Mode] BLOCKED: Received message from non-allowlisted channel ${channelId}. ` +
+        `Ignoring per channel access control policy.`,
+      );
+      return;
+    }
 
     // Quick check if message contains a PR link
     if (!containsPRLink(text)) {
@@ -97,6 +107,19 @@ export function createApp(): App {
     try {
       switch (subcommand) {
         case 'add': {
+          // --- Channel allowlist enforcement ---
+          if (!isChannelAllowed(channelId)) {
+            console.warn(
+              `[Slash Command] BLOCKED: /pr-monitor add attempted in non-allowlisted channel ${channelId} by user ${userId}`,
+            );
+            await respond({
+              text: `❌ This channel (${channelId}) is not in the approved channel allowlist. ` +
+                `The bot can only monitor channels that have been explicitly allowlisted. ` +
+                `Please contact your Slack workspace admin to add this channel to the ALLOWED_CHANNEL_IDS configuration.`,
+            });
+            break;
+          }
+
           // Get channel info for the name
           let channelName: string | null = null;
           try {
@@ -168,12 +191,19 @@ export function createApp(): App {
             ? `${Math.round((Date.now() - socketModeStats.lastMessageAt.getTime()) / 1000)}s ago`
             : 'never';
 
+          const allowedIds = getAllowedChannelIds();
+          const isAllowed = isChannelAllowed(channelId);
+
           await respond({
             text: `*PR Monitor Status*\n\n` +
               `*Channel:*\n` +
               `• This channel: ${isMonitored ? '✅ Monitored' : '❌ Not monitored'}\n` +
+              `• Allowlisted: ${isAllowed ? '✅ Yes' : '❌ No'}\n` +
               `• Total monitored channels: ${channels.length}\n` +
               `• PRs awaiting review: ${pendingPRs.length}\n\n` +
+              `*Channel Access Control:*\n` +
+              `• Allowlisted channels: ${allowedIds.length}\n` +
+              `• IDs: ${allowedIds.map(id => `\`${id}\``).join(', ')}\n\n` +
               `*Socket Mode (Real-time):*\n` +
               `• Uptime: ${uptimeStr}\n` +
               `• Messages received: ${socketModeStats.messagesReceived}\n` +

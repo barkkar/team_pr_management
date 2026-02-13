@@ -120,6 +120,10 @@ heroku config:set NODE_ENV=production
 # Generate and set worker API key
 heroku config:set WORKER_API_KEY=$(openssl rand -hex 32)
 
+# Set allowed channel IDs (comma-separated list of Slack channel IDs)
+# Only these channels will be readable by the bot (required for groups:history / channels:history scopes)
+heroku config:set ALLOWED_CHANNEL_IDS=C0123ABC456,G0789DEF012
+
 # Deploy
 git push heroku main
 
@@ -235,7 +239,8 @@ launchctl load ~/Library/LaunchAgents/com.pr-worker.plist
 │   │   ├── github.ts             # GitHub Enterprise API client
 │   │   ├── prTracker.ts          # PR tracking logic
 │   │   ├── reminder.ts           # Reminder processing
-│   │   └── channelPoller.ts      # Channel polling for PRs
+│   │   ├── channelPoller.ts      # Channel polling for PRs
+│   │   └── channelAccessControl.ts # Channel allowlist enforcement
 │   ├── db/
 │   │   ├── client.ts             # PostgreSQL client + queries
 │   │   ├── migrate.ts            # Migration runner
@@ -290,6 +295,7 @@ All `/api/*` endpoints require the `X-Worker-API-Key` header.
 | `DATABASE_URL` | PostgreSQL connection string (auto-set by Heroku) |
 | `TZ` | Timezone (America/Los_Angeles) |
 | `WORKER_API_KEY` | API key for local worker authentication |
+| `ALLOWED_CHANNEL_IDS` | Comma-separated Slack channel IDs the bot is allowed to read (see [Channel Access Control](#channel-access-control)) |
 
 ### Local Worker (Required)
 
@@ -298,6 +304,28 @@ All `/api/*` endpoints require the `X-Worker-API-Key` header.
 | `GHE_TOKEN` | GitHub Enterprise Personal Access Token |
 | `HEROKU_API_URL` | URL of your Heroku app |
 | `WORKER_API_KEY` | Same API key as configured on Heroku |
+
+## Channel Access Control
+
+The bot enforces a code-level channel allowlist to comply with Slack scope requirements for `groups:history` (private channels) and `channels:history` (public channels). Only channels listed in the `ALLOWED_CHANNEL_IDS` environment variable can be read by the bot.
+
+- The allowlist is a comma-separated list of Slack channel IDs (e.g., `C0123ABC456,G0789DEF012`).
+- The app will **refuse to start** if `ALLOWED_CHANNEL_IDS` is not set or is empty.
+- Messages from non-allowlisted channels are silently ignored (with a warning logged).
+- The `/pr-monitor add` command will reject channels not on the allowlist.
+- The polling mechanism will skip non-allowlisted channels before calling `conversations.history`.
+
+To add a new channel, first add its ID to the Heroku config var, then run `/pr-monitor add` in that channel:
+
+```bash
+# Get current allowlist
+heroku config:get ALLOWED_CHANNEL_IDS -a your-app-name
+
+# Add a new channel ID to the list
+heroku config:set ALLOWED_CHANNEL_IDS=C0123ABC456,G0789DEF012,CNEWCHANNEL -a your-app-name
+```
+
+You can view the current allowlist from within Slack by running `/pr-monitor status`.
 
 ## Troubleshooting
 
