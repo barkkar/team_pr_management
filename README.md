@@ -210,6 +210,9 @@ Load the service:
 launchctl load ~/Library/LaunchAgents/com.pr-worker.plist
 ```
 
+You can check if it's running with:
+launchctl list | grep pr-worker
+
 ## Usage
 
 ### Slash Commands
@@ -219,6 +222,7 @@ launchctl load ~/Library/LaunchAgents/com.pr-worker.plist
 | `/pr-monitor add` | Start monitoring the current channel |
 | `/pr-monitor remove` | Stop monitoring the current channel |
 | `/pr-monitor list` | Show all monitored channels |
+| `/pr-monitor pending` | Show PRs awaiting review with wait times |
 | `/pr-monitor status` | Show bot status and statistics |
 | `/pr-monitor help` | Show help message |
 

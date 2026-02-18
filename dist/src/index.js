@@ -65,7 +65,7 @@ function validateApiKey(req) {
 }
 async function main() {
     // Validate required environment variables
-    const required = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'SLACK_APP_TOKEN', 'GHE_TOKEN'];
+    const required = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'SLACK_APP_TOKEN', 'GHE_TOKEN', 'ALLOWED_CHANNEL_IDS'];
     const missing = required.filter((key) => !process.env[key]);
     if (missing.length > 0) {
         console.error(`Missing required environment variables: ${missing.join(', ')}`);

@@ -18,6 +18,14 @@
 import 'dotenv/config';
 import axios from 'axios';
 
+function log(message: string): void {
+  console.log(`[${new Date().toISOString()}] ${message}`);
+}
+
+function logError(message: string): void {
+  console.error(`[${new Date().toISOString()}] ${message}`);
+}
+
 // Configuration
 const HEROKU_API_URL = process.env.HEROKU_API_URL;
 const WORKER_API_KEY = process.env.WORKER_API_KEY;
@@ -119,7 +127,7 @@ async function checkPRStatus(pr: PendingPR): Promise<PRStatusResult> {
       has_reviews: hasReviews,
     };
   } catch (error: any) {
-    console.error(`  Error checking ${pr.pr_url}: ${error.message}`);
+    logError(`  Error checking ${pr.pr_url}: ${error.message}`);
     return {
       pr_url: pr.pr_url,
       is_open: true,
@@ -158,51 +166,51 @@ async function reportStatus(results: PRStatusResult[]): Promise<number> {
  * Main worker function
  */
 async function runWorker(): Promise<void> {
-  console.log(`\n${'='.repeat(50)}`);
-  console.log(`[${new Date().toISOString()}] PR Status Worker starting...`);
-  console.log(`${'='.repeat(50)}`);
+  log(`${'='.repeat(50)}`);
+  log(`PR Status Worker starting...`);
+  log(`${'='.repeat(50)}`);
 
   // Validate configuration
   if (!HEROKU_API_URL) {
-    console.error('ERROR: HEROKU_API_URL environment variable is required');
-    console.error('Example: HEROKU_API_URL=https://pr-manager.herokuapp.com');
+    logError('ERROR: HEROKU_API_URL environment variable is required');
+    logError('Example: HEROKU_API_URL=https://pr-manager.herokuapp.com');
     process.exit(1);
   }
 
   if (!WORKER_API_KEY) {
-    console.error('ERROR: WORKER_API_KEY environment variable is required');
+    logError('ERROR: WORKER_API_KEY environment variable is required');
     process.exit(1);
   }
 
   if (!GHE_TOKEN) {
-    console.error('ERROR: GHE_TOKEN environment variable is required');
+    logError('ERROR: GHE_TOKEN environment variable is required');
     process.exit(1);
   }
 
   try {
     // Fetch pending PRs from Heroku
-    console.log(`\nFetching pending PRs from ${HEROKU_API_URL}...`);
+    log(`Fetching pending PRs from ${HEROKU_API_URL}...`);
     const pendingPRs = await fetchPendingPRs();
-    console.log(`Found ${pendingPRs.length} PRs to check`);
+    log(`Found ${pendingPRs.length} PRs to check`);
 
     if (pendingPRs.length === 0) {
-      console.log('No PRs need status checking. Done!');
+      log('No PRs need status checking. Done!');
       return;
     }
 
     // Check each PR
-    console.log('\nChecking PR status from GitHub Enterprise...');
+    log('Checking PR status from GitHub Enterprise...');
     const results: PRStatusResult[] = [];
     
     for (const pr of pendingPRs) {
-      console.log(`  Checking ${pr.org}/${pr.repo}#${pr.pr_number}...`);
+      log(`  Checking ${pr.org}/${pr.repo}#${pr.pr_number}...`);
       const result = await checkPRStatus(pr);
       results.push(result);
       
       if (result.error) {
-        console.log(`    ERROR: ${result.error}`);
+        logError(`    ERROR: ${result.error}`);
       } else {
-        console.log(`    is_open: ${result.is_open}, has_reviews: ${result.has_reviews}`);
+        log(`    is_open: ${result.is_open}, has_reviews: ${result.has_reviews}`);
       }
       
       // Small delay between API calls
@@ -210,16 +218,16 @@ async function runWorker(): Promise<void> {
     }
 
     // Report status back to Heroku
-    console.log('\nReporting status to Heroku...');
+    log('Reporting status to Heroku...');
     const updated = await reportStatus(results);
-    console.log(`Updated ${updated} PRs`);
+    log(`Updated ${updated} PRs`);
 
-    console.log('\nWorker completed successfully!');
+    log('Worker completed successfully!');
   } catch (error: any) {
-    console.error('Worker error:', error.message);
+    logError(`Worker error: ${error.message}`);
     if (error.response) {
-      console.error('Response status:', error.response.status);
-      console.error('Response data:', error.response.data);
+      logError(`Response status: ${error.response.status}`);
+      logError(`Response data: ${JSON.stringify(error.response.data)}`);
     }
     process.exit(1);
   }
@@ -229,8 +237,8 @@ async function runWorker(): Promise<void> {
  * Run in watch mode (continuously every 5 minutes)
  */
 async function runWatchMode(): Promise<void> {
-  console.log('Starting worker in watch mode (every 5 minutes)...');
-  console.log('Press Ctrl+C to stop.\n');
+  log('Starting worker in watch mode (every 5 minutes)...');
+  log('Press Ctrl+C to stop.');
 
   // Run immediately
   await runWorker();
@@ -240,7 +248,7 @@ async function runWatchMode(): Promise<void> {
     try {
       await runWorker();
     } catch (error) {
-      console.error('Worker run failed:', error);
+      logError(`Worker run failed: ${error}`);
     }
   }, POLL_INTERVAL_MS);
 }
@@ -254,7 +262,7 @@ if (isWatchMode) {
   runWorker().then(() => {
     process.exit(0);
   }).catch((error) => {
-    console.error('Fatal error:', error);
+    logError(`Fatal error: ${error}`);
     process.exit(1);
   });
 }

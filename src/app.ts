@@ -4,6 +4,16 @@ import { containsPRLink } from './utils/prParser';
 import { addMonitoredChannel, removeMonitoredChannel, getMonitoredChannels, isChannelMonitored, getPendingReminders } from './db/client';
 import { isChannelAllowed, getAllowedChannelIds } from './services/channelAccessControl';
 
+function formatWaitTime(postedAt: Date): string {
+  const waitMs = Date.now() - new Date(postedAt).getTime();
+  const days = Math.floor(waitMs / (1000 * 60 * 60 * 24));
+  const hours = Math.floor((waitMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+  const minutes = Math.floor((waitMs % (1000 * 60 * 60)) / (1000 * 60));
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
 // Socket Mode statistics (exported for status command)
 export const socketModeStats = {
   messagesReceived: 0,
@@ -175,6 +185,24 @@ export function createApp(): App {
           break;
         }
 
+        case 'pending': {
+          const pendingList = await getPendingReminders();
+          if (pendingList.length === 0) {
+            await respond({
+              text: `No PRs are currently awaiting review.`,
+            });
+          } else {
+            const prLines = pendingList.map(pr => {
+              const waitStr = formatWaitTime(pr.posted_at);
+              return `• <${pr.pr_url}|${pr.org}/${pr.repo}#${pr.pr_number}> — posted in <#${pr.channel_id}> — waiting *${waitStr}*`;
+            }).join('\n');
+            await respond({
+              text: `*PRs Awaiting Review (${pendingList.length}):*\n\n${prLines}`,
+            });
+          }
+          break;
+        }
+
         case 'status': {
           const channels = await getMonitoredChannels();
           const pendingPRs = await getPendingReminders();
@@ -200,7 +228,7 @@ export function createApp(): App {
               `• This channel: ${isMonitored ? '✅ Monitored' : '❌ Not monitored'}\n` +
               `• Allowlisted: ${isAllowed ? '✅ Yes' : '❌ No'}\n` +
               `• Total monitored channels: ${channels.length}\n` +
-              `• PRs awaiting review: ${pendingPRs.length}\n\n` +
+              `• PRs awaiting review: ${pendingPRs.length}${pendingPRs.length > 0 ? ` (oldest: ${formatWaitTime(pendingPRs[0].posted_at)}) — use \`/pr-monitor pending\` for details` : ''}\n\n` +
               `*Channel Access Control:*\n` +
               `• Allowlisted channels: ${allowedIds.length}\n` +
               `• IDs: ${allowedIds.map(id => `\`${id}\``).join(', ')}\n\n` +
@@ -221,6 +249,7 @@ export function createApp(): App {
               `• \`/pr-monitor add\` - Start monitoring this channel for PRs\n` +
               `• \`/pr-monitor remove\` - Stop monitoring this channel\n` +
               `• \`/pr-monitor list\` - Show all monitored channels\n` +
+              `• \`/pr-monitor pending\` - Show PRs awaiting review with wait times\n` +
               `• \`/pr-monitor status\` - Show current status\n` +
               `• \`/pr-monitor help\` - Show this help message`,
           });

@@ -6,6 +6,18 @@ const bolt_1 = require("@slack/bolt");
 const prTracker_1 = require("./services/prTracker");
 const prParser_1 = require("./utils/prParser");
 const client_1 = require("./db/client");
+const channelAccessControl_1 = require("./services/channelAccessControl");
+function formatWaitTime(postedAt) {
+    const waitMs = Date.now() - new Date(postedAt).getTime();
+    const days = Math.floor(waitMs / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((waitMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    const minutes = Math.floor((waitMs % (1000 * 60 * 60)) / (1000 * 60));
+    if (days > 0)
+        return `${days}d ${hours}h`;
+    if (hours > 0)
+        return `${hours}h ${minutes}m`;
+    return `${minutes}m`;
+}
 // Socket Mode statistics (exported for status command)
 exports.socketModeStats = {
     messagesReceived: 0,
@@ -44,6 +56,12 @@ function createApp() {
         const text = message.text;
         const channelId = message.channel;
         const messageTs = message.ts;
+        // --- Channel allowlist enforcement (groups:history / channels:history) ---
+        if (!(0, channelAccessControl_1.isChannelAllowed)(channelId)) {
+            console.warn(`[Socket Mode] BLOCKED: Received message from non-allowlisted channel ${channelId}. ` +
+                `Ignoring per channel access control policy.`);
+            return;
+        }
         // Quick check if message contains a PR link
         if (!(0, prParser_1.containsPRLink)(text)) {
             return;
@@ -89,6 +107,16 @@ function createApp() {
         try {
             switch (subcommand) {
                 case 'add': {
+                    // --- Channel allowlist enforcement ---
+                    if (!(0, channelAccessControl_1.isChannelAllowed)(channelId)) {
+                        console.warn(`[Slash Command] BLOCKED: /pr-monitor add attempted in non-allowlisted channel ${channelId} by user ${userId}`);
+                        await respond({
+                            text: `❌ This channel (${channelId}) is not in the approved channel allowlist. ` +
+                                `The bot can only monitor channels that have been explicitly allowlisted. ` +
+                                `Please contact your Slack workspace admin to add this channel to the ALLOWED_CHANNEL_IDS configuration.`,
+                        });
+                        break;
+                    }
                     // Get channel info for the name
                     let channelName = null;
                     try {
@@ -142,6 +170,24 @@ function createApp() {
                     }
                     break;
                 }
+                case 'pending': {
+                    const pendingList = await (0, client_1.getPendingReminders)();
+                    if (pendingList.length === 0) {
+                        await respond({
+                            text: `No PRs are currently awaiting review.`,
+                        });
+                    }
+                    else {
+                        const prLines = pendingList.map(pr => {
+                            const waitStr = formatWaitTime(pr.posted_at);
+                            return `• <${pr.pr_url}|${pr.org}/${pr.repo}#${pr.pr_number}> — posted in <#${pr.channel_id}> — waiting *${waitStr}*`;
+                        }).join('\n');
+                        await respond({
+                            text: `*PRs Awaiting Review (${pendingList.length}):*\n\n${prLines}`,
+                        });
+                    }
+                    break;
+                }
                 case 'status': {
                     const channels = await (0, client_1.getMonitoredChannels)();
                     const pendingPRs = await (0, client_1.getPendingReminders)();
@@ -155,12 +201,18 @@ function createApp() {
                     const lastMsgStr = exports.socketModeStats.lastMessageAt
                         ? `${Math.round((Date.now() - exports.socketModeStats.lastMessageAt.getTime()) / 1000)}s ago`
                         : 'never';
+                    const allowedIds = (0, channelAccessControl_1.getAllowedChannelIds)();
+                    const isAllowed = (0, channelAccessControl_1.isChannelAllowed)(channelId);
                     await respond({
                         text: `*PR Monitor Status*\n\n` +
                             `*Channel:*\n` +
                             `• This channel: ${isMonitored ? '✅ Monitored' : '❌ Not monitored'}\n` +
+                            `• Allowlisted: ${isAllowed ? '✅ Yes' : '❌ No'}\n` +
                             `• Total monitored channels: ${channels.length}\n` +
-                            `• PRs awaiting review: ${pendingPRs.length}\n\n` +
+                            `• PRs awaiting review: ${pendingPRs.length}${pendingPRs.length > 0 ? ` (oldest: ${formatWaitTime(pendingPRs[0].posted_at)}) — use \`/pr-monitor pending\` for details` : ''}\n\n` +
+                            `*Channel Access Control:*\n` +
+                            `• Allowlisted channels: ${allowedIds.length}\n` +
+                            `• IDs: ${allowedIds.map(id => `\`${id}\``).join(', ')}\n\n` +
                             `*Socket Mode (Real-time):*\n` +
                             `• Uptime: ${uptimeStr}\n` +
                             `• Messages received: ${exports.socketModeStats.messagesReceived}\n` +
@@ -177,6 +229,7 @@ function createApp() {
                             `• \`/pr-monitor add\` - Start monitoring this channel for PRs\n` +
                             `• \`/pr-monitor remove\` - Stop monitoring this channel\n` +
                             `• \`/pr-monitor list\` - Show all monitored channels\n` +
+                            `• \`/pr-monitor pending\` - Show PRs awaiting review with wait times\n` +
                             `• \`/pr-monitor status\` - Show current status\n` +
                             `• \`/pr-monitor help\` - Show this help message`,
                     });

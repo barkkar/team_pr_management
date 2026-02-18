@@ -10,8 +10,8 @@
     "check-reminders": "node dist/scripts/checkReminders.js",
     "migrate": "node dist/src/db/migrate.js",
     "heroku-postbuild": "echo 'Build skipped - using pre-compiled dist'",
-    "worker": "npx ts-node worker/localPRChecker.ts",
-    "worker:watch": "npx ts-node worker/localPRChecker.ts --watch"
+    "worker": "node dist/worker/localPRChecker.js",
+    "worker:watch": "node dist/worker/localPRChecker.js --watch"
   },
   "engines": {
     "node": "20.x",

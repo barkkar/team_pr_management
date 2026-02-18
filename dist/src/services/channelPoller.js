@@ -6,6 +6,7 @@ const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const prTracker_1 = require("./prTracker");
 const prParser_1 = require("../utils/prParser");
 const client_1 = require("../db/client");
+const channelAccessControl_1 = require("./channelAccessControl");
 // Store last poll timestamp per channel
 async function getLastPollTime(channelId) {
     const result = await client_1.pool.query('SELECT last_poll_ts FROM channel_poll_state WHERE channel_id = $1', [channelId]);
@@ -39,6 +40,12 @@ async function pollChannelsForPRs(client) {
     }
     console.log(`[Polling] Checking ${channelMap.size} channel(s)`);
     for (const [channelId, channelName] of channelMap) {
+        // --- Channel allowlist enforcement (groups:history / channels:history) ---
+        if (!(0, channelAccessControl_1.isChannelAllowed)(channelId)) {
+            console.error(`[Polling] BLOCKED: Channel #${channelName} (${channelId}) is not in the allowlist. ` +
+                `Skipping conversations.history call per channel access control policy.`);
+            continue;
+        }
         try {
             await pollChannel(client, channelId, channelName);
             await delay(500); // Delay between channels
