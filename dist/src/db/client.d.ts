@@ -16,6 +16,7 @@ export interface TrackedPR {
     has_reviews?: boolean;
     is_open?: boolean;
     status_checked_at?: Date;
+    reminder_count?: number;
 }
 export interface PRStatusUpdate {
     pr_url: string;
@@ -38,6 +39,11 @@ export declare function markReminderSent(id: number): Promise<void>;
  * Keeps reminder_sent = FALSE so the PR stays in the pending pool.
  */
 export declare function scheduleNextReminder(id: number): Promise<void>;
+/**
+ * Get all open PRs that haven't received reviews yet (for /pr-monitor pending).
+ * Unlike getPendingReminders(), this is not gated by eligible_reminder_at or reminder_sent.
+ */
+export declare function getOpenUnreviewedPRs(): Promise<TrackedPR[]>;
 export declare function markPRClosed(id: number): Promise<void>;
 export declare function getTrackedPRByUrl(prUrl: string): Promise<TrackedPR | null>;
 /**
@@ -68,5 +74,18 @@ export declare function getMonitoredChannels(): Promise<MonitoredChannel[]>;
  * Check if a channel is being monitored
  */
 export declare function isChannelMonitored(channelId: string): Promise<boolean>;
+export interface ReviewStats {
+    totalTracked: number;
+    reviewedWithoutReminders: number;
+    reviewedAfterReminders: number;
+    stillAwaiting: number;
+    closed: number;
+    reminderBreakdown: {
+        reminders: string;
+        count: number;
+    }[];
+    avgRemindersBeforeReview: number;
+}
+export declare function getReviewStats(): Promise<ReviewStats>;
 export { pool };
 //# sourceMappingURL=client.d.ts.map

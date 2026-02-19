@@ -5,6 +5,7 @@ exports.insertTrackedPR = insertTrackedPR;
 exports.getPendingReminders = getPendingReminders;
 exports.markReminderSent = markReminderSent;
 exports.scheduleNextReminder = scheduleNextReminder;
+exports.getOpenUnreviewedPRs = getOpenUnreviewedPRs;
 exports.markPRClosed = markPRClosed;
 exports.getTrackedPRByUrl = getTrackedPRByUrl;
 exports.getPRsNeedingStatusCheck = getPRsNeedingStatusCheck;
@@ -13,6 +14,7 @@ exports.addMonitoredChannel = addMonitoredChannel;
 exports.removeMonitoredChannel = removeMonitoredChannel;
 exports.getMonitoredChannels = getMonitoredChannels;
 exports.isChannelMonitored = isChannelMonitored;
+exports.getReviewStats = getReviewStats;
 const pg_1 = require("pg");
 const pool = new pg_1.Pool({
     connectionString: process.env.DATABASE_URL,
@@ -58,7 +60,22 @@ async function markReminderSent(id) {
  * Keeps reminder_sent = FALSE so the PR stays in the pending pool.
  */
 async function scheduleNextReminder(id) {
-    await pool.query(`UPDATE tracked_prs SET eligible_reminder_at = NOW() + INTERVAL '2 hours' WHERE id = $1`, [id]);
+    await pool.query(`UPDATE tracked_prs SET eligible_reminder_at = NOW() + INTERVAL '2 hours', reminder_count = COALESCE(reminder_count, 0) + 1 WHERE id = $1`, [id]);
+}
+/**
+ * Get all open PRs that haven't received reviews yet (for /pr-monitor pending).
+ * Unlike getPendingReminders(), this is not gated by eligible_reminder_at or reminder_sent.
+ */
+async function getOpenUnreviewedPRs() {
+    const query = `
+    SELECT * FROM tracked_prs
+    WHERE pr_closed = FALSE
+      AND (has_reviews = FALSE OR has_reviews IS NULL)
+      AND (is_open = TRUE OR is_open IS NULL)
+    ORDER BY posted_at ASC
+  `;
+    const result = await pool.query(query);
+    return result.rows;
 }
 async function markPRClosed(id) {
     await pool.query('UPDATE tracked_prs SET pr_closed = TRUE WHERE id = $1', [id]);
@@ -135,5 +152,45 @@ async function getMonitoredChannels() {
 async function isChannelMonitored(channelId) {
     const result = await pool.query('SELECT 1 FROM monitored_channels WHERE channel_id = $1 AND enabled = TRUE', [channelId]);
     return result.rows.length > 0;
+}
+async function getReviewStats() {
+    const total = await pool.query('SELECT COUNT(*) as count FROM tracked_prs');
+    const totalTracked = parseInt(total.rows[0].count, 10);
+    const reviewedNoReminder = await pool.query(`SELECT COUNT(*) as count FROM tracked_prs WHERE has_reviews = TRUE AND COALESCE(reminder_count, 0) = 0`);
+    const reviewedWithoutReminders = parseInt(reviewedNoReminder.rows[0].count, 10);
+    const reviewedWithReminder = await pool.query(`SELECT COUNT(*) as count FROM tracked_prs WHERE has_reviews = TRUE AND COALESCE(reminder_count, 0) > 0`);
+    const reviewedAfterReminders = parseInt(reviewedWithReminder.rows[0].count, 10);
+    const awaiting = await pool.query(`SELECT COUNT(*) as count FROM tracked_prs WHERE pr_closed = FALSE AND (has_reviews = FALSE OR has_reviews IS NULL) AND (is_open = TRUE OR is_open IS NULL)`);
+    const stillAwaiting = parseInt(awaiting.rows[0].count, 10);
+    const closedResult = await pool.query(`SELECT COUNT(*) as count FROM tracked_prs WHERE pr_closed = TRUE`);
+    const closed = parseInt(closedResult.rows[0].count, 10);
+    const breakdown = await pool.query(`
+    SELECT
+      CASE
+        WHEN COALESCE(reminder_count, 0) = 0 THEN '0'
+        WHEN reminder_count = 1 THEN '1'
+        WHEN reminder_count = 2 THEN '2'
+        ELSE '3+'
+      END as reminders,
+      COUNT(*) as count
+    FROM tracked_prs
+    GROUP BY 1
+    ORDER BY MIN(COALESCE(reminder_count, 0))
+  `);
+    const reminderBreakdown = breakdown.rows.map((r) => ({
+        reminders: r.reminders,
+        count: parseInt(r.count, 10),
+    }));
+    const avgResult = await pool.query(`SELECT COALESCE(AVG(reminder_count), 0) as avg FROM tracked_prs WHERE has_reviews = TRUE AND COALESCE(reminder_count, 0) > 0`);
+    const avgRemindersBeforeReview = parseFloat(parseFloat(avgResult.rows[0].avg).toFixed(1));
+    return {
+        totalTracked,
+        reviewedWithoutReminders,
+        reviewedAfterReminders,
+        stillAwaiting,
+        closed,
+        reminderBreakdown,
+        avgRemindersBeforeReview,
+    };
 }
 //# sourceMappingURL=client.js.map

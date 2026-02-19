@@ -1,7 +1,7 @@
 import { App, LogLevel } from '@slack/bolt';
 import { trackPRsFromMessage } from './services/prTracker';
 import { containsPRLink } from './utils/prParser';
-import { addMonitoredChannel, removeMonitoredChannel, getMonitoredChannels, isChannelMonitored, getPendingReminders } from './db/client';
+import { addMonitoredChannel, removeMonitoredChannel, getMonitoredChannels, isChannelMonitored, getPendingReminders, getOpenUnreviewedPRs, getReviewStats } from './db/client';
 import { isChannelAllowed, getAllowedChannelIds } from './services/channelAccessControl';
 
 function formatWaitTime(postedAt: Date): string {
@@ -186,7 +186,7 @@ export function createApp(): App {
         }
 
         case 'pending': {
-          const pendingList = await getPendingReminders();
+          const pendingList = await getOpenUnreviewedPRs();
           if (pendingList.length === 0) {
             await respond({
               text: `No PRs are currently awaiting review.`,
@@ -194,7 +194,9 @@ export function createApp(): App {
           } else {
             const prLines = pendingList.map(pr => {
               const waitStr = formatWaitTime(pr.posted_at);
-              return `• <${pr.pr_url}|${pr.org}/${pr.repo}#${pr.pr_number}> — posted in <#${pr.channel_id}> — waiting *${waitStr}*`;
+              const count = pr.reminder_count || 0;
+              const reminderStr = count === 0 ? 'no reminders sent' : `${count} reminder${count !== 1 ? 's' : ''} sent`;
+              return `• <${pr.pr_url}|${pr.org}/${pr.repo}#${pr.pr_number}> — posted in <#${pr.channel_id}> — waiting *${waitStr}* — ${reminderStr}`;
             }).join('\n');
             await respond({
               text: `*PRs Awaiting Review (${pendingList.length}):*\n\n${prLines}`,
@@ -205,7 +207,7 @@ export function createApp(): App {
 
         case 'status': {
           const channels = await getMonitoredChannels();
-          const pendingPRs = await getPendingReminders();
+          const pendingPRs = await getOpenUnreviewedPRs();
           const isMonitored = await isChannelMonitored(channelId);
 
           // Calculate uptime
@@ -242,6 +244,28 @@ export function createApp(): App {
           break;
         }
 
+        case 'stats': {
+          const stats = await getReviewStats();
+          const pct = (n: number) => stats.totalTracked > 0 ? `(${Math.round((n / stats.totalTracked) * 100)}%)` : '';
+          const breakdownLines = stats.reminderBreakdown.map(
+            b => `• ${b.reminders} reminder${b.reminders !== '1' ? 's' : ''}: ${b.count}`,
+          ).join('\n');
+
+          await respond({
+            text: `*PR Review Statistics:*\n\n` +
+              `*Summary:*\n` +
+              `• Total PRs tracked: ${stats.totalTracked}\n` +
+              `• Reviewed without reminders: ${stats.reviewedWithoutReminders} ${pct(stats.reviewedWithoutReminders)}\n` +
+              `• Reviewed after reminders: ${stats.reviewedAfterReminders} ${pct(stats.reviewedAfterReminders)}\n` +
+              `• Still awaiting review: ${stats.stillAwaiting} ${pct(stats.stillAwaiting)}\n` +
+              `• Closed/merged: ${stats.closed} ${pct(stats.closed)}\n\n` +
+              `*Reminders per PR:*\n` +
+              `${breakdownLines}\n` +
+              `• Average reminders before review: ${stats.avgRemindersBeforeReview}`,
+          });
+          break;
+        }
+
         case 'help':
         default: {
           await respond({
@@ -250,6 +274,7 @@ export function createApp(): App {
               `• \`/pr-monitor remove\` - Stop monitoring this channel\n` +
               `• \`/pr-monitor list\` - Show all monitored channels\n` +
               `• \`/pr-monitor pending\` - Show PRs awaiting review with wait times\n` +
+              `• \`/pr-monitor stats\` - Show review statistics and reminder counts\n` +
               `• \`/pr-monitor status\` - Show current status\n` +
               `• \`/pr-monitor help\` - Show this help message`,
           });

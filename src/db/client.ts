@@ -22,6 +22,7 @@ export interface TrackedPR {
   has_reviews?: boolean;
   is_open?: boolean;
   status_checked_at?: Date;
+  reminder_count?: number;
 }
 
 export interface PRStatusUpdate {
@@ -83,9 +84,25 @@ export async function markReminderSent(id: number): Promise<void> {
  */
 export async function scheduleNextReminder(id: number): Promise<void> {
   await pool.query(
-    `UPDATE tracked_prs SET eligible_reminder_at = NOW() + INTERVAL '2 hours' WHERE id = $1`,
+    `UPDATE tracked_prs SET eligible_reminder_at = NOW() + INTERVAL '2 hours', reminder_count = COALESCE(reminder_count, 0) + 1 WHERE id = $1`,
     [id],
   );
+}
+
+/**
+ * Get all open PRs that haven't received reviews yet (for /pr-monitor pending).
+ * Unlike getPendingReminders(), this is not gated by eligible_reminder_at or reminder_sent.
+ */
+export async function getOpenUnreviewedPRs(): Promise<TrackedPR[]> {
+  const query = `
+    SELECT * FROM tracked_prs
+    WHERE pr_closed = FALSE
+      AND (has_reviews = FALSE OR has_reviews IS NULL)
+      AND (is_open = TRUE OR is_open IS NULL)
+    ORDER BY posted_at ASC
+  `;
+  const result = await pool.query(query);
+  return result.rows;
 }
 
 export async function markPRClosed(id: number): Promise<void> {
@@ -180,6 +197,76 @@ export async function isChannelMonitored(channelId: string): Promise<boolean> {
     [channelId]
   );
   return result.rows.length > 0;
+}
+
+// ========== Statistics Functions ==========
+
+export interface ReviewStats {
+  totalTracked: number;
+  reviewedWithoutReminders: number;
+  reviewedAfterReminders: number;
+  stillAwaiting: number;
+  closed: number;
+  reminderBreakdown: { reminders: string; count: number }[];
+  avgRemindersBeforeReview: number;
+}
+
+export async function getReviewStats(): Promise<ReviewStats> {
+  const total = await pool.query('SELECT COUNT(*) as count FROM tracked_prs');
+  const totalTracked = parseInt(total.rows[0].count, 10);
+
+  const reviewedNoReminder = await pool.query(
+    `SELECT COUNT(*) as count FROM tracked_prs WHERE has_reviews = TRUE AND COALESCE(reminder_count, 0) = 0`,
+  );
+  const reviewedWithoutReminders = parseInt(reviewedNoReminder.rows[0].count, 10);
+
+  const reviewedWithReminder = await pool.query(
+    `SELECT COUNT(*) as count FROM tracked_prs WHERE has_reviews = TRUE AND COALESCE(reminder_count, 0) > 0`,
+  );
+  const reviewedAfterReminders = parseInt(reviewedWithReminder.rows[0].count, 10);
+
+  const awaiting = await pool.query(
+    `SELECT COUNT(*) as count FROM tracked_prs WHERE pr_closed = FALSE AND (has_reviews = FALSE OR has_reviews IS NULL) AND (is_open = TRUE OR is_open IS NULL)`,
+  );
+  const stillAwaiting = parseInt(awaiting.rows[0].count, 10);
+
+  const closedResult = await pool.query(
+    `SELECT COUNT(*) as count FROM tracked_prs WHERE pr_closed = TRUE`,
+  );
+  const closed = parseInt(closedResult.rows[0].count, 10);
+
+  const breakdown = await pool.query(`
+    SELECT
+      CASE
+        WHEN COALESCE(reminder_count, 0) = 0 THEN '0'
+        WHEN reminder_count = 1 THEN '1'
+        WHEN reminder_count = 2 THEN '2'
+        ELSE '3+'
+      END as reminders,
+      COUNT(*) as count
+    FROM tracked_prs
+    GROUP BY 1
+    ORDER BY MIN(COALESCE(reminder_count, 0))
+  `);
+  const reminderBreakdown = breakdown.rows.map((r: any) => ({
+    reminders: r.reminders,
+    count: parseInt(r.count, 10),
+  }));
+
+  const avgResult = await pool.query(
+    `SELECT COALESCE(AVG(reminder_count), 0) as avg FROM tracked_prs WHERE has_reviews = TRUE AND COALESCE(reminder_count, 0) > 0`,
+  );
+  const avgRemindersBeforeReview = parseFloat(parseFloat(avgResult.rows[0].avg).toFixed(1));
+
+  return {
+    totalTracked,
+    reviewedWithoutReminders,
+    reviewedAfterReminders,
+    stillAwaiting,
+    closed,
+    reminderBreakdown,
+    avgRemindersBeforeReview,
+  };
 }
 
 export { pool };

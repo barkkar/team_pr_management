@@ -171,7 +171,7 @@ function createApp() {
                     break;
                 }
                 case 'pending': {
-                    const pendingList = await (0, client_1.getPendingReminders)();
+                    const pendingList = await (0, client_1.getOpenUnreviewedPRs)();
                     if (pendingList.length === 0) {
                         await respond({
                             text: `No PRs are currently awaiting review.`,
@@ -180,7 +180,9 @@ function createApp() {
                     else {
                         const prLines = pendingList.map(pr => {
                             const waitStr = formatWaitTime(pr.posted_at);
-                            return `• <${pr.pr_url}|${pr.org}/${pr.repo}#${pr.pr_number}> — posted in <#${pr.channel_id}> — waiting *${waitStr}*`;
+                            const count = pr.reminder_count || 0;
+                            const reminderStr = count === 0 ? 'no reminders sent' : `${count} reminder${count !== 1 ? 's' : ''} sent`;
+                            return `• <${pr.pr_url}|${pr.org}/${pr.repo}#${pr.pr_number}> — posted in <#${pr.channel_id}> — waiting *${waitStr}* — ${reminderStr}`;
                         }).join('\n');
                         await respond({
                             text: `*PRs Awaiting Review (${pendingList.length}):*\n\n${prLines}`,
@@ -190,7 +192,7 @@ function createApp() {
                 }
                 case 'status': {
                     const channels = await (0, client_1.getMonitoredChannels)();
-                    const pendingPRs = await (0, client_1.getPendingReminders)();
+                    const pendingPRs = await (0, client_1.getOpenUnreviewedPRs)();
                     const isMonitored = await (0, client_1.isChannelMonitored)(channelId);
                     // Calculate uptime
                     const uptimeMs = Date.now() - exports.socketModeStats.startedAt.getTime();
@@ -222,6 +224,24 @@ function createApp() {
                     });
                     break;
                 }
+                case 'stats': {
+                    const stats = await (0, client_1.getReviewStats)();
+                    const pct = (n) => stats.totalTracked > 0 ? `(${Math.round((n / stats.totalTracked) * 100)}%)` : '';
+                    const breakdownLines = stats.reminderBreakdown.map(b => `• ${b.reminders} reminder${b.reminders !== '1' ? 's' : ''}: ${b.count}`).join('\n');
+                    await respond({
+                        text: `*PR Review Statistics:*\n\n` +
+                            `*Summary:*\n` +
+                            `• Total PRs tracked: ${stats.totalTracked}\n` +
+                            `• Reviewed without reminders: ${stats.reviewedWithoutReminders} ${pct(stats.reviewedWithoutReminders)}\n` +
+                            `• Reviewed after reminders: ${stats.reviewedAfterReminders} ${pct(stats.reviewedAfterReminders)}\n` +
+                            `• Still awaiting review: ${stats.stillAwaiting} ${pct(stats.stillAwaiting)}\n` +
+                            `• Closed/merged: ${stats.closed} ${pct(stats.closed)}\n\n` +
+                            `*Reminders per PR:*\n` +
+                            `${breakdownLines}\n` +
+                            `• Average reminders before review: ${stats.avgRemindersBeforeReview}`,
+                    });
+                    break;
+                }
                 case 'help':
                 default: {
                     await respond({
@@ -230,6 +250,7 @@ function createApp() {
                             `• \`/pr-monitor remove\` - Stop monitoring this channel\n` +
                             `• \`/pr-monitor list\` - Show all monitored channels\n` +
                             `• \`/pr-monitor pending\` - Show PRs awaiting review with wait times\n` +
+                            `• \`/pr-monitor stats\` - Show review statistics and reminder counts\n` +
                             `• \`/pr-monitor status\` - Show current status\n` +
                             `• \`/pr-monitor help\` - Show this help message`,
                     });

@@ -226,7 +226,8 @@ launchctl list | grep pr-worker
 | `/pr-monitor add` | Start monitoring the current channel |
 | `/pr-monitor remove` | Stop monitoring the current channel |
 | `/pr-monitor list` | Show all monitored channels |
-| `/pr-monitor pending` | Show PRs awaiting review with wait times |
+| `/pr-monitor pending` | Show PRs awaiting review with wait times and reminder counts |
+| `/pr-monitor stats` | Show review statistics: reviewed without reminders, reminders per PR, averages |
 | `/pr-monitor status` | Show bot status and statistics |
 | `/pr-monitor help` | Show help message |
 
