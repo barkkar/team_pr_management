@@ -77,6 +77,17 @@ export async function markReminderSent(id: number): Promise<void> {
   await pool.query('UPDATE tracked_prs SET reminder_sent = TRUE WHERE id = $1', [id]);
 }
 
+/**
+ * Schedule the next reminder in 2 hours (for recurring reminders).
+ * Keeps reminder_sent = FALSE so the PR stays in the pending pool.
+ */
+export async function scheduleNextReminder(id: number): Promise<void> {
+  await pool.query(
+    `UPDATE tracked_prs SET eligible_reminder_at = NOW() + INTERVAL '2 hours' WHERE id = $1`,
+    [id],
+  );
+}
+
 export async function markPRClosed(id: number): Promise<void> {
   await pool.query('UPDATE tracked_prs SET pr_closed = TRUE WHERE id = $1', [id]);
 }

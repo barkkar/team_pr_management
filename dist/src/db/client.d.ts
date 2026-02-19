@@ -33,6 +33,11 @@ export interface MonitoredChannel {
 export declare function insertTrackedPR(pr: Omit<TrackedPR, 'id' | 'reminder_sent' | 'pr_closed' | 'created_at'>): Promise<TrackedPR | null>;
 export declare function getPendingReminders(): Promise<TrackedPR[]>;
 export declare function markReminderSent(id: number): Promise<void>;
+/**
+ * Schedule the next reminder in 2 hours (for recurring reminders).
+ * Keeps reminder_sent = FALSE so the PR stays in the pending pool.
+ */
+export declare function scheduleNextReminder(id: number): Promise<void>;
 export declare function markPRClosed(id: number): Promise<void>;
 export declare function getTrackedPRByUrl(prUrl: string): Promise<TrackedPR | null>;
 /**

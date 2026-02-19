@@ -1,5 +1,5 @@
 import { App } from '@slack/bolt';
-import { getPendingReminders, markReminderSent, markPRClosed, TrackedPR } from '../db/client';
+import { getPendingReminders, markReminderSent, markPRClosed, scheduleNextReminder, TrackedPR } from '../db/client';
 import { formatTimeAgo } from '../utils/timezone';
 
 /**
@@ -69,8 +69,8 @@ async function processReminder(app: App, pr: TrackedPR): Promise<void> {
     unfurl_links: false,
   });
   
-  await markReminderSent(pr.id);
-  console.log(`  Reminder sent for PR ${pr.pr_url}`);
+  await scheduleNextReminder(pr.id);
+  console.log(`  Reminder sent for PR ${pr.pr_url}, next reminder in 2 hours`);
 }
 
 function buildReminderMessage(pr: TrackedPR, timeAgo: string, apiNotChecked: boolean = false): { text: string; blocks: any[] } {

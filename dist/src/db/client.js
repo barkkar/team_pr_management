@@ -4,6 +4,7 @@ exports.pool = void 0;
 exports.insertTrackedPR = insertTrackedPR;
 exports.getPendingReminders = getPendingReminders;
 exports.markReminderSent = markReminderSent;
+exports.scheduleNextReminder = scheduleNextReminder;
 exports.markPRClosed = markPRClosed;
 exports.getTrackedPRByUrl = getTrackedPRByUrl;
 exports.getPRsNeedingStatusCheck = getPRsNeedingStatusCheck;
@@ -51,6 +52,13 @@ async function getPendingReminders() {
 }
 async function markReminderSent(id) {
     await pool.query('UPDATE tracked_prs SET reminder_sent = TRUE WHERE id = $1', [id]);
+}
+/**
+ * Schedule the next reminder in 2 hours (for recurring reminders).
+ * Keeps reminder_sent = FALSE so the PR stays in the pending pool.
+ */
+async function scheduleNextReminder(id) {
+    await pool.query(`UPDATE tracked_prs SET eligible_reminder_at = NOW() + INTERVAL '2 hours' WHERE id = $1`, [id]);
 }
 async function markPRClosed(id) {
     await pool.query('UPDATE tracked_prs SET pr_closed = TRUE WHERE id = $1', [id]);

@@ -56,8 +56,8 @@ async function processReminder(app, pr) {
         blocks: message.blocks,
         unfurl_links: false,
     });
-    await (0, client_1.markReminderSent)(pr.id);
-    console.log(`  Reminder sent for PR ${pr.pr_url}`);
+    await (0, client_1.scheduleNextReminder)(pr.id);
+    console.log(`  Reminder sent for PR ${pr.pr_url}, next reminder in 2 hours`);
 }
 function buildReminderMessage(pr, timeAgo, apiNotChecked = false) {
     const text = `:attentionspan: Reminder: This PR has been waiting for review for ${timeAgo}`;
