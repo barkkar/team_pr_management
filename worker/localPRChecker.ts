@@ -99,8 +99,9 @@ async function checkPRStatus(pr: PendingPR): Promise<PRStatusResult> {
     );
 
     const isOpen = prResponse.data.state === 'open' && !prResponse.data.merged;
+    const prAuthor: string = prResponse.data.user?.login || '';
 
-    // Get reviews
+    // Get reviews (exclude author's own reviews)
     let hasReviews = false;
     if (isOpen) {
       const reviewsResponse = await axios.get(
@@ -108,11 +109,10 @@ async function checkPRStatus(pr: PendingPR): Promise<PRStatusResult> {
         { headers, timeout: 10000 }
       );
 
-      // Count submitted reviews (not pending)
-      const submittedReviews = (reviewsResponse.data || []).filter(
-        (r: any) => r.state !== 'PENDING'
+      const externalReviews = (reviewsResponse.data || []).filter(
+        (r: any) => r.state !== 'PENDING' && r.user?.login !== prAuthor,
       );
-      hasReviews = submittedReviews.length > 0;
+      hasReviews = externalReviews.length > 0;
     }
 
     return {

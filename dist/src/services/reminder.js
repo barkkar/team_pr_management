@@ -54,9 +54,10 @@ async function processReminder(app, github, pr) {
         }
         console.log(`  No recent worker status, trying direct GitHub API (hostname: ${hostname})`);
         try {
-            isOpen = await github.isPROpen(hostname, pr.org, pr.repo, pr.pr_number);
+            const prDetails = await github.getPRDetails(hostname, pr.org, pr.repo, pr.pr_number);
+            isOpen = prDetails.state === 'open' && !prDetails.merged;
             if (isOpen) {
-                hasReviews = await github.hasReviews(hostname, pr.org, pr.repo, pr.pr_number);
+                hasReviews = await github.hasReviews(hostname, pr.org, pr.repo, pr.pr_number, prDetails.user.login);
             }
         }
         catch (error) {

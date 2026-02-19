@@ -61,16 +61,17 @@ export class GitHubEnterpriseClient {
   }
   
   /**
-   * Check if a PR has received any reviews
-   * Excludes PENDING reviews (drafts that haven't been submitted)
+   * Check if a PR has received any reviews from someone other than the author.
+   * Excludes PENDING reviews and the PR author's own reviews/comments.
    */
-  async hasReviews(hostname: string, org: string, repo: string, prNumber: number): Promise<boolean> {
+  async hasReviews(hostname: string, org: string, repo: string, prNumber: number, prAuthor?: string): Promise<boolean> {
     const reviews = await this.getReviews(hostname, org, repo, prNumber);
-    
-    // Filter out pending reviews - only count submitted reviews
-    const submittedReviews = reviews.filter(r => r.state !== 'PENDING');
-    
-    return submittedReviews.length > 0;
+
+    const externalReviews = reviews.filter(
+      r => r.state !== 'PENDING' && (!prAuthor || r.user.login !== prAuthor),
+    );
+
+    return externalReviews.length > 0;
   }
   
   /**

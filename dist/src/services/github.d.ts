@@ -26,10 +26,10 @@ export declare class GitHubEnterpriseClient {
      */
     getReviews(hostname: string, org: string, repo: string, prNumber: number): Promise<Review[]>;
     /**
-     * Check if a PR has received any reviews
-     * Excludes PENDING reviews (drafts that haven't been submitted)
+     * Check if a PR has received any reviews from someone other than the author.
+     * Excludes PENDING reviews and the PR author's own reviews/comments.
      */
-    hasReviews(hostname: string, org: string, repo: string, prNumber: number): Promise<boolean>;
+    hasReviews(hostname: string, org: string, repo: string, prNumber: number, prAuthor?: string): Promise<boolean>;
     /**
      * Get PR details to check if it's still open
      */

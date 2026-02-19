@@ -75,13 +75,13 @@ async function checkPRStatus(pr) {
         // Get PR details
         const prResponse = await axios_1.default.get(`${baseURL}/repos/${pr.org}/${pr.repo}/pulls/${pr.pr_number}`, { headers, timeout: 10000 });
         const isOpen = prResponse.data.state === 'open' && !prResponse.data.merged;
-        // Get reviews
+        const prAuthor = prResponse.data.user?.login || '';
+        // Get reviews (exclude author's own reviews)
         let hasReviews = false;
         if (isOpen) {
             const reviewsResponse = await axios_1.default.get(`${baseURL}/repos/${pr.org}/${pr.repo}/pulls/${pr.pr_number}/reviews`, { headers, timeout: 10000 });
-            // Count submitted reviews (not pending)
-            const submittedReviews = (reviewsResponse.data || []).filter((r) => r.state !== 'PENDING');
-            hasReviews = submittedReviews.length > 0;
+            const externalReviews = (reviewsResponse.data || []).filter((r) => r.state !== 'PENDING' && r.user?.login !== prAuthor);
+            hasReviews = externalReviews.length > 0;
         }
         return {
             pr_url: pr.pr_url,
