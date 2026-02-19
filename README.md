@@ -90,12 +90,15 @@ Navigate to **OAuth & Permissions** and add these Bot Token Scopes:
 2. Click "Install to Workspace"
 3. Copy the **Bot User OAuth Token** (starts with `xoxb-`)
 
-### 2. Generate GitHub Enterprise Token
+### 2. Generate GitHub Enterprise Token(s)
+
+Generate a token for **each** GHE hostname your PRs come from (e.g., `gitcore.soma.salesforce.com` and `git.soma.salesforce.com`). Tokens are per-instance -- a token from one hostname won't work on another.
 
 1. Go to your GitHub Enterprise settings (e.g., `https://gitcore.soma.salesforce.com/settings/tokens`)
 2. Click "Generate new token"
 3. Select scope: `repo` (full repository access)
 4. Copy the generated token
+5. Repeat for each GHE hostname if your team posts PRs from multiple instances
 
 ### 3. Deploy to Heroku
 
@@ -113,7 +116,8 @@ heroku addons:create heroku-postgresql:essential-0
 heroku config:set SLACK_BOT_TOKEN=xoxb-your-bot-token
 heroku config:set SLACK_SIGNING_SECRET=your-signing-secret
 heroku config:set SLACK_APP_TOKEN=xapp-your-app-token
-heroku config:set GHE_TOKEN=your-github-enterprise-token
+# GitHub Enterprise tokens (use GHE_TOKENS for multiple hosts, or GHE_TOKEN for a single host)
+heroku config:set GHE_TOKENS='{"gitcore.soma.salesforce.com":"token-for-gitcore","git.soma.salesforce.com":"token-for-git"}'
 heroku config:set TZ=America/Los_Angeles
 heroku config:set NODE_ENV=production
 
@@ -160,7 +164,7 @@ The local worker runs on your laptop (behind VPN) to check PR status from intern
 
 3. Configure local `.env`:
    ```
-   GHE_TOKEN=your-github-enterprise-token
+   GHE_TOKENS={"gitcore.soma.salesforce.com":"token-for-gitcore","git.soma.salesforce.com":"token-for-git"}
    HEROKU_API_URL=https://your-app-name.herokuapp.com
    WORKER_API_KEY=<same-key-as-heroku>
    ```
@@ -251,7 +255,8 @@ launchctl list | grep pr-worker
 │   │   └── migrations/           # SQL migrations
 │   └── utils/
 │       ├── timezone.ts           # Business hours logic
-│       └── prParser.ts           # PR URL parser
+│       ├── prParser.ts           # PR URL parser
+│       └── gheTokenResolver.ts   # Per-hostname GHE token resolution
 ├── scripts/
 │   └── checkReminders.ts         # Scheduled job (Heroku Scheduler)
 ├── worker/
@@ -295,17 +300,25 @@ All `/api/*` endpoints require the `X-Worker-API-Key` header.
 | `SLACK_BOT_TOKEN` | Bot User OAuth Token (xoxb-...) |
 | `SLACK_SIGNING_SECRET` | Signing secret from app settings |
 | `SLACK_APP_TOKEN` | App-level token for Socket Mode (xapp-...) |
-| `GHE_TOKEN` | GitHub Enterprise Personal Access Token |
+| `GHE_TOKENS` | JSON map of GHE hostname to token (preferred for multiple GHE instances) |
+| `GHE_TOKEN` | Single GHE token (fallback for hosts not in `GHE_TOKENS`) |
 | `DATABASE_URL` | PostgreSQL connection string (auto-set by Heroku) |
 | `TZ` | Timezone (America/Los_Angeles) |
 | `WORKER_API_KEY` | API key for local worker authentication |
 | `ALLOWED_CHANNEL_IDS` | Comma-separated Slack channel IDs the bot is allowed to read (see [Channel Access Control](#channel-access-control)) |
 
+At least one of `GHE_TOKENS` or `GHE_TOKEN` must be set. If your PRs come from multiple GHE hostnames, use `GHE_TOKENS`:
+
+```bash
+heroku config:set GHE_TOKENS='{"gitcore.soma.salesforce.com":"ghp_abc","git.soma.salesforce.com":"ghp_xyz"}'
+```
+
 ### Local Worker (Required)
 
 | Variable | Description |
 |----------|-------------|
-| `GHE_TOKEN` | GitHub Enterprise Personal Access Token |
+| `GHE_TOKENS` | JSON map of GHE hostname to token (same as Heroku, preferred) |
+| `GHE_TOKEN` | Single GHE token (fallback for hosts not in `GHE_TOKENS`) |
 | `HEROKU_API_URL` | URL of your Heroku app |
 | `WORKER_API_KEY` | Same API key as configured on Heroku |
 

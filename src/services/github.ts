@@ -1,4 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
+import { requireTokenForHost } from '../utils/gheTokenResolver';
 
 interface Review {
   id: number;
@@ -19,34 +20,25 @@ interface PRDetails {
 }
 
 export class GitHubEnterpriseClient {
-  private token: string;
   private clientCache: Map<string, AxiosInstance> = new Map();
-  
-  constructor() {
-    const token = process.env.GHE_TOKEN;
-    
-    if (!token) {
-      throw new Error('GHE_TOKEN environment variable is required');
-    }
-    
-    this.token = token;
-  }
-  
+
   /**
-   * Get or create an axios client for a specific hostname
+   * Get or create an axios client for a specific hostname.
+   * Resolves the correct token per hostname via GHE_TOKENS / GHE_TOKEN.
    */
   private getClient(hostname: string): AxiosInstance {
     if (!this.clientCache.has(hostname)) {
+      const token = requireTokenForHost(hostname);
       const baseURL = `https://${hostname}/api/v3`;
       console.log(`Creating GitHub API client for: ${baseURL}`);
       
       this.clientCache.set(hostname, axios.create({
         baseURL,
         headers: {
-          Authorization: `token ${this.token}`,
+          Authorization: `token ${token}`,
           Accept: 'application/vnd.github.v3+json',
         },
-        timeout: 10000, // 10 second timeout
+        timeout: 10000,
       }));
     }
     return this.clientCache.get(hostname)!;

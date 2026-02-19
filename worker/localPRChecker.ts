@@ -12,11 +12,13 @@
  * Required environment variables:
  *   HEROKU_API_URL    - URL of your Heroku app (e.g., https://pr-manager.herokuapp.com)
  *   WORKER_API_KEY    - API key for authentication (must match Heroku config)
- *   GHE_TOKEN         - GitHub Enterprise personal access token
+ *   GHE_TOKEN         - GitHub Enterprise personal access token (single-host fallback)
+ *   GHE_TOKENS        - JSON map of hostname->token for multi-host (optional, preferred)
  */
 
 import 'dotenv/config';
 import axios from 'axios';
+import { requireTokenForHost } from '../src/utils/gheTokenResolver';
 
 function log(message: string): void {
   console.log(`[${new Date().toISOString()}] ${message}`);
@@ -29,7 +31,6 @@ function logError(message: string): void {
 // Configuration
 const HEROKU_API_URL = process.env.HEROKU_API_URL;
 const WORKER_API_KEY = process.env.WORKER_API_KEY;
-const GHE_TOKEN = process.env.GHE_TOKEN;
 const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 interface PendingPR {
@@ -84,18 +85,17 @@ async function checkPRStatus(pr: PendingPR): Promise<PRStatusResult> {
   }
 
   const baseURL = `https://${hostname}/api/v3`;
-  
+  const token = requireTokenForHost(hostname);
+  const headers = {
+    Authorization: `token ${token}`,
+    Accept: 'application/vnd.github.v3+json',
+  };
+
   try {
     // Get PR details
     const prResponse = await axios.get(
       `${baseURL}/repos/${pr.org}/${pr.repo}/pulls/${pr.pr_number}`,
-      {
-        headers: {
-          Authorization: `token ${GHE_TOKEN}`,
-          Accept: 'application/vnd.github.v3+json',
-        },
-        timeout: 10000,
-      }
+      { headers, timeout: 10000 }
     );
 
     const isOpen = prResponse.data.state === 'open' && !prResponse.data.merged;
@@ -105,13 +105,7 @@ async function checkPRStatus(pr: PendingPR): Promise<PRStatusResult> {
     if (isOpen) {
       const reviewsResponse = await axios.get(
         `${baseURL}/repos/${pr.org}/${pr.repo}/pulls/${pr.pr_number}/reviews`,
-        {
-          headers: {
-            Authorization: `token ${GHE_TOKEN}`,
-            Accept: 'application/vnd.github.v3+json',
-          },
-          timeout: 10000,
-        }
+        { headers, timeout: 10000 }
       );
 
       // Count submitted reviews (not pending)
@@ -182,8 +176,8 @@ async function runWorker(): Promise<void> {
     process.exit(1);
   }
 
-  if (!GHE_TOKEN) {
-    logError('ERROR: GHE_TOKEN environment variable is required');
+  if (!process.env.GHE_TOKEN && !process.env.GHE_TOKENS) {
+    logError('ERROR: GHE_TOKEN or GHE_TOKENS environment variable is required');
     process.exit(1);
   }
 

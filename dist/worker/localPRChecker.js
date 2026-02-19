@@ -13,7 +13,8 @@
  * Required environment variables:
  *   HEROKU_API_URL    - URL of your Heroku app (e.g., https://pr-manager.herokuapp.com)
  *   WORKER_API_KEY    - API key for authentication (must match Heroku config)
- *   GHE_TOKEN         - GitHub Enterprise personal access token
+ *   GHE_TOKEN         - GitHub Enterprise personal access token (single-host fallback)
+ *   GHE_TOKENS        - JSON map of hostname->token for multi-host (optional, preferred)
  */
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
@@ -21,6 +22,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
 const axios_1 = __importDefault(require("axios"));
+const gheTokenResolver_1 = require("../src/utils/gheTokenResolver");
 function log(message) {
     console.log(`[${new Date().toISOString()}] ${message}`);
 }
@@ -30,7 +32,6 @@ function logError(message) {
 // Configuration
 const HEROKU_API_URL = process.env.HEROKU_API_URL;
 const WORKER_API_KEY = process.env.WORKER_API_KEY;
-const GHE_TOKEN = process.env.GHE_TOKEN;
 const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 /**
  * Extract hostname from a PR URL
@@ -65,26 +66,19 @@ async function checkPRStatus(pr) {
         };
     }
     const baseURL = `https://${hostname}/api/v3`;
+    const token = (0, gheTokenResolver_1.requireTokenForHost)(hostname);
+    const headers = {
+        Authorization: `token ${token}`,
+        Accept: 'application/vnd.github.v3+json',
+    };
     try {
         // Get PR details
-        const prResponse = await axios_1.default.get(`${baseURL}/repos/${pr.org}/${pr.repo}/pulls/${pr.pr_number}`, {
-            headers: {
-                Authorization: `token ${GHE_TOKEN}`,
-                Accept: 'application/vnd.github.v3+json',
-            },
-            timeout: 10000,
-        });
+        const prResponse = await axios_1.default.get(`${baseURL}/repos/${pr.org}/${pr.repo}/pulls/${pr.pr_number}`, { headers, timeout: 10000 });
         const isOpen = prResponse.data.state === 'open' && !prResponse.data.merged;
         // Get reviews
         let hasReviews = false;
         if (isOpen) {
-            const reviewsResponse = await axios_1.default.get(`${baseURL}/repos/${pr.org}/${pr.repo}/pulls/${pr.pr_number}/reviews`, {
-                headers: {
-                    Authorization: `token ${GHE_TOKEN}`,
-                    Accept: 'application/vnd.github.v3+json',
-                },
-                timeout: 10000,
-            });
+            const reviewsResponse = await axios_1.default.get(`${baseURL}/repos/${pr.org}/${pr.repo}/pulls/${pr.pr_number}/reviews`, { headers, timeout: 10000 });
             // Count submitted reviews (not pending)
             const submittedReviews = (reviewsResponse.data || []).filter((r) => r.state !== 'PENDING');
             hasReviews = submittedReviews.length > 0;
@@ -139,8 +133,8 @@ async function runWorker() {
         logError('ERROR: WORKER_API_KEY environment variable is required');
         process.exit(1);
     }
-    if (!GHE_TOKEN) {
-        logError('ERROR: GHE_TOKEN environment variable is required');
+    if (!process.env.GHE_TOKEN && !process.env.GHE_TOKENS) {
+        logError('ERROR: GHE_TOKEN or GHE_TOKENS environment variable is required');
         process.exit(1);
     }
     try {

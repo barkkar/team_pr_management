@@ -12,7 +12,8 @@
  * Required environment variables:
  *   HEROKU_API_URL    - URL of your Heroku app (e.g., https://pr-manager.herokuapp.com)
  *   WORKER_API_KEY    - API key for authentication (must match Heroku config)
- *   GHE_TOKEN         - GitHub Enterprise personal access token
+ *   GHE_TOKEN         - GitHub Enterprise personal access token (single-host fallback)
+ *   GHE_TOKENS        - JSON map of hostname->token for multi-host (optional, preferred)
  */
 import 'dotenv/config';
 //# sourceMappingURL=localPRChecker.d.ts.map

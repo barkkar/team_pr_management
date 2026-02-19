@@ -16,10 +16,14 @@ async function main() {
     console.log('Starting scheduled job...');
     console.log(`Time: ${new Date().toISOString()}`);
     // Validate required environment variables
-    const required = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'GHE_TOKEN', 'DATABASE_URL', 'ALLOWED_CHANNEL_IDS'];
+    const required = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'DATABASE_URL', 'ALLOWED_CHANNEL_IDS'];
     const missing = required.filter((key) => !process.env[key]);
     if (missing.length > 0) {
         console.error(`Missing required environment variables: ${missing.join(', ')}`);
+        process.exit(1);
+    }
+    if (!process.env.GHE_TOKEN && !process.env.GHE_TOKENS) {
+        console.error('Missing required environment variable: GHE_TOKEN or GHE_TOKENS (at least one must be set)');
         process.exit(1);
     }
     // Create Slack Web API client for polling

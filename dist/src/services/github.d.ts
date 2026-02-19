@@ -15,11 +15,10 @@ interface PRDetails {
     };
 }
 export declare class GitHubEnterpriseClient {
-    private token;
     private clientCache;
-    constructor();
     /**
-     * Get or create an axios client for a specific hostname
+     * Get or create an axios client for a specific hostname.
+     * Resolves the correct token per hostname via GHE_TOKENS / GHE_TOKEN.
      */
     private getClient;
     /**

@@ -5,29 +5,27 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.GitHubEnterpriseClient = void 0;
 const axios_1 = __importDefault(require("axios"));
+const gheTokenResolver_1 = require("../utils/gheTokenResolver");
 class GitHubEnterpriseClient {
     constructor() {
         this.clientCache = new Map();
-        const token = process.env.GHE_TOKEN;
-        if (!token) {
-            throw new Error('GHE_TOKEN environment variable is required');
-        }
-        this.token = token;
     }
     /**
-     * Get or create an axios client for a specific hostname
+     * Get or create an axios client for a specific hostname.
+     * Resolves the correct token per hostname via GHE_TOKENS / GHE_TOKEN.
      */
     getClient(hostname) {
         if (!this.clientCache.has(hostname)) {
+            const token = (0, gheTokenResolver_1.requireTokenForHost)(hostname);
             const baseURL = `https://${hostname}/api/v3`;
             console.log(`Creating GitHub API client for: ${baseURL}`);
             this.clientCache.set(hostname, axios_1.default.create({
                 baseURL,
                 headers: {
-                    Authorization: `token ${this.token}`,
+                    Authorization: `token ${token}`,
                     Accept: 'application/vnd.github.v3+json',
                 },
-                timeout: 10000, // 10 second timeout
+                timeout: 10000,
             }));
         }
         return this.clientCache.get(hostname);

@@ -34,11 +34,16 @@ function validateApiKey(req: http.IncomingMessage): boolean {
 
 async function main(): Promise<void> {
   // Validate required environment variables
-  const required = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'SLACK_APP_TOKEN', 'GHE_TOKEN', 'ALLOWED_CHANNEL_IDS'];
+  const required = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'SLACK_APP_TOKEN', 'ALLOWED_CHANNEL_IDS'];
   const missing = required.filter((key) => !process.env[key]);
 
   if (missing.length > 0) {
     console.error(`Missing required environment variables: ${missing.join(', ')}`);
+    process.exit(1);
+  }
+
+  if (!process.env.GHE_TOKEN && !process.env.GHE_TOKENS) {
+    console.error('Missing required environment variable: GHE_TOKEN or GHE_TOKENS (at least one must be set)');
     process.exit(1);
   }
 
