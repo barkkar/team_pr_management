@@ -11,7 +11,8 @@
     "migrate": "node dist/src/db/migrate.js",
     "heroku-postbuild": "echo 'Build skipped - using pre-compiled dist'",
     "worker": "node dist/worker/localPRChecker.js",
-    "worker:watch": "node dist/worker/localPRChecker.js --watch"
+    "worker:watch": "node dist/worker/localPRChecker.js --watch",
+    "delete-bot-messages": "npx ts-node scripts/deleteBotMessages.ts"
   },
   "engines": {
     "node": "20.x",
