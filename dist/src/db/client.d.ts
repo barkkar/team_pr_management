@@ -48,8 +48,7 @@ export declare function getTrackedPRByUrl(prUrl: string): Promise<TrackedPR | nu
 /**
  * Get PRs that need status checking by the worker
  * Returns PRs that:
- * - Haven't had reminder sent
- * - Aren't closed
+ * - Are open or unknown (not known to be closed)
  * - Haven't been checked in the last 5 minutes
  */
 export declare function getPRsNeedingStatusCheck(): Promise<TrackedPR[]>;

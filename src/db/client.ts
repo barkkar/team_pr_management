@@ -117,15 +117,13 @@ export async function getTrackedPRByUrl(prUrl: string): Promise<TrackedPR | null
 /**
  * Get PRs that need status checking by the worker
  * Returns PRs that:
- * - Haven't had reminder sent
- * - Aren't closed
+ * - Are open or unknown (not known to be closed)
  * - Haven't been checked in the last 5 minutes
  */
 export async function getPRsNeedingStatusCheck(): Promise<TrackedPR[]> {
   const query = `
     SELECT * FROM tracked_prs
-    WHERE reminder_sent = FALSE
-      AND (is_open = TRUE OR is_open IS NULL)
+    WHERE (is_open = TRUE OR is_open IS NULL)
       AND (status_checked_at IS NULL OR status_checked_at < NOW() - INTERVAL '5 minutes')
     ORDER BY status_checked_at ASC NULLS FIRST, created_at ASC
     LIMIT 50
