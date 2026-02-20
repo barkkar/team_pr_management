@@ -12,7 +12,8 @@
     "heroku-postbuild": "echo 'Build skipped - using pre-compiled dist'",
     "worker": "node dist/worker/localPRChecker.js",
     "worker:watch": "node dist/worker/localPRChecker.js --watch",
-    "delete-bot-messages": "npx ts-node scripts/deleteBotMessages.ts"
+    "delete-bot-messages": "npx ts-node scripts/deleteBotMessages.ts",
+    "test-ghe": "node dist/scripts/testGheConnectivity.js"
   },
   "engines": {
     "node": "20.x",
