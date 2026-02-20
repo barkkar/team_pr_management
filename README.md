@@ -8,7 +8,7 @@ A Slack bot that monitors team channels for GitHub Enterprise PR links and sends
 - Adds a :robot_face: reaction to acknowledge PR posts
 - Tracks PRs and checks review status via GitHub Enterprise API
 - Sends reminder after 2 hours if no reviews received
-- Respects business hours: PRs posted after 4 PM PST wait until 10 AM next day
+- Respects business hours: reminders sent only 9 AM - 5 PM PST (Mon-Fri)
 - Skips weekends for reminder scheduling
 - **Slash commands** to configure which channels to monitor
 - **Local VPN worker** to check PR status from internal GitHub Enterprise
@@ -236,7 +236,7 @@ launchctl list | grep pr-worker
 1. In a Slack channel, run `/pr-monitor add` to start monitoring
 2. When someone posts a PR link (e.g., `https://gitcore.soma.salesforce.com/org/repo/pull/123`), the bot adds a :robot_face: reaction
 3. The local worker checks PR status every 5 minutes and reports to Heroku
-4. After 2 hours (or 10 AM next day if posted after 4 PM PST), if no reviews are found, a reminder is posted
+4. After 2 hours (or 9 AM next business day if posted after 5 PM PST), if no reviews are found, a reminder is posted (only during 9 AM - 5 PM PST)
 
 ## Project Structure
 

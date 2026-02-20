@@ -1,15 +1,21 @@
 import { App } from '@slack/bolt';
 import { getPendingReminders, markReminderSent, markPRClosed, scheduleNextReminder, TrackedPR } from '../db/client';
-import { formatTimeAgo } from '../utils/timezone';
+import { formatTimeAgo, isWithinBusinessHours, getNextReminderEligibleTime } from '../utils/timezone';
 
 /**
  * Process pending reminders and send messages for PRs without reviews.
  * Uses only worker-reported status from the database. Heroku cannot reach
  * internal GitHub Enterprise; the local worker must be running to report status.
+ * Reminders are only sent between 9 AM - 5 PM PST (Mon-Fri).
  */
 export async function processPendingReminders(app: App): Promise<void> {
   console.log('Checking for pending PR reminders...');
-  
+
+  if (!isWithinBusinessHours()) {
+    console.log('Outside business hours (9 AM - 5 PM PST). Skipping reminders.');
+    return;
+  }
+
   const pendingPRs = await getPendingReminders();
   
   console.log(`Found ${pendingPRs.length} PRs eligible for reminders`);
@@ -69,8 +75,9 @@ async function processReminder(app: App, pr: TrackedPR): Promise<void> {
     unfurl_links: false,
   });
   
-  await scheduleNextReminder(pr.id);
-  console.log(`  Reminder sent for PR ${pr.pr_url}, next reminder in 2 hours`);
+  const nextAt = getNextReminderEligibleTime();
+  await scheduleNextReminder(pr.id, nextAt);
+  console.log(`  Reminder sent for PR ${pr.pr_url}, next reminder at ${nextAt.toISOString()}`);
 }
 
 function buildReminderMessage(pr: TrackedPR, timeAgo: string, apiNotChecked: boolean = false): { text: string; blocks: any[] } {

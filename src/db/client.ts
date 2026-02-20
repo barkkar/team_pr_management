@@ -78,14 +78,22 @@ export async function markReminderSent(id: number): Promise<void> {
 }
 
 /**
- * Schedule the next reminder in 2 hours (for recurring reminders).
+ * Schedule the next reminder (for recurring reminders).
  * Keeps reminder_sent = FALSE so the PR stays in the pending pool.
+ * When nextAt is provided, uses that time (e.g. from getNextReminderEligibleTime for 9-5 PST).
  */
-export async function scheduleNextReminder(id: number): Promise<void> {
-  await pool.query(
-    `UPDATE tracked_prs SET eligible_reminder_at = NOW() + INTERVAL '2 hours', reminder_count = COALESCE(reminder_count, 0) + 1 WHERE id = $1`,
-    [id],
-  );
+export async function scheduleNextReminder(id: number, nextAt?: Date): Promise<void> {
+  if (nextAt) {
+    await pool.query(
+      `UPDATE tracked_prs SET eligible_reminder_at = $2, reminder_count = COALESCE(reminder_count, 0) + 1 WHERE id = $1`,
+      [id, nextAt],
+    );
+  } else {
+    await pool.query(
+      `UPDATE tracked_prs SET eligible_reminder_at = NOW() + INTERVAL '2 hours', reminder_count = COALESCE(reminder_count, 0) + 1 WHERE id = $1`,
+      [id],
+    );
+  }
 }
 
 /**

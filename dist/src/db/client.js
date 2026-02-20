@@ -56,11 +56,17 @@ async function markReminderSent(id) {
     await pool.query('UPDATE tracked_prs SET reminder_sent = TRUE WHERE id = $1', [id]);
 }
 /**
- * Schedule the next reminder in 2 hours (for recurring reminders).
+ * Schedule the next reminder (for recurring reminders).
  * Keeps reminder_sent = FALSE so the PR stays in the pending pool.
+ * When nextAt is provided, uses that time (e.g. from getNextReminderEligibleTime for 9-5 PST).
  */
-async function scheduleNextReminder(id) {
-    await pool.query(`UPDATE tracked_prs SET eligible_reminder_at = NOW() + INTERVAL '2 hours', reminder_count = COALESCE(reminder_count, 0) + 1 WHERE id = $1`, [id]);
+async function scheduleNextReminder(id, nextAt) {
+    if (nextAt) {
+        await pool.query(`UPDATE tracked_prs SET eligible_reminder_at = $2, reminder_count = COALESCE(reminder_count, 0) + 1 WHERE id = $1`, [id, nextAt]);
+    }
+    else {
+        await pool.query(`UPDATE tracked_prs SET eligible_reminder_at = NOW() + INTERVAL '2 hours', reminder_count = COALESCE(reminder_count, 0) + 1 WHERE id = $1`, [id]);
+    }
 }
 /**
  * Get all open PRs that haven't received reviews yet (for /pr-monitor pending).

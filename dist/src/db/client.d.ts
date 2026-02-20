@@ -34,10 +34,11 @@ export declare function insertTrackedPR(pr: Omit<TrackedPR, 'id' | 'reminder_sen
 export declare function getPendingReminders(): Promise<TrackedPR[]>;
 export declare function markReminderSent(id: number): Promise<void>;
 /**
- * Schedule the next reminder in 2 hours (for recurring reminders).
+ * Schedule the next reminder (for recurring reminders).
  * Keeps reminder_sent = FALSE so the PR stays in the pending pool.
+ * When nextAt is provided, uses that time (e.g. from getNextReminderEligibleTime for 9-5 PST).
  */
-export declare function scheduleNextReminder(id: number): Promise<void>;
+export declare function scheduleNextReminder(id: number, nextAt?: Date): Promise<void>;
 /**
  * Get all open PRs that haven't received reviews yet (for /pr-monitor pending).
  * Unlike getPendingReminders(), this is not gated by eligible_reminder_at or reminder_sent.

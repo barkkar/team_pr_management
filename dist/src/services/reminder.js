@@ -7,9 +7,14 @@ const timezone_1 = require("../utils/timezone");
  * Process pending reminders and send messages for PRs without reviews.
  * Uses only worker-reported status from the database. Heroku cannot reach
  * internal GitHub Enterprise; the local worker must be running to report status.
+ * Reminders are only sent between 9 AM - 5 PM PST (Mon-Fri).
  */
 async function processPendingReminders(app) {
     console.log('Checking for pending PR reminders...');
+    if (!(0, timezone_1.isWithinBusinessHours)()) {
+        console.log('Outside business hours (9 AM - 5 PM PST). Skipping reminders.');
+        return;
+    }
     const pendingPRs = await (0, client_1.getPendingReminders)();
     console.log(`Found ${pendingPRs.length} PRs eligible for reminders`);
     for (const pr of pendingPRs) {
@@ -56,8 +61,9 @@ async function processReminder(app, pr) {
         blocks: message.blocks,
         unfurl_links: false,
     });
-    await (0, client_1.scheduleNextReminder)(pr.id);
-    console.log(`  Reminder sent for PR ${pr.pr_url}, next reminder in 2 hours`);
+    const nextAt = (0, timezone_1.getNextReminderEligibleTime)();
+    await (0, client_1.scheduleNextReminder)(pr.id, nextAt);
+    console.log(`  Reminder sent for PR ${pr.pr_url}, next reminder at ${nextAt.toISOString()}`);
 }
 function buildReminderMessage(pr, timeAgo, apiNotChecked = false) {
     const text = `:attentionspan: Reminder: This PR has been waiting for review for ${timeAgo}`;
