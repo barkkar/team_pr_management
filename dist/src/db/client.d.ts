@@ -11,7 +11,6 @@ export interface TrackedPR {
     posted_at: Date;
     eligible_reminder_at: Date;
     reminder_sent: boolean;
-    pr_closed: boolean;
     created_at: Date;
     has_reviews?: boolean;
     is_open?: boolean;
@@ -31,7 +30,7 @@ export interface MonitoredChannel {
     added_at: Date;
     enabled: boolean;
 }
-export declare function insertTrackedPR(pr: Omit<TrackedPR, 'id' | 'reminder_sent' | 'pr_closed' | 'created_at'>): Promise<TrackedPR | null>;
+export declare function insertTrackedPR(pr: Omit<TrackedPR, 'id' | 'reminder_sent' | 'created_at'>): Promise<TrackedPR | null>;
 export declare function getPendingReminders(): Promise<TrackedPR[]>;
 export declare function markReminderSent(id: number): Promise<void>;
 /**

@@ -16,7 +16,6 @@ export interface TrackedPR {
   posted_at: Date;
   eligible_reminder_at: Date;
   reminder_sent: boolean;
-  pr_closed: boolean;
   created_at: Date;
   // New fields for worker status
   has_reviews?: boolean;
@@ -40,7 +39,7 @@ export interface MonitoredChannel {
   enabled: boolean;
 }
 
-export async function insertTrackedPR(pr: Omit<TrackedPR, 'id' | 'reminder_sent' | 'pr_closed' | 'created_at'>): Promise<TrackedPR | null> {
+export async function insertTrackedPR(pr: Omit<TrackedPR, 'id' | 'reminder_sent' | 'created_at'>): Promise<TrackedPR | null> {
   const query = `
     INSERT INTO tracked_prs (pr_url, org, repo, pr_number, channel_id, message_ts, posted_at, eligible_reminder_at)
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -66,7 +65,7 @@ export async function getPendingReminders(): Promise<TrackedPR[]> {
   const query = `
     SELECT * FROM tracked_prs
     WHERE reminder_sent = FALSE
-      AND pr_closed = FALSE
+      AND (is_open = TRUE OR is_open IS NULL)
       AND eligible_reminder_at <= NOW()
     ORDER BY eligible_reminder_at ASC
   `;
@@ -96,9 +95,8 @@ export async function scheduleNextReminder(id: number): Promise<void> {
 export async function getOpenUnreviewedPRs(): Promise<TrackedPR[]> {
   const query = `
     SELECT * FROM tracked_prs
-    WHERE pr_closed = FALSE
+    WHERE (is_open = TRUE OR is_open IS NULL)
       AND (has_reviews = FALSE OR has_reviews IS NULL)
-      AND (is_open = TRUE OR is_open IS NULL)
     ORDER BY posted_at ASC
   `;
   const result = await pool.query(query);
@@ -106,7 +104,7 @@ export async function getOpenUnreviewedPRs(): Promise<TrackedPR[]> {
 }
 
 export async function markPRClosed(id: number): Promise<void> {
-  await pool.query('UPDATE tracked_prs SET pr_closed = TRUE WHERE id = $1', [id]);
+  await pool.query('UPDATE tracked_prs SET is_open = FALSE WHERE id = $1', [id]);
 }
 
 export async function getTrackedPRByUrl(prUrl: string): Promise<TrackedPR | null> {
@@ -127,7 +125,7 @@ export async function getPRsNeedingStatusCheck(): Promise<TrackedPR[]> {
   const query = `
     SELECT * FROM tracked_prs
     WHERE reminder_sent = FALSE
-      AND pr_closed = FALSE
+      AND (is_open = TRUE OR is_open IS NULL)
       AND (status_checked_at IS NULL OR status_checked_at < NOW() - INTERVAL '5 minutes')
     ORDER BY status_checked_at ASC NULLS FIRST, created_at ASC
     LIMIT 50
@@ -144,8 +142,7 @@ export async function updatePRStatus(prUrl: string, isOpen: boolean, hasReviews:
     UPDATE tracked_prs 
     SET is_open = $2, 
         has_reviews = $3, 
-        status_checked_at = NOW(),
-        pr_closed = CASE WHEN $2 = FALSE THEN TRUE ELSE pr_closed END
+        status_checked_at = NOW()
     WHERE pr_url = $1
   `;
   await pool.query(query, [prUrl, isOpen, hasReviews]);
@@ -226,12 +223,12 @@ export async function getReviewStats(): Promise<ReviewStats> {
   const reviewedAfterReminders = parseInt(reviewedWithReminder.rows[0].count, 10);
 
   const awaiting = await pool.query(
-    `SELECT COUNT(*) as count FROM tracked_prs WHERE pr_closed = FALSE AND (has_reviews = FALSE OR has_reviews IS NULL) AND (is_open = TRUE OR is_open IS NULL)`,
+    `SELECT COUNT(*) as count FROM tracked_prs WHERE (is_open = TRUE OR is_open IS NULL) AND (has_reviews = FALSE OR has_reviews IS NULL)`,
   );
   const stillAwaiting = parseInt(awaiting.rows[0].count, 10);
 
   const closedResult = await pool.query(
-    `SELECT COUNT(*) as count FROM tracked_prs WHERE pr_closed = TRUE`,
+    `SELECT COUNT(*) as count FROM tracked_prs WHERE is_open = FALSE`,
   );
   const closed = parseInt(closedResult.rows[0].count, 10);
 

@@ -45,7 +45,7 @@ async function getPendingReminders() {
     const query = `
     SELECT * FROM tracked_prs
     WHERE reminder_sent = FALSE
-      AND pr_closed = FALSE
+      AND (is_open = TRUE OR is_open IS NULL)
       AND eligible_reminder_at <= NOW()
     ORDER BY eligible_reminder_at ASC
   `;
@@ -69,16 +69,15 @@ async function scheduleNextReminder(id) {
 async function getOpenUnreviewedPRs() {
     const query = `
     SELECT * FROM tracked_prs
-    WHERE pr_closed = FALSE
+    WHERE (is_open = TRUE OR is_open IS NULL)
       AND (has_reviews = FALSE OR has_reviews IS NULL)
-      AND (is_open = TRUE OR is_open IS NULL)
     ORDER BY posted_at ASC
   `;
     const result = await pool.query(query);
     return result.rows;
 }
 async function markPRClosed(id) {
-    await pool.query('UPDATE tracked_prs SET pr_closed = TRUE WHERE id = $1', [id]);
+    await pool.query('UPDATE tracked_prs SET is_open = FALSE WHERE id = $1', [id]);
 }
 async function getTrackedPRByUrl(prUrl) {
     const result = await pool.query('SELECT * FROM tracked_prs WHERE pr_url = $1', [prUrl]);
@@ -96,7 +95,7 @@ async function getPRsNeedingStatusCheck() {
     const query = `
     SELECT * FROM tracked_prs
     WHERE reminder_sent = FALSE
-      AND pr_closed = FALSE
+      AND (is_open = TRUE OR is_open IS NULL)
       AND (status_checked_at IS NULL OR status_checked_at < NOW() - INTERVAL '5 minutes')
     ORDER BY status_checked_at ASC NULLS FIRST, created_at ASC
     LIMIT 50
@@ -112,8 +111,7 @@ async function updatePRStatus(prUrl, isOpen, hasReviews) {
     UPDATE tracked_prs 
     SET is_open = $2, 
         has_reviews = $3, 
-        status_checked_at = NOW(),
-        pr_closed = CASE WHEN $2 = FALSE THEN TRUE ELSE pr_closed END
+        status_checked_at = NOW()
     WHERE pr_url = $1
   `;
     await pool.query(query, [prUrl, isOpen, hasReviews]);
@@ -160,9 +158,9 @@ async function getReviewStats() {
     const reviewedWithoutReminders = parseInt(reviewedNoReminder.rows[0].count, 10);
     const reviewedWithReminder = await pool.query(`SELECT COUNT(*) as count FROM tracked_prs WHERE has_reviews = TRUE AND COALESCE(reminder_count, 0) > 0`);
     const reviewedAfterReminders = parseInt(reviewedWithReminder.rows[0].count, 10);
-    const awaiting = await pool.query(`SELECT COUNT(*) as count FROM tracked_prs WHERE pr_closed = FALSE AND (has_reviews = FALSE OR has_reviews IS NULL) AND (is_open = TRUE OR is_open IS NULL)`);
+    const awaiting = await pool.query(`SELECT COUNT(*) as count FROM tracked_prs WHERE (is_open = TRUE OR is_open IS NULL) AND (has_reviews = FALSE OR has_reviews IS NULL)`);
     const stillAwaiting = parseInt(awaiting.rows[0].count, 10);
-    const closedResult = await pool.query(`SELECT COUNT(*) as count FROM tracked_prs WHERE pr_closed = TRUE`);
+    const closedResult = await pool.query(`SELECT COUNT(*) as count FROM tracked_prs WHERE is_open = FALSE`);
     const closed = parseInt(closedResult.rows[0].count, 10);
     const breakdown = await pool.query(`
     SELECT
