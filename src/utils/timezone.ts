@@ -29,7 +29,6 @@ export function getEligibleReminderTime(postedAt: Date): Date {
     while (nextDay.weekday === 6 || nextDay.weekday === 7) {
       nextDay = nextDay.plus({ days: 1 });
     }
-    
     return nextDay.toJSDate();
   } else {
     // Posted before 4 PM - eligible after 2 hours
@@ -51,7 +50,6 @@ export function getEligibleReminderTime(postedAt: Date): Date {
       
       return nextDay.toJSDate();
     }
-    
     return eligibleTime.toJSDate();
   }
 }

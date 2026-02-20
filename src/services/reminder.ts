@@ -17,7 +17,7 @@ export async function processPendingReminders(app: App): Promise<void> {
   }
 
   const pendingPRs = await getPendingReminders();
-  
+
   console.log(`Found ${pendingPRs.length} PRs eligible for reminders`);
   
   for (const pr of pendingPRs) {
@@ -64,7 +64,7 @@ async function processReminder(app: App, pr: TrackedPR): Promise<void> {
   
   // No reviews - send reminder
   console.log(`  Sending reminder for PR ${pr.pr_url}`);
-  
+
   const timeAgo = formatTimeAgo(pr.posted_at);
   const message = buildReminderMessage(pr, timeAgo, false);
   

@@ -112,7 +112,7 @@ async function pollChannel(client: WebClient, channelId: string, channelName: st
       console.log(`[Polling] Found PR link in message from ${message.user}`);
 
       const postedAt = new Date(parseFloat(message.ts) * 1000);
-      
+
       try {
         const result = await trackPRsFromMessage(message.text, channelId, message.ts, postedAt);
         

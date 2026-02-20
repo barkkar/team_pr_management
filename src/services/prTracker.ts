@@ -24,7 +24,6 @@ export async function trackPRsFromMessage(
   
   for (const pr of prs) {
     const eligibleAt = getEligibleReminderTime(postedAt);
-    
     const inserted = await insertTrackedPR({
       pr_url: pr.url,
       org: pr.org,
