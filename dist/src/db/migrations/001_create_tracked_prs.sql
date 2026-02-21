@@ -14,9 +14,7 @@ CREATE TABLE IF NOT EXISTS tracked_prs (
   created_at TIMESTAMP DEFAULT NOW()
 );
 
--- Index for efficient querying of pending reminders
-CREATE INDEX IF NOT EXISTS idx_tracked_prs_pending ON tracked_prs (eligible_reminder_at)
-  WHERE reminder_sent = FALSE AND pr_closed = FALSE;
+-- Index for pending reminders is created/updated in migration 006
 
 -- Index for looking up PRs by URL
 CREATE INDEX IF NOT EXISTS idx_tracked_prs_url ON tracked_prs (pr_url);

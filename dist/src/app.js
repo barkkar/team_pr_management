@@ -242,6 +242,42 @@ function createApp() {
                     });
                     break;
                 }
+                case 'harvest-status': {
+                    // Show AI knowledge base harvest status
+                    try {
+                        const harvestRows = await client_1.pool.query('SELECT org, repo, last_harvested_pr_number, last_repo_harvest_sha, last_harvested_at, last_repo_harvested_at FROM harvest_state ORDER BY org, repo');
+                        const reviewCount = await client_1.pool.query('SELECT COUNT(*) as count FROM pr_reviews');
+                        const fileCount = await client_1.pool.query('SELECT COUNT(*) as count FROM pr_files');
+                        const embeddingCount = await client_1.pool.query('SELECT COUNT(*) as count FROM pr_embeddings');
+                        const repoKnowledgeCount = await client_1.pool.query('SELECT COUNT(*) as count FROM repo_knowledge');
+                        const userMappingCount = await client_1.pool.query('SELECT COUNT(*) as count FROM user_mappings');
+                        const mappedCount = await client_1.pool.query('SELECT COUNT(*) as count FROM user_mappings WHERE slack_user_id IS NOT NULL');
+                        let repoLines = '_No repos harvested yet._';
+                        if (harvestRows.rows.length > 0) {
+                            repoLines = harvestRows.rows.map((r) => {
+                                const prInfo = r.last_harvested_pr_number ? `PR #${r.last_harvested_pr_number}` : 'not started';
+                                const repoInfo = r.last_repo_harvest_sha ? `SHA ${r.last_repo_harvest_sha.substring(0, 8)}` : 'not started';
+                                return `• \`${r.org}/${r.repo}\` — PRs: ${prInfo}, Code: ${repoInfo}`;
+                            }).join('\n');
+                        }
+                        await respond({
+                            text: `*:brain: AI Knowledge Base Status*\n\n` +
+                                `*Data:*\n` +
+                                `• PR review comments: ${reviewCount.rows[0].count}\n` +
+                                `• PR files tracked: ${fileCount.rows[0].count}\n` +
+                                `• Embeddings: ${embeddingCount.rows[0].count}\n` +
+                                `• Codebase chunks: ${repoKnowledgeCount.rows[0].count}\n` +
+                                `• User mappings: ${userMappingCount.rows[0].count} (${mappedCount.rows[0].count} with Slack ID)\n\n` +
+                                `*Repos:*\n${repoLines}`,
+                        });
+                    }
+                    catch (harvestError) {
+                        await respond({
+                            text: `*:brain: AI Knowledge Base Status*\n\n_Tables not yet created. Run migrations first._`,
+                        });
+                    }
+                    break;
+                }
                 case 'help':
                 default: {
                     await respond({
@@ -252,6 +288,7 @@ function createApp() {
                             `• \`/pr-monitor pending\` - Show PRs awaiting review with wait times\n` +
                             `• \`/pr-monitor stats\` - Show review statistics and reminder counts\n` +
                             `• \`/pr-monitor status\` - Show current status\n` +
+                            `• \`/pr-monitor harvest-status\` - Show AI knowledge base harvest status\n` +
                             `• \`/pr-monitor help\` - Show this help message`,
                     });
                     break;
