@@ -15,6 +15,26 @@ exports.removeMonitoredChannel = removeMonitoredChannel;
 exports.getMonitoredChannels = getMonitoredChannels;
 exports.isChannelMonitored = isChannelMonitored;
 exports.getReviewStats = getReviewStats;
+exports.insertPRReview = insertPRReview;
+exports.getPRReviewCount = getPRReviewCount;
+exports.insertPRFile = insertPRFile;
+exports.upsertUserMapping = upsertUserMapping;
+exports.getUserMapping = getUserMapping;
+exports.getAllUserMappings = getAllUserMappings;
+exports.getHarvestState = getHarvestState;
+exports.upsertHarvestState = upsertHarvestState;
+exports.upsertRepoHarvestState = upsertRepoHarvestState;
+exports.upsertRepoKnowledge = upsertRepoKnowledge;
+exports.deleteRepoKnowledgeForFile = deleteRepoKnowledgeForFile;
+exports.insertEmbedding = insertEmbedding;
+exports.updateRepoKnowledgeEmbedding = updateRepoKnowledgeEmbedding;
+exports.getUnembeddedPRReviews = getUnembeddedPRReviews;
+exports.getUnembeddedRepoKnowledge = getUnembeddedRepoKnowledge;
+exports.searchSimilarReviews = searchSimilarReviews;
+exports.searchSimilarCode = searchSimilarCode;
+exports.findReviewersByFiles = findReviewersByFiles;
+exports.findCodeTouchersByFiles = findCodeTouchersByFiles;
+exports.getDistinctRepos = getDistinctRepos;
 const pg_1 = require("pg");
 const pool = new pg_1.Pool({
     connectionString: process.env.DATABASE_URL,
@@ -194,5 +214,180 @@ async function getReviewStats() {
         reminderBreakdown,
         avgRemindersBeforeReview,
     };
+}
+// --- PR Reviews ---
+async function insertPRReview(review) {
+    const query = `
+    INSERT INTO pr_reviews (pr_url, pr_number, org, repo, reviewer_login, file_path, diff_hunk, comment_body, review_state, submitted_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    RETURNING *
+  `;
+    const result = await pool.query(query, [
+        review.pr_url, review.pr_number, review.org, review.repo,
+        review.reviewer_login, review.file_path, review.diff_hunk,
+        review.comment_body, review.review_state, review.submitted_at,
+    ]);
+    return result.rows[0] || null;
+}
+async function getPRReviewCount(prUrl) {
+    const result = await pool.query('SELECT COUNT(*) as count FROM pr_reviews WHERE pr_url = $1', [prUrl]);
+    return parseInt(result.rows[0].count, 10);
+}
+// --- PR Files ---
+async function insertPRFile(file) {
+    const query = `
+    INSERT INTO pr_files (pr_url, pr_number, org, repo, file_path, change_type, additions, deletions, patch_snippet, author_login)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    RETURNING *
+  `;
+    const result = await pool.query(query, [
+        file.pr_url, file.pr_number, file.org, file.repo,
+        file.file_path, file.change_type, file.additions, file.deletions,
+        file.patch_snippet, file.author_login,
+    ]);
+    return result.rows[0] || null;
+}
+// --- User Mappings ---
+async function upsertUserMapping(mapping) {
+    const query = `
+    INSERT INTO user_mappings (ghe_login, slack_user_id, display_name, email, discovered_via)
+    VALUES ($1, $2, $3, $4, $5)
+    ON CONFLICT (ghe_login) DO UPDATE SET
+      slack_user_id = COALESCE($2, user_mappings.slack_user_id),
+      display_name = COALESCE($3, user_mappings.display_name),
+      email = COALESCE($4, user_mappings.email),
+      discovered_via = $5,
+      updated_at = NOW()
+    RETURNING *
+  `;
+    const result = await pool.query(query, [
+        mapping.ghe_login, mapping.slack_user_id, mapping.display_name,
+        mapping.email, mapping.discovered_via,
+    ]);
+    return result.rows[0] || null;
+}
+async function getUserMapping(gheLogin) {
+    const result = await pool.query('SELECT * FROM user_mappings WHERE ghe_login = $1', [gheLogin]);
+    return result.rows[0] || null;
+}
+async function getAllUserMappings() {
+    const result = await pool.query('SELECT * FROM user_mappings ORDER BY ghe_login');
+    return result.rows;
+}
+// --- Harvest State ---
+async function getHarvestState(org, repo) {
+    const result = await pool.query('SELECT * FROM harvest_state WHERE org = $1 AND repo = $2', [org, repo]);
+    return result.rows[0] || null;
+}
+async function upsertHarvestState(org, repo, lastPrNumber) {
+    await pool.query(`
+    INSERT INTO harvest_state (org, repo, last_harvested_pr_number, last_harvested_at)
+    VALUES ($1, $2, $3, NOW())
+    ON CONFLICT (org, repo) DO UPDATE SET
+      last_harvested_pr_number = $3,
+      last_harvested_at = NOW()
+  `, [org, repo, lastPrNumber]);
+}
+async function upsertRepoHarvestState(org, repo, sha) {
+    await pool.query(`
+    INSERT INTO harvest_state (org, repo, last_repo_harvest_sha, last_repo_harvested_at)
+    VALUES ($1, $2, $3, NOW())
+    ON CONFLICT (org, repo) DO UPDATE SET
+      last_repo_harvest_sha = $3,
+      last_repo_harvested_at = NOW()
+  `, [org, repo, sha]);
+}
+// --- Repo Knowledge ---
+async function upsertRepoKnowledge(chunk) {
+    const result = await pool.query(`
+    INSERT INTO repo_knowledge (org, repo, file_path, content_chunk, chunk_index, last_commit_sha)
+    VALUES ($1, $2, $3, $4, $5, $6)
+    ON CONFLICT DO NOTHING
+    RETURNING id
+  `, [chunk.org, chunk.repo, chunk.file_path, chunk.content_chunk, chunk.chunk_index, chunk.last_commit_sha]);
+    return result.rows[0]?.id || 0;
+}
+async function deleteRepoKnowledgeForFile(org, repo, filePath) {
+    await pool.query('DELETE FROM repo_knowledge WHERE org = $1 AND repo = $2 AND file_path = $3', [org, repo, filePath]);
+}
+// --- Embeddings ---
+async function insertEmbedding(contentType, sourceId, contentText, embedding, metadata = {}) {
+    const result = await pool.query(`
+    INSERT INTO pr_embeddings (content_type, source_id, content_text, embedding, metadata)
+    VALUES ($1, $2, $3, $4::vector, $5)
+    RETURNING id
+  `, [contentType, sourceId, contentText, `[${embedding.join(',')}]`, JSON.stringify(metadata)]);
+    return result.rows[0]?.id || 0;
+}
+async function updateRepoKnowledgeEmbedding(id, embedding) {
+    await pool.query('UPDATE repo_knowledge SET embedding = $2::vector, updated_at = NOW() WHERE id = $1', [id, `[${embedding.join(',')}]`]);
+}
+async function getUnembeddedPRReviews(limit = 100) {
+    const result = await pool.query(`
+    SELECT r.* FROM pr_reviews r
+    LEFT JOIN pr_embeddings e ON e.content_type = 'pr_review' AND e.source_id = r.id
+    WHERE e.id IS NULL
+    ORDER BY r.id ASC
+    LIMIT $1
+  `, [limit]);
+    return result.rows;
+}
+async function getUnembeddedRepoKnowledge(limit = 100) {
+    const result = await pool.query(`
+    SELECT * FROM repo_knowledge
+    WHERE embedding IS NULL
+    ORDER BY id ASC
+    LIMIT $1
+  `, [limit]);
+    return result.rows;
+}
+// --- Vector Search ---
+async function searchSimilarReviews(embedding, topK = 10) {
+    const result = await pool.query(`
+    SELECT r.*, 1 - (e.embedding <=> $1::vector) as similarity
+    FROM pr_embeddings e
+    JOIN pr_reviews r ON e.source_id = r.id AND e.content_type = 'pr_review'
+    ORDER BY e.embedding <=> $1::vector
+    LIMIT $2
+  `, [`[${embedding.join(',')}]`, topK]);
+    return result.rows;
+}
+async function searchSimilarCode(embedding, topK = 10) {
+    const result = await pool.query(`
+    SELECT rk.*, 1 - (rk.embedding <=> $1::vector) as similarity
+    FROM repo_knowledge rk
+    WHERE rk.embedding IS NOT NULL
+    ORDER BY rk.embedding <=> $1::vector
+    LIMIT $2
+  `, [`[${embedding.join(',')}]`, topK]);
+    return result.rows;
+}
+async function findReviewersByFiles(filePaths, topK = 10) {
+    const result = await pool.query(`
+    SELECT reviewer_login, COUNT(*) as review_count,
+           array_agg(DISTINCT file_path) as files
+    FROM pr_reviews
+    WHERE file_path = ANY($1)
+    GROUP BY reviewer_login
+    ORDER BY review_count DESC
+    LIMIT $2
+  `, [filePaths, topK]);
+    return result.rows;
+}
+async function findCodeTouchersByFiles(filePaths, topK = 10) {
+    const result = await pool.query(`
+    SELECT author_login, COUNT(*) as change_count,
+           array_agg(DISTINCT file_path) as files
+    FROM pr_files
+    WHERE file_path = ANY($1) AND author_login IS NOT NULL
+    GROUP BY author_login
+    ORDER BY change_count DESC
+    LIMIT $2
+  `, [filePaths, topK]);
+    return result.rows;
+}
+async function getDistinctRepos() {
+    const result = await pool.query('SELECT DISTINCT org, repo FROM tracked_prs ORDER BY org, repo');
+    return result.rows;
 }
 //# sourceMappingURL=client.js.map

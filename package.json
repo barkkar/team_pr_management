@@ -13,7 +13,13 @@
     "worker": "node dist/worker/localPRChecker.js",
     "worker:watch": "node dist/worker/localPRChecker.js --watch",
     "delete-bot-messages": "npx ts-node scripts/deleteBotMessages.ts",
-    "test-ghe": "node dist/scripts/testGheConnectivity.js"
+    "test-ghe": "node dist/scripts/testGheConnectivity.js",
+    "harvest": "node dist/worker/prHarvester.js",
+    "harvest:incremental": "node dist/worker/prHarvester.js --incremental",
+    "harvest:repos": "node dist/worker/repoHarvester.js",
+    "embed": "node dist/worker/embeddingPipeline.js",
+    "map-users": "node dist/worker/userMapper.js",
+    "analyze-pr": "node dist/worker/prAnalyzer.js"
   },
   "engines": {
     "node": "20.x",
@@ -36,6 +42,7 @@
     "axios": "^1.13.4",
     "dotenv": "^17.2.3",
     "luxon": "^3.7.2",
+    "ollama": "^0.6.3",
     "pg": "^8.18.0"
   },
   "devDependencies": {
