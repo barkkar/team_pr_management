@@ -2,13 +2,13 @@
 /**
  * PR History Harvester
  *
- * Fetches closed/merged PRs from all repos that have appeared in tracked_prs.
- * For each PR: fetches review comments, changed files, and patch diffs via GHE API.
- * Stores results via Heroku API endpoints.
+ * Fetches review comments, changed files, and diffs for PRs that were
+ * posted in monitored Slack channels (from tracked_prs table).
  *
  * Usage:
- *   npm run harvest                  # Full harvest
- *   npm run harvest:incremental      # Only new PRs since last run
+ *   npm run harvest                  # Harvest only not-yet-harvested PRs
+ *   npm run harvest:incremental      # Same as above (alias)
+ *   HARVEST_ALL=1 npm run harvest    # Re-harvest all tracked PRs
  */
 import 'dotenv/config';
 //# sourceMappingURL=prHarvester.d.ts.map

@@ -276,6 +276,42 @@ async function main() {
                 return;
             }
             // ========== AI Knowledge Base API Endpoints ==========
+            // Get tracked PRs that haven't been harvested yet
+            if (url === '/api/tracked-prs-for-harvest' && method === 'GET') {
+                if (!validateApiKey(req)) {
+                    res.writeHead(401, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Unauthorized' }));
+                    return;
+                }
+                const result = await client_1.pool.query(`
+          SELECT DISTINCT tp.pr_url, tp.org, tp.repo, tp.pr_number, tp.channel_id, tp.message_ts
+          FROM tracked_prs tp
+          LEFT JOIN (
+            SELECT DISTINCT pr_url FROM pr_reviews
+          ) pr ON tp.pr_url = pr.pr_url
+          WHERE pr.pr_url IS NULL
+          ORDER BY tp.pr_number ASC
+        `);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ prs: result.rows }));
+                return;
+            }
+            // Get ALL tracked PRs (for full re-harvest)
+            if (url === '/api/all-tracked-prs' && method === 'GET') {
+                if (!validateApiKey(req)) {
+                    res.writeHead(401, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Unauthorized' }));
+                    return;
+                }
+                const result = await client_1.pool.query(`
+          SELECT DISTINCT pr_url, org, repo, pr_number, channel_id, message_ts
+          FROM tracked_prs
+          ORDER BY pr_number ASC
+        `);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ prs: result.rows }));
+                return;
+            }
             // Get distinct repos from tracked PRs
             if (url === '/api/distinct-repos' && method === 'GET') {
                 if (!validateApiKey(req)) {
