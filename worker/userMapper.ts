@@ -74,11 +74,80 @@ async function lookupSlackUserByEmail(email: string): Promise<{ id: string; name
         name: response.data.user.real_name || response.data.user.name,
       };
     }
+    if (!response.data.ok) {
+      log(`    Slack email lookup returned: ${response.data.error || 'unknown error'}`);
+    }
     return null;
   } catch (error: any) {
     logError(`Slack lookup failed for ${email}: ${error.message}`);
     return null;
   }
+}
+
+// Cached Slack user list for name-based fallback
+let slackUsersCache: { id: string; real_name: string; display_name: string }[] | null = null;
+
+async function loadSlackUsers(): Promise<typeof slackUsersCache> {
+  if (slackUsersCache) return slackUsersCache;
+  if (!SLACK_BOT_TOKEN) return null;
+
+  log('  Loading Slack user list for name-based matching...');
+  const allUsers: { id: string; real_name: string; display_name: string }[] = [];
+  let cursor: string | undefined;
+
+  do {
+    try {
+      const response = await axios.get('https://slack.com/api/users.list', {
+        params: { limit: 200, cursor },
+        headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
+        timeout: 30000,
+      });
+      if (!response.data.ok) {
+        logError(`  Slack users.list failed: ${response.data.error}`);
+        break;
+      }
+      for (const member of response.data.members || []) {
+        if (member.deleted || member.is_bot) continue;
+        allUsers.push({
+          id: member.id,
+          real_name: (member.real_name || '').toLowerCase(),
+          display_name: (member.profile?.display_name || '').toLowerCase(),
+        });
+      }
+      cursor = response.data.response_metadata?.next_cursor;
+      // Rate limit
+      await new Promise(resolve => setTimeout(resolve, 200));
+    } catch (error: any) {
+      logError(`  Failed to fetch Slack users list: ${error.message}`);
+      break;
+    }
+  } while (cursor);
+
+  log(`  Loaded ${allUsers.length} Slack users for name matching`);
+  slackUsersCache = allUsers;
+  return slackUsersCache;
+}
+
+async function lookupSlackUserByName(gheName: string): Promise<{ id: string; name: string } | null> {
+  const users = await loadSlackUsers();
+  if (!users || !gheName) return null;
+
+  const nameLC = gheName.toLowerCase().trim();
+
+  // Exact match on real_name or display_name
+  const exact = users.find(u => u.real_name === nameLC || u.display_name === nameLC);
+  if (exact) return { id: exact.id, name: exact.real_name };
+
+  // Fuzzy: check if all parts of the GHE name appear in a Slack real_name
+  const parts = nameLC.split(/\s+/);
+  if (parts.length >= 2) {
+    const match = users.find(u =>
+      parts.every(p => u.real_name.includes(p)),
+    );
+    if (match) return { id: match.id, name: match.real_name };
+  }
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -215,8 +284,19 @@ async function run(): Promise<void> {
     const profile = await fetchGHEUserProfile(hostname, login);
     let slackUser: { id: string; name: string } | null = null;
 
+    log(`  GHE profile: name="${profile?.name || 'none'}", email="${profile?.email || 'none'}"`);
+
     if (profile?.email && SLACK_BOT_TOKEN) {
       slackUser = await lookupSlackUserByEmail(profile.email);
+    }
+
+    // Strategy 1b: Fallback to name-based matching
+    if (!slackUser && profile?.name && SLACK_BOT_TOKEN) {
+      log(`  Trying name-based fallback for "${profile.name}"...`);
+      slackUser = await lookupSlackUserByName(profile.name);
+      if (slackUser) {
+        log(`  Found via name match!`);
+      }
     }
 
     try {
@@ -225,7 +305,7 @@ async function run(): Promise<void> {
         slack_user_id: slackUser?.id || null,
         display_name: slackUser?.name || profile?.name || null,
         email: profile?.email || null,
-        discovered_via: slackUser ? 'email_lookup' : 'ghe_profile',
+        discovered_via: slackUser ? (profile?.email ? 'email_lookup' : 'name_lookup') : 'ghe_profile',
       });
 
       if (slackUser) {
