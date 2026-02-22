@@ -469,20 +469,26 @@ async function main(): Promise<void> {
           return;
         }
 
-        const body = await parseJsonBody(req);
-        let count = 0;
+        try {
+          const body = await parseJsonBody(req);
+          let count = 0;
 
-        for (const emb of (body.embeddings || [])) {
-          await insertEmbedding(
-            emb.content_type, emb.source_id, emb.content_text,
-            emb.embedding, emb.metadata || {},
-          );
-          count++;
+          for (const emb of (body.embeddings || [])) {
+            await insertEmbedding(
+              emb.content_type, emb.source_id, emb.content_text,
+              emb.embedding, emb.metadata || {},
+            );
+            count++;
+          }
+
+          console.log(`[Worker API] Stored ${count} embeddings`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ count }));
+        } catch (err: any) {
+          console.error(`[Worker API] Error storing embeddings:`, err.message);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
         }
-
-        console.log(`[Worker API] Stored ${count} embeddings`);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ count }));
         return;
       }
 
@@ -494,17 +500,23 @@ async function main(): Promise<void> {
           return;
         }
 
-        const body = await parseJsonBody(req);
-        let count = 0;
+        try {
+          const body = await parseJsonBody(req);
+          let count = 0;
 
-        for (const update of (body.updates || [])) {
-          await updateRepoKnowledgeEmbedding(update.id, update.embedding);
-          count++;
+          for (const update of (body.updates || [])) {
+            await updateRepoKnowledgeEmbedding(update.id, update.embedding);
+            count++;
+          }
+
+          console.log(`[Worker API] Updated ${count} repo knowledge embeddings`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ count }));
+        } catch (err: any) {
+          console.error(`[Worker API] Error updating repo knowledge embeddings:`, err.message);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
         }
-
-        console.log(`[Worker API] Updated ${count} repo knowledge embeddings`);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ count }));
         return;
       }
 

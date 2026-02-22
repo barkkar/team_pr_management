@@ -419,15 +419,22 @@ async function main() {
                     res.end(JSON.stringify({ error: 'Unauthorized' }));
                     return;
                 }
-                const body = await parseJsonBody(req);
-                let count = 0;
-                for (const emb of (body.embeddings || [])) {
-                    await (0, client_1.insertEmbedding)(emb.content_type, emb.source_id, emb.content_text, emb.embedding, emb.metadata || {});
-                    count++;
+                try {
+                    const body = await parseJsonBody(req);
+                    let count = 0;
+                    for (const emb of (body.embeddings || [])) {
+                        await (0, client_1.insertEmbedding)(emb.content_type, emb.source_id, emb.content_text, emb.embedding, emb.metadata || {});
+                        count++;
+                    }
+                    console.log(`[Worker API] Stored ${count} embeddings`);
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ count }));
                 }
-                console.log(`[Worker API] Stored ${count} embeddings`);
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ count }));
+                catch (err) {
+                    console.error(`[Worker API] Error storing embeddings:`, err.message);
+                    res.writeHead(500, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: err.message }));
+                }
                 return;
             }
             // Receive repo knowledge embedding updates
@@ -437,15 +444,22 @@ async function main() {
                     res.end(JSON.stringify({ error: 'Unauthorized' }));
                     return;
                 }
-                const body = await parseJsonBody(req);
-                let count = 0;
-                for (const update of (body.updates || [])) {
-                    await (0, client_1.updateRepoKnowledgeEmbedding)(update.id, update.embedding);
-                    count++;
+                try {
+                    const body = await parseJsonBody(req);
+                    let count = 0;
+                    for (const update of (body.updates || [])) {
+                        await (0, client_1.updateRepoKnowledgeEmbedding)(update.id, update.embedding);
+                        count++;
+                    }
+                    console.log(`[Worker API] Updated ${count} repo knowledge embeddings`);
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ count }));
                 }
-                console.log(`[Worker API] Updated ${count} repo knowledge embeddings`);
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ count }));
+                catch (err) {
+                    console.error(`[Worker API] Error updating repo knowledge embeddings:`, err.message);
+                    res.writeHead(500, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: err.message }));
+                }
                 return;
             }
             // Get un-embedded reviews

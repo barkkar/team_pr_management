@@ -33,7 +33,7 @@ function herokuHeaders(): Record<string, string> {
   };
 }
 
-function truncateForEmbedding(text: string, maxChars: number = 8000): string {
+function truncateForEmbedding(text: string, maxChars: number = 2000): string {
   if (text.length <= maxChars) return text;
   return text.substring(0, maxChars);
 }
@@ -166,7 +166,19 @@ async function embedReviews(): Promise<number> {
         totalEmbedded += batch.length;
         log(`  Embedded and reported ${batch.length} reviews`);
       } catch (error: any) {
-        logError(`  Failed to report embeddings: ${error.message}`);
+        const respData = error.response?.data ? JSON.stringify(error.response.data).substring(0, 500) : '';
+        logError(`  Batch report failed (${error.message}): ${respData}`);
+        logError(`  Retrying individually...`);
+        for (const item of batch) {
+          try {
+            await reportEmbeddings([item]);
+            totalEmbedded += 1;
+          } catch (innerError: any) {
+            const innerResp = innerError.response?.data ? JSON.stringify(innerError.response.data).substring(0, 500) : '';
+            logError(`  Failed to report review ${item.source_id}: ${innerError.message} ${innerResp}`);
+            failedReviewIds.add(item.source_id);
+          }
+        }
       }
     }
   }
@@ -207,7 +219,19 @@ async function embedRepoKnowledge(): Promise<number> {
         totalEmbedded += batch.length;
         log(`  Embedded and reported ${batch.length} chunks`);
       } catch (error: any) {
-        logError(`  Failed to report repo knowledge embeddings: ${error.message}`);
+        const respData = error.response?.data ? JSON.stringify(error.response.data).substring(0, 500) : '';
+        logError(`  Batch report failed (${error.message}): ${respData}`);
+        logError(`  Retrying individually...`);
+        for (const item of batch) {
+          try {
+            await reportRepoKnowledgeEmbeddings([item]);
+            totalEmbedded += 1;
+          } catch (innerError: any) {
+            const innerResp = innerError.response?.data ? JSON.stringify(innerError.response.data).substring(0, 500) : '';
+            logError(`  Failed to report chunk ${item.id}: ${innerError.message} ${innerResp}`);
+            failedChunkIds.add(item.id);
+          }
+        }
       }
     }
   }
