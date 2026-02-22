@@ -33,7 +33,7 @@ function herokuHeaders(): Record<string, string> {
   };
 }
 
-function truncateForEmbedding(text: string, maxChars: number = 30000): string {
+function truncateForEmbedding(text: string, maxChars: number = 8000): string {
   if (text.length <= maxChars) return text;
   return text.substring(0, maxChars);
 }
@@ -126,15 +126,17 @@ function formatReviewForEmbedding(review: any): string {
 async function embedReviews(): Promise<number> {
   log('Processing un-embedded PR reviews...');
   let totalEmbedded = 0;
+  const failedReviewIds = new Set<number>();
 
   while (true) {
     const reviews = await fetchUnembeddedReviews(50);
-    if (reviews.length === 0) break;
+    const pending = reviews.filter((r) => !failedReviewIds.has(r.id));
+    if (pending.length === 0) break;
 
-    log(`  Found ${reviews.length} un-embedded reviews`);
+    log(`  Found ${pending.length} un-embedded reviews`);
 
     const batch: any[] = [];
-    for (const review of reviews) {
+    for (const review of pending) {
       try {
         const text = formatReviewForEmbedding(review);
         const embedding = await generateEmbedding(text);
@@ -154,6 +156,7 @@ async function embedReviews(): Promise<number> {
         });
       } catch (error: any) {
         logError(`  Failed to embed review ${review.id}: ${error.message}`);
+        failedReviewIds.add(review.id);
       }
     }
 
@@ -168,26 +171,33 @@ async function embedReviews(): Promise<number> {
     }
   }
 
+  if (failedReviewIds.size > 0) {
+    logError(`  Skipped ${failedReviewIds.size} reviews that failed to embed: ${[...failedReviewIds].join(', ')}`);
+  }
+
   return totalEmbedded;
 }
 
 async function embedRepoKnowledge(): Promise<number> {
   log('Processing un-embedded repo knowledge chunks...');
   let totalEmbedded = 0;
+  const failedChunkIds = new Set<number>();
 
   while (true) {
     const chunks = await fetchUnembeddedRepoKnowledge(50);
-    if (chunks.length === 0) break;
+    const pending = chunks.filter((c) => !failedChunkIds.has(c.id));
+    if (pending.length === 0) break;
 
-    log(`  Found ${chunks.length} un-embedded chunks`);
+    log(`  Found ${pending.length} un-embedded chunks`);
 
     const batch: { id: number; embedding: number[] }[] = [];
-    for (const chunk of chunks) {
+    for (const chunk of pending) {
       try {
         const embedding = await generateEmbedding(chunk.content_chunk);
         batch.push({ id: chunk.id, embedding });
       } catch (error: any) {
         logError(`  Failed to embed chunk ${chunk.id}: ${error.message}`);
+        failedChunkIds.add(chunk.id);
       }
     }
 
@@ -200,6 +210,10 @@ async function embedRepoKnowledge(): Promise<number> {
         logError(`  Failed to report repo knowledge embeddings: ${error.message}`);
       }
     }
+  }
+
+  if (failedChunkIds.size > 0) {
+    logError(`  Skipped ${failedChunkIds.size} chunks that failed to embed: ${[...failedChunkIds].join(', ')}`);
   }
 
   return totalEmbedded;
