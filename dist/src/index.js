@@ -526,11 +526,13 @@ async function main() {
                 const body = await parseJsonBody(req);
                 const filePaths = body.file_paths || [];
                 const prAuthor = body.pr_author || '';
+                const similarReviewsFromVector = body.similar_reviews || [];
                 // Combine file-based reviewers and code touchers
                 const reviewers = await (0, client_1.findReviewersByFiles)(filePaths, 10);
                 const touchers = await (0, client_1.findCodeTouchersByFiles)(filePaths, 10);
                 // Build candidate list with scores
                 const candidateMap = new Map();
+                // Signal 1: Past reviewers of similar files
                 for (const r of reviewers) {
                     if (r.reviewer_login === prAuthor)
                         continue;
@@ -541,6 +543,7 @@ async function main() {
                         files: r.files,
                     });
                 }
+                // Signal 2: Past authors of changes to similar files
                 for (const t of touchers) {
                     if (t.author_login === prAuthor)
                         continue;
@@ -556,6 +559,31 @@ async function main() {
                             reason: `changed ${t.change_count} related file(s)`,
                             files: t.files,
                         });
+                    }
+                }
+                // Signal 3: Reviewers from semantically similar past reviews
+                if (similarReviewsFromVector.length > 0) {
+                    const semanticCounts = new Map();
+                    for (const sr of similarReviewsFromVector) {
+                        if (!sr.reviewer_login || sr.reviewer_login === prAuthor)
+                            continue;
+                        semanticCounts.set(sr.reviewer_login, (semanticCounts.get(sr.reviewer_login) || 0) + 1);
+                    }
+                    for (const [login, count] of semanticCounts) {
+                        const semanticScore = count * 3;
+                        const existing = candidateMap.get(login);
+                        if (existing) {
+                            existing.score += semanticScore;
+                            existing.reason += `, ${count} semantically similar review(s)`;
+                        }
+                        else {
+                            candidateMap.set(login, {
+                                ghe_login: login,
+                                score: semanticScore,
+                                reason: `${count} semantically similar review(s)`,
+                                files: [],
+                            });
+                        }
                     }
                 }
                 // Resolve Slack IDs

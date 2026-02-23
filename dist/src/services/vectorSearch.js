@@ -26,11 +26,12 @@ async function findSimilarCodeChunks(embedding, topK = 10, minSimilarity = 0.3) 
 }
 /**
  * Find suggested reviewers based on file paths changed in a PR.
- * Combines two signals:
- *   1. People who reviewed similar files before
+ * Combines three signals:
+ *   1. People who reviewed similar files before (directory-level fuzzy match)
  *   2. People who authored changes to similar files
+ *   3. People who appear in semantically similar past reviews (vector search)
  */
-async function findSuggestedReviewers(filePaths, excludeAuthor, topK = 5) {
+async function findSuggestedReviewers(filePaths, excludeAuthor, topK = 5, similarReviews) {
     const candidateMap = new Map();
     // Signal 1: Past reviewers of the same/similar files
     const reviewers = await (0, client_1.findReviewersByFiles)(filePaths, 20);
@@ -69,6 +70,33 @@ async function findSuggestedReviewers(filePaths, excludeAuthor, topK = 5) {
                 reason: `changed ${t.change_count} related file(s)`,
                 files: t.files,
             });
+        }
+    }
+    // Signal 3: Reviewers from semantically similar past reviews (vector search)
+    if (similarReviews && similarReviews.length > 0) {
+        const reviewerCounts = new Map();
+        for (const sr of similarReviews) {
+            if (!sr.reviewer_login)
+                continue;
+            if (excludeAuthor && sr.reviewer_login === excludeAuthor)
+                continue;
+            reviewerCounts.set(sr.reviewer_login, (reviewerCounts.get(sr.reviewer_login) || 0) + 1);
+        }
+        for (const [login, count] of reviewerCounts) {
+            const semanticScore = count * 3; // Semantic relevance weighted highest
+            const existing = candidateMap.get(login);
+            if (existing) {
+                existing.score += semanticScore;
+                existing.reason += `, ${count} semantically similar review(s)`;
+            }
+            else {
+                candidateMap.set(login, {
+                    ghe_login: login,
+                    score: semanticScore,
+                    reason: `${count} semantically similar review(s)`,
+                    files: [],
+                });
+            }
         }
     }
     // Sort by score descending and take top K

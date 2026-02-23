@@ -27,9 +27,13 @@ export declare function findSimilarReviews(embedding: number[], topK?: number, m
 export declare function findSimilarCodeChunks(embedding: number[], topK?: number, minSimilarity?: number): Promise<SimilarCode[]>;
 /**
  * Find suggested reviewers based on file paths changed in a PR.
- * Combines two signals:
- *   1. People who reviewed similar files before
+ * Combines three signals:
+ *   1. People who reviewed similar files before (directory-level fuzzy match)
  *   2. People who authored changes to similar files
+ *   3. People who appear in semantically similar past reviews (vector search)
  */
-export declare function findSuggestedReviewers(filePaths: string[], excludeAuthor?: string, topK?: number): Promise<ReviewerCandidate[]>;
+export declare function findSuggestedReviewers(filePaths: string[], excludeAuthor?: string, topK?: number, similarReviews?: {
+    reviewer_login?: string;
+    similarity?: number;
+}[]): Promise<ReviewerCandidate[]>;
 //# sourceMappingURL=vectorSearch.d.ts.map
