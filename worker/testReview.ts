@@ -273,20 +273,23 @@ function formatSlackMessage(review: any, reviewers: any[]): { text: string; bloc
   blocks.push({ type: 'divider' });
 
   if (reviewers && reviewers.length > 0) {
-    const mentions = reviewers.map((r: any) =>
+    const mentionList = reviewers.map((r: any) =>
       r.slack_user_id ? `<@${r.slack_user_id}>` : `\`${r.ghe_login}\``
-    ).join(', ');
+    );
+    const mentionStr = mentionList.length === 1
+      ? mentionList[0]
+      : mentionList.slice(0, -1).join(', ') + ' and ' + mentionList[mentionList.length - 1];
 
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `:eyes: *Review Request:*\n${mentions} — could you please review this PR?` } });
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `:eyes: Hey ${mentionStr}, could you take a look at this PR?` } });
 
     const reasonLines = reviewers.map((r: any) => {
       const mention = r.slack_user_id ? `<@${r.slack_user_id}>` : `\`${r.ghe_login}\``;
       return `• ${mention} — ${r.reason}`;
     }).join('\n');
 
-    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `*Why these reviewers:*\n${reasonLines}` }] });
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: reasonLines }] });
   } else {
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: ':busts_in_silhouette: *Suggested Reviewers:*\n_No reviewer suggestions available yet._' } });
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: '_No reviewer suggestions available yet._' } });
   }
 
   const text = `:robot_face: AI Review Intelligence — ${comments.length} comment(s), ${reviewers?.length || 0} reviewer suggestion(s)`;

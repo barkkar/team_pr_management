@@ -140,17 +140,20 @@ function formatSlackAnalysis(
   // Divider before reviewers
   blocks.push({ type: 'divider' });
 
-  // Suggested reviewers — @mention with review request
+  // Suggested reviewers — conversational @mention with review request
   if (reviewers && reviewers.length > 0) {
-    const mentions = reviewers.map((r: any) =>
+    const mentionList = reviewers.map((r: any) =>
       r.slack_user_id ? `<@${r.slack_user_id}>` : `\`${r.ghe_login}\``
-    ).join(', ');
+    );
+    const mentionStr = mentionList.length === 1
+      ? mentionList[0]
+      : mentionList.slice(0, -1).join(', ') + ' and ' + mentionList[mentionList.length - 1];
 
     blocks.push({
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `:eyes: *Review Request:*\n${mentions} — could you please review this PR?`,
+        text: `:eyes: Hey ${mentionStr}, could you take a look at this PR?`,
       },
     });
 
@@ -163,7 +166,7 @@ function formatSlackAnalysis(
       type: 'context',
       elements: [{
         type: 'mrkdwn',
-        text: `*Why these reviewers:*\n${reasonLines}`,
+        text: reasonLines,
       }],
     });
   } else {
@@ -171,7 +174,7 @@ function formatSlackAnalysis(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: ':busts_in_silhouette: *Suggested Reviewers:*\n_No reviewer suggestions available yet. Run the harvester to build review history._',
+        text: '_No reviewer suggestions available yet._',
       },
     });
   }
@@ -613,37 +616,35 @@ async function main(): Promise<void> {
         const reviewers = await findReviewersByFiles(filePaths, 10);
         const touchers = await findCodeTouchersByFiles(filePaths, 10);
 
-        // Build candidate list with scores
+        // Build candidate list with scores — track signals separately
         const candidateMap = new Map<string, any>();
 
-        // Signal 1: Past reviewers of similar files (capped to avoid fuzzy match inflation)
+        const ensureCandidate = (login: string) => {
+          if (!candidateMap.has(login)) {
+            candidateMap.set(login, {
+              ghe_login: login, score: 0, files: [],
+              hasReviewed: false, hasAuthored: false, hasSemantic: false,
+            });
+          }
+          return candidateMap.get(login);
+        };
+
+        // Signal 1: Past reviewers of similar files (capped)
         for (const r of reviewers) {
           if (r.reviewer_login === prAuthor) continue;
-          const cappedCount = Math.min(r.review_count, 20);
-          candidateMap.set(r.reviewer_login, {
-            ghe_login: r.reviewer_login,
-            score: cappedCount * 2,
-            reason: `reviewed ${r.review_count} similar file(s)`,
-            files: r.files,
-          });
+          const c = ensureCandidate(r.reviewer_login);
+          c.score += Math.min(r.review_count, 20) * 2;
+          c.files = [...new Set([...c.files, ...r.files])];
+          c.hasReviewed = true;
         }
 
         // Signal 2: Past authors of changes to similar files (capped)
         for (const t of touchers) {
           if (t.author_login === prAuthor) continue;
-          const cappedCount = Math.min(t.change_count, 20);
-          const existing = candidateMap.get(t.author_login);
-          if (existing) {
-            existing.score += cappedCount;
-            existing.reason += `, changed ${t.change_count} related file(s)`;
-          } else {
-            candidateMap.set(t.author_login, {
-              ghe_login: t.author_login,
-              score: cappedCount,
-              reason: `changed ${t.change_count} related file(s)`,
-              files: t.files,
-            });
-          }
+          const c = ensureCandidate(t.author_login);
+          c.score += Math.min(t.change_count, 20);
+          c.files = [...new Set([...c.files, ...t.files])];
+          c.hasAuthored = true;
         }
 
         // Signal 3: Reviewers from semantically similar past reviews
@@ -654,20 +655,28 @@ async function main(): Promise<void> {
             semanticCounts.set(sr.reviewer_login, (semanticCounts.get(sr.reviewer_login) || 0) + 1);
           }
           for (const [login, count] of semanticCounts) {
-            const semanticScore = count * 3;
-            const existing = candidateMap.get(login);
-            if (existing) {
-              existing.score += semanticScore;
-              existing.reason += `, ${count} semantically similar review(s)`;
-            } else {
-              candidateMap.set(login, {
-                ghe_login: login,
-                score: semanticScore,
-                reason: `${count} semantically similar review(s)`,
-                files: [],
-              });
-            }
+            const c = ensureCandidate(login);
+            c.score += count * 3;
+            c.hasSemantic = true;
           }
+        }
+
+        // Generate natural reasons
+        for (const c of candidateMap.values()) {
+          const parts: string[] = [];
+          if (c.hasReviewed && c.hasAuthored) {
+            parts.push("you've reviewed and contributed to similar files in this area");
+          } else if (c.hasReviewed) {
+            parts.push("you've reviewed similar files in this area before");
+          } else if (c.hasAuthored) {
+            parts.push("you've made changes to related code");
+          }
+          if (c.hasSemantic) {
+            parts.push(parts.length > 0
+              ? 'and have context from reviewing closely related PRs'
+              : "you've reviewed closely related PRs before");
+          }
+          c.reason = parts.join(' ') || 'familiar with this area of the codebase';
         }
 
         // Resolve Slack IDs and filter to only mapped users
