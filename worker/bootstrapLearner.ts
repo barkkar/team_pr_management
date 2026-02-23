@@ -534,6 +534,12 @@ async function run(): Promise<void> {
     }
   }
 
+  // Parse --force flag (re-process PRs that already have lessons)
+  const force = process.argv.includes('--force');
+  if (force) {
+    log('⚠️  Force mode: re-processing PRs that already have lessons');
+  }
+
   // Verify Ollama
   log('Verifying Ollama models...');
   try {
@@ -552,10 +558,10 @@ async function run(): Promise<void> {
     process.exit(1);
   }
 
-  // Fetch closed PRs without lessons
-  log(`\nFetching closed PRs without lessons (limit: ${limit})...`);
+  // Fetch closed PRs to process
+  log(`\nFetching closed PRs ${force ? '(force re-process)' : 'without lessons'} (limit: ${limit})...`);
   const response = await axios.get(
-    `${HEROKU_API_URL}/api/closed-prs-without-lessons?limit=${limit}`,
+    `${HEROKU_API_URL}/api/closed-prs-without-lessons?limit=${limit}${force ? '&force=true' : ''}`,
     { headers: herokuHeaders(), timeout: 30000 },
   );
   const prs = response.data.prs || [];

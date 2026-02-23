@@ -465,6 +465,11 @@ async function run() {
             }
         }
     }
+    // Parse --force flag (re-process PRs that already have lessons)
+    const force = process.argv.includes('--force');
+    if (force) {
+        log('⚠️  Force mode: re-processing PRs that already have lessons');
+    }
     // Verify Ollama
     log('Verifying Ollama models...');
     try {
@@ -483,9 +488,9 @@ async function run() {
         logError(`Run: ollama pull ${OLLAMA_EMBED_MODEL} && ollama pull ${OLLAMA_MODEL}`);
         process.exit(1);
     }
-    // Fetch closed PRs without lessons
-    log(`\nFetching closed PRs without lessons (limit: ${limit})...`);
-    const response = await axios_1.default.get(`${HEROKU_API_URL}/api/closed-prs-without-lessons?limit=${limit}`, { headers: herokuHeaders(), timeout: 30000 });
+    // Fetch closed PRs to process
+    log(`\nFetching closed PRs ${force ? '(force re-process)' : 'without lessons'} (limit: ${limit})...`);
+    const response = await axios_1.default.get(`${HEROKU_API_URL}/api/closed-prs-without-lessons?limit=${limit}${force ? '&force=true' : ''}`, { headers: herokuHeaders(), timeout: 30000 });
     const prs = response.data.prs || [];
     if (prs.length === 0) {
         log('No closed PRs need processing. Done!');
