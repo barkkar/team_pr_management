@@ -151,6 +151,18 @@ async function fetchSuggestedReviewers(filePaths: string[], prAuthor: string, si
   return response.data.reviewers || [];
 }
 
+async function fetchLearningContext(): Promise<{ lessons: any[]; feedback: any[] }> {
+  try {
+    const response = await axios.get(
+      `${HEROKU_API_URL}/api/ai-learning-context?limit=5`,
+      { headers: herokuHeaders(), timeout: 15000 },
+    );
+    return { lessons: response.data.lessons || [], feedback: response.data.feedback || [] };
+  } catch {
+    return { lessons: [], feedback: [] };
+  }
+}
+
 async function reportAnalysisResults(data: {
   pr_url: string;
   channel_id: string;
@@ -191,6 +203,7 @@ function buildUserPrompt(
   changedFiles: string[],
   similarReviews: any[],
   similarCode: any[],
+  learningContext?: { lessons: any[]; feedback: any[] },
 ): string {
   const parts: string[] = [];
 
@@ -201,6 +214,28 @@ function buildUserPrompt(
     parts.push('\nPast team review comments on similar code:');
     for (const review of similarReviews.slice(0, 5)) {
       parts.push(`- ${review.file_path || 'general'}: "${(review.comment_body || '').substring(0, 300)}"`);
+    }
+  }
+
+  // Include learning context from past feedback and lessons
+  if (learningContext) {
+    const { lessons, feedback } = learningContext;
+    if (lessons.length > 0 || feedback.length > 0) {
+      parts.push('\nLearning from past reviews:');
+      for (const l of lessons.slice(0, 3)) {
+        const lj = typeof l.lessons_json === 'string' ? JSON.parse(l.lessons_json) : l.lessons_json;
+        if (lj.key_takeaway) parts.push(`- Lesson: ${lj.key_takeaway}`);
+        for (const missed of (lj.ai_missed || []).slice(0, 2)) {
+          parts.push(`- Previously missed: ${missed}`);
+        }
+        for (const wrong of (lj.ai_wrong || []).slice(0, 1)) {
+          parts.push(`- Avoid: ${wrong}`);
+        }
+      }
+      for (const f of feedback.slice(0, 2)) {
+        const prefix = f.rating === 'helpful' ? 'Team found helpful' : 'Team found unhelpful';
+        parts.push(`- ${prefix}: "${(f.feedback_text || '').substring(0, 200)}"`);
+      }
     }
   }
 
@@ -296,11 +331,16 @@ async function analyzePR(prUrl: string, channelId: string, messageTs: string): P
     log(`  No related code found: ${error.message}`);
   }
 
+  // 3b. Fetch learning context (lessons + feedback from past reviews)
+  log('  Fetching learning context...');
+  const learningContext = await fetchLearningContext();
+  log(`  Got ${learningContext.lessons.length} lesson(s), ${learningContext.feedback.length} feedback item(s)`);
+
   // 4. Generate review via LLM
   log('  Generating AI review via Ollama...');
   const client = getOllama();
   const systemPrompt = buildSystemPrompt();
-  const userPrompt = buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode);
+  const userPrompt = buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext);
 
   let review: any;
   try {

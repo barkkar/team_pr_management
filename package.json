@@ -20,7 +20,9 @@
     "embed": "node dist/worker/embeddingPipeline.js",
     "map-users": "node dist/worker/userMapper.js",
     "analyze-pr": "node dist/worker/prAnalyzer.js",
-    "test-review": "node dist/worker/testReview.js"
+    "test-review": "node dist/worker/testReview.js",
+    "review-learn": "node dist/worker/reviewLearner.js",
+    "review-learn:watch": "node dist/worker/reviewLearner.js --watch"
   },
   "engines": {
     "node": "20.x",
