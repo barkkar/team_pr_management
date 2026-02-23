@@ -221,15 +221,28 @@ function buildUserPrompt(
   if (learningContext) {
     const { lessons, feedback } = learningContext;
     if (lessons.length > 0 || feedback.length > 0) {
-      parts.push('\nLearning from past reviews:');
+      parts.push('\nLEARNING FROM PAST REVIEWS (apply these patterns):');
       for (const l of lessons.slice(0, 3)) {
         const lj = typeof l.lessons_json === 'string' ? JSON.parse(l.lessons_json) : l.lessons_json;
-        if (lj.key_takeaway) parts.push(`- Lesson: ${lj.key_takeaway}`);
+        // New structured format
+        for (const pattern of (lj.patterns || []).slice(0, 3)) {
+          parts.push(`- Review pattern: ${pattern}`);
+        }
+        for (const takeaway of (lj.key_takeaways || []).slice(0, 2)) {
+          parts.push(`- Lesson: ${takeaway}`);
+        }
+        for (const missed of (lj.missed_issues || []).slice(0, 2)) {
+          const cat = missed.category ? ` [${missed.category}]` : '';
+          const file = missed.file_path ? ` in ${missed.file_path}` : '';
+          parts.push(`- Previously missed${cat}${file}: ${missed.issue || missed}`);
+        }
+        for (const spot of (lj.review_blind_spots || []).slice(0, 3)) {
+          parts.push(`- Blind spot category: ${spot}`);
+        }
+        // Fallback for old format
+        if (lj.key_takeaway && !lj.key_takeaways) parts.push(`- Lesson: ${lj.key_takeaway}`);
         for (const missed of (lj.ai_missed || []).slice(0, 2)) {
           parts.push(`- Previously missed: ${missed}`);
-        }
-        for (const wrong of (lj.ai_wrong || []).slice(0, 1)) {
-          parts.push(`- Avoid: ${wrong}`);
         }
       }
       for (const f of feedback.slice(0, 2)) {

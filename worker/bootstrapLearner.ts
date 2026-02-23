@@ -220,15 +220,28 @@ function buildUserPrompt(
   if (learningContext) {
     const { lessons, feedback } = learningContext;
     if (lessons.length > 0 || feedback.length > 0) {
-      parts.push('\nLearning from past reviews:');
+      parts.push('\nLEARNING FROM PAST REVIEWS (apply these patterns):');
       for (const l of lessons.slice(0, 3)) {
         const lj = typeof l.lessons_json === 'string' ? JSON.parse(l.lessons_json) : l.lessons_json;
-        if (lj.key_takeaway) parts.push(`- Lesson: ${lj.key_takeaway}`);
+        // New structured format
+        for (const pattern of (lj.patterns || []).slice(0, 3)) {
+          parts.push(`- Review pattern: ${pattern}`);
+        }
+        for (const takeaway of (lj.key_takeaways || []).slice(0, 2)) {
+          parts.push(`- Lesson: ${takeaway}`);
+        }
+        for (const missed of (lj.missed_issues || []).slice(0, 2)) {
+          const cat = missed.category ? ` [${missed.category}]` : '';
+          const file = missed.file_path ? ` in ${missed.file_path}` : '';
+          parts.push(`- Previously missed${cat}${file}: ${missed.issue || missed}`);
+        }
+        for (const spot of (lj.review_blind_spots || []).slice(0, 3)) {
+          parts.push(`- Blind spot category: ${spot}`);
+        }
+        // Fallback for old format
+        if (lj.key_takeaway && !lj.key_takeaways) parts.push(`- Lesson: ${lj.key_takeaway}`);
         for (const missed of (lj.ai_missed || []).slice(0, 2)) {
           parts.push(`- Previously missed: ${missed}`);
-        }
-        for (const wrong of (lj.ai_wrong || []).slice(0, 1)) {
-          parts.push(`- Avoid: ${wrong}`);
         }
       }
       for (const f of feedback.slice(0, 2)) {
@@ -264,21 +277,52 @@ function parseReviewResponse(content: string): any {
 // Lesson generation LLM prompt
 // ---------------------------------------------------------------------------
 
-async function generateLessonsViaLLM(aiReview: any, peerComments: any[]): Promise<any> {
+async function generateLessonsViaLLM(aiReview: any, peerComments: any[], prDiff: string): Promise<any> {
   const client = getOllama();
 
-  const systemPrompt = `You are analyzing the quality of an AI code review by comparing it to actual human peer review comments on the same PR. You MUST respond with valid JSON only.
+  const systemPrompt = `You are an expert code review analyst comparing an AI-generated code review against actual human peer review comments on the same pull request. You have access to the PR diff for reference. You MUST respond with valid JSON only.
 
-Return a JSON object with this exact structure:
-{"ai_correct": ["things AI got right"], "ai_missed": ["things peers caught that AI missed"], "ai_wrong": ["things AI said that were inaccurate or unhelpful"], "key_takeaway": "one sentence summary of what to improve"}
+Return a JSON object with this EXACT structure:
+{
+  "missed_issues": [
+    {
+      "file_path": "path/to/file.ext",
+      "issue": "Detailed description of what the peer caught",
+      "category": "error_handling|security|performance|naming|testing|architecture|accessibility|documentation|logic_error|style",
+      "severity": "high|medium|low",
+      "peer_quote": "Relevant quote from peer comment"
+    }
+  ],
+  "wrong_calls": [
+    {
+      "ai_comment": "What the AI said",
+      "why_wrong": "Why it was incorrect, irrelevant, or too generic",
+      "category": "false_positive|too_generic|incorrect|irrelevant"
+    }
+  ],
+  "correct_calls": [
+    {
+      "ai_comment": "What the AI correctly identified",
+      "peer_agreed": true
+    }
+  ],
+  "patterns": [
+    "Specific, reusable pattern for future reviews (e.g., 'In Java entity classes, always verify @Column nullable/length annotations')"
+  ],
+  "review_blind_spots": ["category1", "category2"],
+  "key_takeaways": [
+    "Detailed, actionable takeaway with specific file/pattern references"
+  ]
+}
 
 Rules:
-- ai_correct: AI comments that align with what peers also flagged
-- ai_missed: Important issues peers raised that AI didn't mention at all
-- ai_wrong: AI comments that were wrong, irrelevant, or too generic
-- key_takeaway: Actionable one-liner for improving future reviews
-- If peers had no substantive comments, note that AI review was sufficient
-- Be concise — each item should be one sentence`;
+- missed_issues: Issues peers raised that AI completely missed. Include the specific file, category, and severity. Quote the peer.
+- wrong_calls: AI comments that were factually wrong, too generic to be useful, or irrelevant to the actual changes.
+- correct_calls: AI comments that aligned with peer feedback.
+- patterns: Reusable review rules derived from this comparison. Be specific — mention file types, frameworks, or code patterns. E.g., "When reviewing LWC components, always check for accessibility aria-* attributes" NOT "Be more thorough".
+- review_blind_spots: Categories (from the category enum) where AI consistently missed issues.
+- key_takeaways: 2-4 detailed, actionable lessons. Reference specific files, patterns, or issue types. NOT generic advice like "be more specific".
+- Use the PR diff to ground your analysis in actual code locations.`;
 
   const aiComments = (aiReview.comments || [])
     .map((c: any) => `- [${c.type || 'comment'}] ${c.file_path || 'general'}: ${c.comment}`)
@@ -288,7 +332,12 @@ Rules:
     .map((c: any) => `- [${c.reviewer}] ${c.file_path || 'general'}: ${c.body}`)
     .join('\n');
 
-  const userPrompt = `Compare these two reviews of the same PR:
+  const diffExcerpt = prDiff.substring(0, 4000);
+
+  const userPrompt = `Compare these two reviews of the same PR.
+
+PR Diff (excerpt):
+${diffExcerpt}
 
 AI Review (${(aiReview.comments || []).length} comments):
 ${aiComments || '(no AI comments)'}
@@ -298,7 +347,7 @@ AI Summary: ${aiReview.summary || 'N/A'}
 Peer Review (${peerComments.length} comments):
 ${peerLines || '(no peer comments)'}
 
-Respond with JSON: {"ai_correct": [...], "ai_missed": [...], "ai_wrong": [...], "key_takeaway": "..."}`;
+Analyze what the AI got right, what it missed, and what it got wrong. Derive specific, reusable patterns for future reviews. Respond with the structured JSON.`;
 
   try {
     const response = await client.chat({
@@ -308,19 +357,21 @@ Respond with JSON: {"ai_correct": [...], "ai_missed": [...], "ai_wrong": [...], 
         { role: 'user', content: userPrompt },
       ],
       format: 'json',
-      options: { temperature: 0.3, num_predict: 2048 },
+      options: { temperature: 0.3, num_predict: 4096 },
     });
 
     const parsed = JSON.parse(response.message.content.trim());
     return {
-      ai_correct: Array.isArray(parsed.ai_correct) ? parsed.ai_correct : [],
-      ai_missed: Array.isArray(parsed.ai_missed) ? parsed.ai_missed : [],
-      ai_wrong: Array.isArray(parsed.ai_wrong) ? parsed.ai_wrong : [],
-      key_takeaway: String(parsed.key_takeaway || ''),
+      missed_issues: Array.isArray(parsed.missed_issues) ? parsed.missed_issues : [],
+      wrong_calls: Array.isArray(parsed.wrong_calls) ? parsed.wrong_calls : [],
+      correct_calls: Array.isArray(parsed.correct_calls) ? parsed.correct_calls : [],
+      patterns: Array.isArray(parsed.patterns) ? parsed.patterns : [],
+      review_blind_spots: Array.isArray(parsed.review_blind_spots) ? parsed.review_blind_spots : [],
+      key_takeaways: Array.isArray(parsed.key_takeaways) ? parsed.key_takeaways : [String(parsed.key_takeaway || '')],
     };
   } catch (e: any) {
     logError(`    LLM lesson generation failed: ${e.message}`);
-    return { ai_correct: [], ai_missed: [], ai_wrong: [], key_takeaway: 'Lesson extraction failed' };
+    return { missed_issues: [], wrong_calls: [], correct_calls: [], patterns: [], review_blind_spots: [], key_takeaways: ['Lesson extraction failed'] };
   }
 }
 
@@ -415,11 +466,14 @@ async function processPR(pr: any): Promise<boolean> {
     let lessons: any;
     if (peerComments.length === 0) {
       log('  [9/9] No peer comments — storing placeholder lesson...');
-      lessons = { ai_correct: [], ai_missed: [], ai_wrong: [], key_takeaway: 'No peer comments available for comparison' };
+      lessons = { missed_issues: [], wrong_calls: [], correct_calls: [], patterns: [], review_blind_spots: [], key_takeaways: ['No peer comments available for comparison'] };
     } else {
       log('  [9/9] Comparing AI vs peer reviews via LLM...');
-      lessons = await generateLessonsViaLLM(review, peerComments);
-      log(`         Takeaway: ${lessons.key_takeaway}`);
+      lessons = await generateLessonsViaLLM(review, peerComments, prDiff);
+      log(`         Missed: ${lessons.missed_issues.length} | Wrong: ${lessons.wrong_calls.length} | Correct: ${lessons.correct_calls.length}`);
+      log(`         Patterns: ${(lessons.patterns || []).join('; ')}`);
+      log(`         Blind spots: ${(lessons.review_blind_spots || []).join(', ')}`);
+      for (const t of lessons.key_takeaways || []) log(`         Takeaway: ${t}`);
     }
 
     await reportLessons(pr_url, review, peerComments, lessons);
