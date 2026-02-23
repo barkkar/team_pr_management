@@ -33,40 +33,42 @@ async function findSimilarCodeChunks(embedding, topK = 10, minSimilarity = 0.3) 
  */
 async function findSuggestedReviewers(filePaths, excludeAuthor, topK = 5, similarReviews) {
     const candidateMap = new Map();
-    // Signal 1: Past reviewers of the same/similar files
+    // Signal 1: Past reviewers of the same/similar files (capped to avoid fuzzy match inflation)
     const reviewers = await (0, client_1.findReviewersByFiles)(filePaths, 20);
     for (const r of reviewers) {
         if (excludeAuthor && r.reviewer_login === excludeAuthor)
             continue;
+        const cappedCount = Math.min(r.review_count, 20);
         const existing = candidateMap.get(r.reviewer_login);
         if (existing) {
-            existing.score += r.review_count * 2; // Reviews are weighted more
+            existing.score += cappedCount * 2;
             existing.files = [...new Set([...existing.files, ...r.files])];
         }
         else {
             candidateMap.set(r.reviewer_login, {
                 ghe_login: r.reviewer_login,
-                score: r.review_count * 2,
+                score: cappedCount * 2,
                 reason: `reviewed ${r.review_count} similar file(s)`,
                 files: r.files,
             });
         }
     }
-    // Signal 2: Past authors of changes to the same files
+    // Signal 2: Past authors of changes to the same files (capped)
     const touchers = await (0, client_1.findCodeTouchersByFiles)(filePaths, 20);
     for (const t of touchers) {
         if (excludeAuthor && t.author_login === excludeAuthor)
             continue;
+        const cappedCount = Math.min(t.change_count, 20);
         const existing = candidateMap.get(t.author_login);
         if (existing) {
-            existing.score += t.change_count;
+            existing.score += cappedCount;
             existing.files = [...new Set([...existing.files, ...t.files])];
             existing.reason += `, changed ${t.change_count} related file(s)`;
         }
         else {
             candidateMap.set(t.author_login, {
                 ghe_login: t.author_login,
-                score: t.change_count,
+                score: cappedCount,
                 reason: `changed ${t.change_count} related file(s)`,
                 files: t.files,
             });
