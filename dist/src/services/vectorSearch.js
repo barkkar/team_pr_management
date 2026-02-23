@@ -33,46 +33,34 @@ async function findSimilarCodeChunks(embedding, topK = 10, minSimilarity = 0.3) 
  */
 async function findSuggestedReviewers(filePaths, excludeAuthor, topK = 5, similarReviews) {
     const candidateMap = new Map();
-    // Signal 1: Past reviewers of the same/similar files (capped to avoid fuzzy match inflation)
+    const ensureCandidate = (login) => {
+        if (!candidateMap.has(login)) {
+            candidateMap.set(login, {
+                ghe_login: login, score: 0, reason: '', files: [],
+                hasReviewed: false, hasAuthored: false, hasSemantic: false,
+            });
+        }
+        return candidateMap.get(login);
+    };
+    // Signal 1: Past reviewers of the same/similar files (capped)
     const reviewers = await (0, client_1.findReviewersByFiles)(filePaths, 20);
     for (const r of reviewers) {
         if (excludeAuthor && r.reviewer_login === excludeAuthor)
             continue;
-        const cappedCount = Math.min(r.review_count, 20);
-        const existing = candidateMap.get(r.reviewer_login);
-        if (existing) {
-            existing.score += cappedCount * 2;
-            existing.files = [...new Set([...existing.files, ...r.files])];
-        }
-        else {
-            candidateMap.set(r.reviewer_login, {
-                ghe_login: r.reviewer_login,
-                score: cappedCount * 2,
-                reason: `reviewed ${r.review_count} similar file(s)`,
-                files: r.files,
-            });
-        }
+        const c = ensureCandidate(r.reviewer_login);
+        c.score += Math.min(r.review_count, 20) * 2;
+        c.files = [...new Set([...c.files, ...r.files])];
+        c.hasReviewed = true;
     }
     // Signal 2: Past authors of changes to the same files (capped)
     const touchers = await (0, client_1.findCodeTouchersByFiles)(filePaths, 20);
     for (const t of touchers) {
         if (excludeAuthor && t.author_login === excludeAuthor)
             continue;
-        const cappedCount = Math.min(t.change_count, 20);
-        const existing = candidateMap.get(t.author_login);
-        if (existing) {
-            existing.score += cappedCount;
-            existing.files = [...new Set([...existing.files, ...t.files])];
-            existing.reason += `, changed ${t.change_count} related file(s)`;
-        }
-        else {
-            candidateMap.set(t.author_login, {
-                ghe_login: t.author_login,
-                score: cappedCount,
-                reason: `changed ${t.change_count} related file(s)`,
-                files: t.files,
-            });
-        }
+        const c = ensureCandidate(t.author_login);
+        c.score += Math.min(t.change_count, 20);
+        c.files = [...new Set([...c.files, ...t.files])];
+        c.hasAuthored = true;
     }
     // Signal 3: Reviewers from semantically similar past reviews (vector search)
     if (similarReviews && similarReviews.length > 0) {
@@ -85,24 +73,33 @@ async function findSuggestedReviewers(filePaths, excludeAuthor, topK = 5, simila
             reviewerCounts.set(sr.reviewer_login, (reviewerCounts.get(sr.reviewer_login) || 0) + 1);
         }
         for (const [login, count] of reviewerCounts) {
-            const semanticScore = count * 3; // Semantic relevance weighted highest
-            const existing = candidateMap.get(login);
-            if (existing) {
-                existing.score += semanticScore;
-                existing.reason += `, ${count} semantically similar review(s)`;
-            }
-            else {
-                candidateMap.set(login, {
-                    ghe_login: login,
-                    score: semanticScore,
-                    reason: `${count} semantically similar review(s)`,
-                    files: [],
-                });
-            }
+            const c = ensureCandidate(login);
+            c.score += count * 3;
+            c.hasSemantic = true;
         }
+    }
+    // Generate natural reasons
+    for (const c of candidateMap.values()) {
+        const parts = [];
+        if (c.hasReviewed && c.hasAuthored) {
+            parts.push("you've reviewed and contributed to similar files in this area");
+        }
+        else if (c.hasReviewed) {
+            parts.push("you've reviewed similar files in this area before");
+        }
+        else if (c.hasAuthored) {
+            parts.push("you've made changes to related code");
+        }
+        if (c.hasSemantic) {
+            parts.push(parts.length > 0
+                ? 'and have context from reviewing closely related PRs'
+                : "you've reviewed closely related PRs before");
+        }
+        c.reason = parts.join(' ') || 'familiar with this area of the codebase';
     }
     // Sort by score descending and take top K
     return Array.from(candidateMap.values())
+        .map(({ hasReviewed, hasAuthored, hasSemantic, ...rest }) => rest)
         .sort((a, b) => b.score - a.score)
         .slice(0, topK);
 }
