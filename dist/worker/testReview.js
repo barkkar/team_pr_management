@@ -110,64 +110,42 @@ async function fetchSimilarCode(embedding, topK = 5) {
     const response = await axios_1.default.post(`${HEROKU_API_URL}/api/search-similar-code`, { embedding, top_k: topK }, { headers: herokuHeaders(), timeout: 30000 });
     return response.data.chunks || [];
 }
-async function fetchSuggestedReviewers(filePaths, prAuthor) {
-    const response = await axios_1.default.post(`${HEROKU_API_URL}/api/suggested-reviewers`, { file_paths: filePaths, pr_author: prAuthor }, { headers: herokuHeaders(), timeout: 30000 });
+async function fetchSuggestedReviewers(filePaths, prAuthor, similarReviews) {
+    const response = await axios_1.default.post(`${HEROKU_API_URL}/api/suggested-reviewers`, { file_paths: filePaths, pr_author: prAuthor, similar_reviews: similarReviews || [] }, { headers: herokuHeaders(), timeout: 30000 });
     return response.data.reviewers || [];
 }
 // ---------------------------------------------------------------------------
 // LLM Prompts
 // ---------------------------------------------------------------------------
 function buildSystemPrompt() {
-    return `You are an expert code reviewer for a software engineering team. Your task is to review a pull request diff and provide helpful, constructive review comments.
+    return `You are an expert code reviewer. You MUST respond with valid JSON only. No markdown, no explanations, just JSON.
 
-You have access to:
-1. The PR diff (files changed)
-2. Similar past review comments from the team's history
-3. Codebase knowledge about the repository
+Review the pull request diff and return a JSON object with this exact structure:
 
-Guidelines:
-- Focus on substantive issues: bugs, logic errors, security concerns, performance problems
-- Reference past review patterns when relevant
-- Ask clarifying questions when intent is unclear
-- Suggest improvements based on codebase conventions
+{"summary": "1-2 sentence assessment", "comments": [{"file_path": "path/to/file", "line_hint": "location description", "comment": "your review comment", "type": "suggestion"}]}
+
+Rules for comments:
+- type must be one of: "comment", "question", "suggestion"
+- Focus on bugs, logic errors, security, performance, missing tests
+- Reference past team review patterns when provided
 - Be concise and actionable
-- Do NOT comment on trivial formatting or style unless it deviates significantly from codebase conventions
-
-Output your review as a JSON object with this structure:
-{
-  "comments": [
-    {
-      "file_path": "path/to/file.ts",
-      "line_hint": "brief description of the code location",
-      "comment": "your review comment",
-      "type": "comment|question|suggestion"
-    }
-  ],
-  "summary": "1-2 sentence overall assessment"
-}
-
-Respond ONLY with the JSON object, no markdown fences or other text.`;
+- Skip trivial style/formatting issues
+- Each comment must reference a specific file_path from the PR
+- You MUST return at least 1 comment`;
 }
 function buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode) {
     const parts = [];
-    parts.push(`## Pull Request: ${prTitle}`);
-    parts.push(`\n### Changed Files:\n${changedFiles.map(f => `- ${f}`).join('\n')}`);
+    parts.push(`Review this PR: "${prTitle}"`);
+    parts.push(`\nChanged files: ${changedFiles.join(', ')}`);
     if (similarReviews.length > 0) {
-        parts.push('\n### Relevant Past Review Comments (from team history):');
+        parts.push('\nPast team review comments on similar code:');
         for (const review of similarReviews.slice(0, 5)) {
-            parts.push(`\n**${review.org}/${review.repo}** - ${review.file_path || 'general'}:`);
-            parts.push(`> ${(review.comment_body || '').substring(0, 500)}`);
+            parts.push(`- ${review.file_path || 'general'}: "${(review.comment_body || '').substring(0, 300)}"`);
         }
     }
-    if (similarCode.length > 0) {
-        parts.push('\n### Related Codebase Context:');
-        for (const code of similarCode.slice(0, 3)) {
-            parts.push(`\n**${code.file_path}:**`);
-            parts.push(`\`\`\`\n${(code.content_chunk || '').substring(0, 1000)}\n\`\`\``);
-        }
-    }
-    parts.push('\n### PR Diff:');
-    parts.push(`\`\`\`diff\n${prDiff.substring(0, 15000)}\n\`\`\``);
+    // Limit diff to 8000 chars to leave room for LLM response
+    parts.push(`\nDiff:\n${prDiff.substring(0, 8000)}`);
+    parts.push('\nRespond with JSON: {"summary": "...", "comments": [{"file_path": "...", "line_hint": "...", "comment": "...", "type": "comment|question|suggestion"}]}');
     return parts.join('\n');
 }
 function parseReviewResponse(content) {
@@ -382,8 +360,14 @@ async function run() {
             options: { temperature: 0.3, num_predict: 8192 },
         });
         const rawResponse = response.message.content.trim();
+        console.log(`\n  Raw LLM response (first 500 chars):\n  ${rawResponse.substring(0, 500)}\n`);
         review = parseReviewResponse(rawResponse);
-        console.log(`\n  Summary: ${review.summary || 'N/A'}\n`);
+        // Handle empty or malformed responses
+        if (!review.comments || review.comments.length === 0) {
+            console.log('  ⚠️  LLM returned no comments. Raw response may not match expected schema.');
+            console.log(`  Full raw response:\n  ${rawResponse}\n`);
+        }
+        console.log(`  Summary: ${review.summary || 'N/A'}\n`);
         const comments = review.comments || [];
         console.log(`  ${comments.length} review comment(s):\n`);
         for (let i = 0; i < comments.length; i++) {
@@ -405,7 +389,7 @@ async function run() {
     separator('6. SUGGESTED REVIEWERS');
     let reviewers = [];
     try {
-        reviewers = await fetchSuggestedReviewers(changedFiles, prAuthor);
+        reviewers = await fetchSuggestedReviewers(changedFiles, prAuthor, similarReviews);
         if (reviewers.length === 0) {
             console.log('  No reviewer suggestions (not enough review history yet)');
         }

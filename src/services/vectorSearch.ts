@@ -55,14 +55,16 @@ export async function findSimilarCodeChunks(
 
 /**
  * Find suggested reviewers based on file paths changed in a PR.
- * Combines two signals:
- *   1. People who reviewed similar files before
+ * Combines three signals:
+ *   1. People who reviewed similar files before (directory-level fuzzy match)
  *   2. People who authored changes to similar files
+ *   3. People who appear in semantically similar past reviews (vector search)
  */
 export async function findSuggestedReviewers(
   filePaths: string[],
   excludeAuthor?: string,
   topK: number = 5,
+  similarReviews?: { reviewer_login?: string; similarity?: number }[],
 ): Promise<ReviewerCandidate[]> {
   const candidateMap = new Map<string, ReviewerCandidate>();
 
@@ -100,6 +102,31 @@ export async function findSuggestedReviewers(
         reason: `changed ${t.change_count} related file(s)`,
         files: t.files,
       });
+    }
+  }
+
+  // Signal 3: Reviewers from semantically similar past reviews (vector search)
+  if (similarReviews && similarReviews.length > 0) {
+    const reviewerCounts = new Map<string, number>();
+    for (const sr of similarReviews) {
+      if (!sr.reviewer_login) continue;
+      if (excludeAuthor && sr.reviewer_login === excludeAuthor) continue;
+      reviewerCounts.set(sr.reviewer_login, (reviewerCounts.get(sr.reviewer_login) || 0) + 1);
+    }
+    for (const [login, count] of reviewerCounts) {
+      const semanticScore = count * 3; // Semantic relevance weighted highest
+      const existing = candidateMap.get(login);
+      if (existing) {
+        existing.score += semanticScore;
+        existing.reason += `, ${count} semantically similar review(s)`;
+      } else {
+        candidateMap.set(login, {
+          ghe_login: login,
+          score: semanticScore,
+          reason: `${count} semantically similar review(s)`,
+          files: [],
+        });
+      }
     }
   }
 
