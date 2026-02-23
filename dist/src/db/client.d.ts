@@ -186,5 +186,10 @@ export declare function getDistinctRepos(): Promise<{
     org: string;
     repo: string;
 }[]>;
+export declare function insertOrUpdateFeedback(prUrl: string, userId: string, rating: string, feedbackText?: string): Promise<void>;
+export declare function getRecentFeedback(limit?: number): Promise<any[]>;
+export declare function insertReviewLessons(prUrl: string, aiReview: any, peerComments: any[], lessons: any): Promise<void>;
+export declare function getRecentLessons(limit?: number): Promise<any[]>;
+export declare function getPRsNeedingLessonExtraction(): Promise<any[]>;
 export { pool };
 //# sourceMappingURL=client.d.ts.map

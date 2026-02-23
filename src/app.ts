@@ -1,7 +1,7 @@
 import { App, LogLevel } from '@slack/bolt';
 import { trackPRsFromMessage } from './services/prTracker';
 import { containsPRLink } from './utils/prParser';
-import { addMonitoredChannel, removeMonitoredChannel, getMonitoredChannels, isChannelMonitored, getPendingReminders, getOpenUnreviewedPRs, getReviewStats, pool } from './db/client';
+import { addMonitoredChannel, removeMonitoredChannel, getMonitoredChannels, isChannelMonitored, getPendingReminders, getOpenUnreviewedPRs, getReviewStats, insertOrUpdateFeedback, pool } from './db/client';
 import { isChannelAllowed, getAllowedChannelIds } from './services/channelAccessControl';
 
 function formatWaitTime(postedAt: Date): string {
@@ -367,6 +367,114 @@ export function createApp(): App {
       });
     } catch (error) {
       console.error('Error publishing home view:', error);
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // AI Review Feedback — button action handlers
+  // ---------------------------------------------------------------------------
+
+  app.action('ai_review_helpful', async ({ action, ack, body, client }) => {
+    await ack();
+    const prUrl = (action as any).value || '';
+    const userId = body.user.id;
+    console.log(`[Feedback] 👍 Helpful from ${userId} for ${prUrl}`);
+
+    try {
+      await insertOrUpdateFeedback(prUrl, userId, 'helpful');
+    } catch (e: any) {
+      console.error(`[Feedback] DB error: ${e.message}`);
+    }
+
+    try {
+      await client.views.open({
+        trigger_id: (body as any).trigger_id,
+        view: {
+          type: 'modal',
+          callback_id: 'ai_review_feedback_modal',
+          private_metadata: JSON.stringify({ pr_url: prUrl, rating: 'helpful' }),
+          title: { type: 'plain_text', text: 'Thanks for the feedback!' },
+          submit: { type: 'plain_text', text: 'Submit' },
+          close: { type: 'plain_text', text: 'Skip' },
+          blocks: [
+            {
+              type: 'input',
+              block_id: 'feedback_block',
+              optional: true,
+              element: {
+                type: 'plain_text_input',
+                action_id: 'feedback_text',
+                multiline: true,
+                placeholder: { type: 'plain_text', text: 'What was most helpful? (optional)' },
+              },
+              label: { type: 'plain_text', text: 'Any details to share?' },
+            },
+          ],
+        },
+      });
+    } catch (e: any) {
+      console.error(`[Feedback] Modal error: ${e.message}`);
+    }
+  });
+
+  app.action('ai_review_not_helpful', async ({ action, ack, body, client }) => {
+    await ack();
+    const prUrl = (action as any).value || '';
+    const userId = body.user.id;
+    console.log(`[Feedback] 👎 Not helpful from ${userId} for ${prUrl}`);
+
+    try {
+      await insertOrUpdateFeedback(prUrl, userId, 'not_helpful');
+    } catch (e: any) {
+      console.error(`[Feedback] DB error: ${e.message}`);
+    }
+
+    try {
+      await client.views.open({
+        trigger_id: (body as any).trigger_id,
+        view: {
+          type: 'modal',
+          callback_id: 'ai_review_feedback_modal',
+          private_metadata: JSON.stringify({ pr_url: prUrl, rating: 'not_helpful' }),
+          title: { type: 'plain_text', text: 'Help us improve' },
+          submit: { type: 'plain_text', text: 'Submit' },
+          close: { type: 'plain_text', text: 'Skip' },
+          blocks: [
+            {
+              type: 'input',
+              block_id: 'feedback_block',
+              optional: true,
+              element: {
+                type: 'plain_text_input',
+                action_id: 'feedback_text',
+                multiline: true,
+                placeholder: { type: 'plain_text', text: 'What went wrong or was inaccurate?' },
+              },
+              label: { type: 'plain_text', text: 'What could be improved?' },
+            },
+          ],
+        },
+      });
+    } catch (e: any) {
+      console.error(`[Feedback] Modal error: ${e.message}`);
+    }
+  });
+
+  app.view('ai_review_feedback_modal', async ({ ack, view, body }) => {
+    await ack();
+    const userId = body.user.id;
+    const metadata = JSON.parse(view.private_metadata || '{}');
+    const prUrl = metadata.pr_url || '';
+    const rating = metadata.rating || 'helpful';
+    const feedbackText = view.state?.values?.feedback_block?.feedback_text?.value || '';
+
+    if (feedbackText) {
+      console.log(`[Feedback] Text from ${userId}: "${feedbackText.substring(0, 100)}"`);
+      try {
+        await insertOrUpdateFeedback(prUrl, userId, rating, feedbackText);
+      } catch (e: any) {
+        console.error(`[Feedback] DB error saving text: ${e.message}`);
+      }
     }
   });
 

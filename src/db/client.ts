@@ -562,4 +562,70 @@ export async function getDistinctRepos(): Promise<{ org: string; repo: string }[
   return result.rows;
 }
 
+// ---------------------------------------------------------------------------
+// AI Review Feedback (manual 👍/👎 from Slack)
+// ---------------------------------------------------------------------------
+
+export async function insertOrUpdateFeedback(
+  prUrl: string, userId: string, rating: string, feedbackText?: string,
+): Promise<void> {
+  await pool.query(`
+    INSERT INTO ai_review_feedback (pr_url, user_id, rating, feedback_text, created_at)
+    VALUES ($1, $2, $3, $4, NOW())
+    ON CONFLICT (pr_url, user_id) DO UPDATE SET
+      rating = $3, feedback_text = COALESCE($4, ai_review_feedback.feedback_text), created_at = NOW()
+  `, [prUrl, userId, rating, feedbackText || null]);
+}
+
+export async function getRecentFeedback(limit: number = 5): Promise<any[]> {
+  const result = await pool.query(`
+    SELECT f.pr_url, f.rating, f.feedback_text, ar.review_json
+    FROM ai_review_feedback f
+    LEFT JOIN pr_analysis_results ar ON f.pr_url = ar.pr_url
+    WHERE f.feedback_text IS NOT NULL AND f.feedback_text != ''
+    ORDER BY f.created_at DESC
+    LIMIT $1
+  `, [limit]);
+  return result.rows;
+}
+
+// ---------------------------------------------------------------------------
+// AI Review Lessons (automated post-merge comparison)
+// ---------------------------------------------------------------------------
+
+export async function insertReviewLessons(
+  prUrl: string, aiReview: any, peerComments: any[], lessons: any,
+): Promise<void> {
+  await pool.query(`
+    INSERT INTO ai_review_lessons (pr_url, ai_review_json, peer_comments_json, lessons_json, created_at)
+    VALUES ($1, $2, $3, $4, NOW())
+    ON CONFLICT (pr_url) DO UPDATE SET
+      ai_review_json = $2, peer_comments_json = $3, lessons_json = $4, created_at = NOW()
+  `, [prUrl, JSON.stringify(aiReview), JSON.stringify(peerComments), JSON.stringify(lessons)]);
+}
+
+export async function getRecentLessons(limit: number = 3): Promise<any[]> {
+  const result = await pool.query(`
+    SELECT pr_url, lessons_json, created_at
+    FROM ai_review_lessons
+    ORDER BY created_at DESC
+    LIMIT $1
+  `, [limit]);
+  return result.rows;
+}
+
+export async function getPRsNeedingLessonExtraction(): Promise<any[]> {
+  const result = await pool.query(`
+    SELECT ar.pr_url, ar.review_json, tp.org, tp.repo, tp.pr_number
+    FROM pr_analysis_results ar
+    JOIN tracked_prs tp ON ar.pr_url = tp.pr_url
+    LEFT JOIN ai_review_lessons al ON ar.pr_url = al.pr_url
+    WHERE tp.is_open = FALSE
+      AND al.id IS NULL
+    ORDER BY ar.created_at DESC
+    LIMIT 20
+  `);
+  return result.rows;
+}
+
 export { pool };

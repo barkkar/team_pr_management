@@ -150,6 +150,18 @@ async function fetchSuggestedReviewers(filePaths: string[], prAuthor: string, si
   return response.data.reviewers || [];
 }
 
+async function fetchLearningContext(): Promise<{ lessons: any[]; feedback: any[] }> {
+  try {
+    const response = await axios.get(
+      `${HEROKU_API_URL}/api/ai-learning-context?limit=5`,
+      { headers: herokuHeaders(), timeout: 15000 },
+    );
+    return { lessons: response.data.lessons || [], feedback: response.data.feedback || [] };
+  } catch {
+    return { lessons: [], feedback: [] };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // LLM Prompts
 // ---------------------------------------------------------------------------
@@ -177,6 +189,7 @@ function buildUserPrompt(
   changedFiles: string[],
   similarReviews: any[],
   similarCode: any[],
+  learningContext?: { lessons: any[]; feedback: any[] },
 ): string {
   const parts: string[] = [];
 
@@ -187,6 +200,28 @@ function buildUserPrompt(
     parts.push('\nPast team review comments on similar code:');
     for (const review of similarReviews.slice(0, 5)) {
       parts.push(`- ${review.file_path || 'general'}: "${(review.comment_body || '').substring(0, 300)}"`);
+    }
+  }
+
+  // Include learning context from past feedback and lessons
+  if (learningContext) {
+    const { lessons, feedback } = learningContext;
+    if (lessons.length > 0 || feedback.length > 0) {
+      parts.push('\nLearning from past reviews:');
+      for (const l of lessons.slice(0, 3)) {
+        const lj = typeof l.lessons_json === 'string' ? JSON.parse(l.lessons_json) : l.lessons_json;
+        if (lj.key_takeaway) parts.push(`- Lesson: ${lj.key_takeaway}`);
+        for (const missed of (lj.ai_missed || []).slice(0, 2)) {
+          parts.push(`- Previously missed: ${missed}`);
+        }
+        for (const wrong of (lj.ai_wrong || []).slice(0, 1)) {
+          parts.push(`- Avoid: ${wrong}`);
+        }
+      }
+      for (const f of feedback.slice(0, 2)) {
+        const prefix = f.rating === 'helpful' ? 'Team found helpful' : 'Team found unhelpful';
+        parts.push(`- ${prefix}: "${(f.feedback_text || '').substring(0, 200)}"`);
+      }
     }
   }
 
@@ -291,6 +326,17 @@ function formatSlackMessage(review: any, reviewers: any[]): { text: string; bloc
   } else {
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: '_No reviewer suggestions available yet._' } });
   }
+
+  // Feedback solicitation
+  blocks.push({ type: 'divider' });
+  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: ':speech_balloon: Was this review helpful? Your feedback helps improve future suggestions.' }] });
+  blocks.push({
+    type: 'actions',
+    elements: [
+      { type: 'button', text: { type: 'plain_text', text: ':thumbsup: Helpful', emoji: true }, action_id: 'ai_review_helpful', value: 'pr_url', style: 'primary' },
+      { type: 'button', text: { type: 'plain_text', text: ':thumbsdown: Not Helpful', emoji: true }, action_id: 'ai_review_not_helpful', value: 'pr_url' },
+    ],
+  });
 
   const text = `:robot_face: AI Review Intelligence — ${comments.length} comment(s), ${reviewers?.length || 0} reviewer suggestion(s)`;
   return { text, blocks };
@@ -413,11 +459,31 @@ async function run(): Promise<void> {
     console.log(`  No related code found: ${error.message}`);
   }
 
-  // 4. LLM review
-  separator('5. AI REVIEW (via Ollama)');
+  // 4. Learning context
+  separator('5. LEARNING CONTEXT');
+  let learningContext: { lessons: any[]; feedback: any[] } = { lessons: [], feedback: [] };
+  try {
+    learningContext = await fetchLearningContext();
+    console.log(`  ${learningContext.lessons.length} lesson(s) from past reviews, ${learningContext.feedback.length} feedback item(s)`);
+    for (const l of learningContext.lessons) {
+      const lj = typeof l.lessons_json === 'string' ? JSON.parse(l.lessons_json) : l.lessons_json;
+      console.log(`  - Takeaway: ${lj.key_takeaway || 'N/A'}`);
+    }
+    for (const f of learningContext.feedback) {
+      console.log(`  - ${f.rating}: "${(f.feedback_text || '').substring(0, 100)}"`);
+    }
+    if (learningContext.lessons.length === 0 && learningContext.feedback.length === 0) {
+      console.log('  No learning context yet — will improve as PRs are reviewed and closed.');
+    }
+  } catch (error: any) {
+    console.log(`  Could not fetch learning context: ${error.message}`);
+  }
+
+  // 5. LLM review
+  separator('6. AI REVIEW (via Ollama)');
   log(`Generating review with ${OLLAMA_MODEL}... (this may take a minute)`);
   const systemPrompt = buildSystemPrompt();
-  const userPrompt = buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode);
+  const userPrompt = buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext);
 
   let review: any;
   try {
@@ -459,7 +525,7 @@ async function run(): Promise<void> {
   }
 
   // 5. Suggested reviewers
-  separator('6. SUGGESTED REVIEWERS');
+  separator('7. SUGGESTED REVIEWERS');
   let reviewers: any[] = [];
   try {
     reviewers = await fetchSuggestedReviewers(changedFiles, prAuthor, similarReviews);
@@ -477,7 +543,7 @@ async function run(): Promise<void> {
   }
 
   // 6. Slack message preview
-  separator('7. SLACK MESSAGE PREVIEW');
+  separator('8. SLACK MESSAGE PREVIEW');
   const slackMessage = formatSlackMessage(review, reviewers);
   console.log('  Below is what would be posted as a Slack thread reply:\n');
   console.log('  ┌─────────────────────────────────────────────────────────┐');
@@ -502,7 +568,7 @@ async function run(): Promise<void> {
   const postChannel = process.argv.find(a => a.startsWith('--channel='))?.split('=')[1];
 
   if (shouldPost) {
-    separator('8. POSTING TO SLACK');
+    separator('9. POSTING TO SLACK');
     const slackToken = process.env.SLACK_BOT_TOKEN;
     if (!slackToken) {
       logError('SLACK_BOT_TOKEN is required to post. Skipping Slack post.');

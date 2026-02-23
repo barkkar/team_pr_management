@@ -64,7 +64,7 @@ function validateApiKey(req) {
     return apiKey === expectedKey;
 }
 // Format AI analysis results into Slack message blocks
-function formatSlackAnalysis(review, reviewers) {
+function formatSlackAnalysis(review, reviewers, prUrl) {
     const blocks = [];
     // Header
     blocks.push({
@@ -181,6 +181,35 @@ function formatSlackAnalysis(review, reviewers) {
                 type: 'mrkdwn',
                 text: '_No reviewer suggestions available yet._',
             },
+        });
+    }
+    // Feedback solicitation
+    blocks.push({ type: 'divider' });
+    blocks.push({
+        type: 'context',
+        elements: [{
+                type: 'mrkdwn',
+                text: ':speech_balloon: Was this review helpful? Your feedback helps improve future suggestions.',
+            }],
+    });
+    if (prUrl) {
+        blocks.push({
+            type: 'actions',
+            elements: [
+                {
+                    type: 'button',
+                    text: { type: 'plain_text', text: ':thumbsup: Helpful', emoji: true },
+                    action_id: 'ai_review_helpful',
+                    value: prUrl,
+                    style: 'primary',
+                },
+                {
+                    type: 'button',
+                    text: { type: 'plain_text', text: ':thumbsdown: Not Helpful', emoji: true },
+                    action_id: 'ai_review_not_helpful',
+                    value: prUrl,
+                },
+            ],
         });
     }
     const text = `:robot_face: AI Review Intelligence — ${comments.length} comment(s), ${reviewers?.length || 0} reviewer suggestion(s)`;
@@ -644,7 +673,7 @@ async function main() {
                 // Format and post Slack thread reply
                 if (channel_id && channel_id !== 'manual' && message_ts && message_ts !== '0') {
                     try {
-                        const slackMessage = formatSlackAnalysis(review, reviewers);
+                        const slackMessage = formatSlackAnalysis(review, reviewers, pr_url);
                         await app.client.chat.postMessage({
                             channel: channel_id,
                             thread_ts: message_ts,
@@ -660,6 +689,74 @@ async function main() {
                 }
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ ok: true }));
+                return;
+            }
+            // ========== AI Review Feedback & Learning Endpoints ==========
+            // Store manual feedback (from Slack buttons or direct API)
+            if (url === '/api/ai-feedback' && method === 'POST') {
+                if (!validateApiKey(req)) {
+                    res.writeHead(401, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Unauthorized' }));
+                    return;
+                }
+                const body = await parseJsonBody(req);
+                const { pr_url, user_id, rating, feedback_text } = body;
+                if (!pr_url || !user_id || !rating) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'pr_url, user_id, and rating are required' }));
+                    return;
+                }
+                await (0, client_1.insertOrUpdateFeedback)(pr_url, user_id, rating, feedback_text);
+                console.log(`[Worker API] Stored feedback: ${rating} for ${pr_url}`);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: true }));
+                return;
+            }
+            // Get closed PRs needing lesson extraction
+            if (url === '/api/prs-needing-lessons' && method === 'GET') {
+                if (!validateApiKey(req)) {
+                    res.writeHead(401, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Unauthorized' }));
+                    return;
+                }
+                const prs = await (0, client_1.getPRsNeedingLessonExtraction)();
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ prs }));
+                return;
+            }
+            // Store lesson extraction results from reviewLearner worker
+            if (url === '/api/ai-lessons' && method === 'POST') {
+                if (!validateApiKey(req)) {
+                    res.writeHead(401, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Unauthorized' }));
+                    return;
+                }
+                const body = await parseJsonBody(req);
+                const { pr_url, ai_review, peer_comments, lessons } = body;
+                if (!pr_url) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'pr_url is required' }));
+                    return;
+                }
+                await (0, client_1.insertReviewLessons)(pr_url, ai_review || {}, peer_comments || [], lessons || {});
+                console.log(`[Worker API] Stored lessons for ${pr_url}`);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: true }));
+                return;
+            }
+            // Get combined learning context (lessons + feedback) for LLM prompt enrichment
+            if (url.startsWith('/api/ai-learning-context') && method === 'GET') {
+                if (!validateApiKey(req)) {
+                    res.writeHead(401, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Unauthorized' }));
+                    return;
+                }
+                const params = new URL(url, `http://${req.headers.host}`).searchParams;
+                const limit = parseInt(params.get('limit') || '5', 10);
+                const lessons = await (0, client_1.getRecentLessons)(Math.min(limit, 3));
+                const feedback = await (0, client_1.getRecentFeedback)(Math.min(limit, 3));
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ lessons, feedback }));
                 return;
             }
             // Not found
