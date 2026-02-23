@@ -875,6 +875,31 @@ async function main(): Promise<void> {
         return;
       }
 
+      // Get closed tracked PRs that don't have lessons yet (for bootstrap learning)
+      if (url.startsWith('/api/closed-prs-without-lessons') && method === 'GET') {
+        if (!validateApiKey(req)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+
+        const params = new URL(url, `http://${req.headers.host}`).searchParams;
+        const limit = Math.min(parseInt(params.get('limit') || '50', 10), 100);
+
+        const result = await pool.query(`
+          SELECT tp.pr_url, tp.org, tp.repo, tp.pr_number, tp.channel_id, tp.message_ts
+          FROM tracked_prs tp
+          LEFT JOIN ai_review_lessons al ON tp.pr_url = al.pr_url
+          WHERE tp.is_open = FALSE AND al.id IS NULL
+          ORDER BY tp.created_at DESC
+          LIMIT $1
+        `, [limit]);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ prs: result.rows }));
+        return;
+      }
+
       // Not found
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Not Found' }));

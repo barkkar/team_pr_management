@@ -22,7 +22,8 @@
     "analyze-pr": "node dist/worker/prAnalyzer.js",
     "test-review": "node dist/worker/testReview.js",
     "review-learn": "node dist/worker/reviewLearner.js",
-    "review-learn:watch": "node dist/worker/reviewLearner.js --watch"
+    "review-learn:watch": "node dist/worker/reviewLearner.js --watch",
+    "bootstrap-learn": "node dist/worker/bootstrapLearner.js"
   },
   "engines": {
     "node": "20.x",
