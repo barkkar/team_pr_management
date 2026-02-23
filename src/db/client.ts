@@ -523,28 +523,37 @@ export async function searchSimilarCode(embedding: number[], topK: number = 10):
 }
 
 export async function findReviewersByFiles(filePaths: string[], topK: number = 10): Promise<{ reviewer_login: string; review_count: number; files: string[] }[]> {
+  // Extract unique parent directories for fuzzy matching
+  const dirs = [...new Set(filePaths.map(f => f.split('/').slice(0, -1).join('/')).filter(d => d.length > 0))];
+  const dirPatterns = dirs.map(d => d + '/%');
+
   const result = await pool.query(`
     SELECT reviewer_login, COUNT(*) as review_count,
            array_agg(DISTINCT file_path) as files
     FROM pr_reviews
     WHERE file_path = ANY($1)
+       OR file_path LIKE ANY($3)
     GROUP BY reviewer_login
     ORDER BY review_count DESC
     LIMIT $2
-  `, [filePaths, topK]);
+  `, [filePaths, topK, dirPatterns]);
   return result.rows;
 }
 
 export async function findCodeTouchersByFiles(filePaths: string[], topK: number = 10): Promise<{ author_login: string; change_count: number; files: string[] }[]> {
+  // Extract unique parent directories for fuzzy matching
+  const dirs = [...new Set(filePaths.map(f => f.split('/').slice(0, -1).join('/')).filter(d => d.length > 0))];
+  const dirPatterns = dirs.map(d => d + '/%');
+
   const result = await pool.query(`
     SELECT author_login, COUNT(*) as change_count,
            array_agg(DISTINCT file_path) as files
     FROM pr_files
-    WHERE file_path = ANY($1) AND author_login IS NOT NULL
+    WHERE (file_path = ANY($1) OR file_path LIKE ANY($3)) AND author_login IS NOT NULL
     GROUP BY author_login
     ORDER BY change_count DESC
     LIMIT $2
-  `, [filePaths, topK]);
+  `, [filePaths, topK, dirPatterns]);
   return result.rows;
 }
 
