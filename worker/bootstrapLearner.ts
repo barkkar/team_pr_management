@@ -155,8 +155,16 @@ async function fetchSimilarCode(embedding: number[], topK: number = 5): Promise<
   return response.data.chunks || [];
 }
 
-async function fetchLearningContext(): Promise<{ lessons: any[]; feedback: any[] }> {
+async function fetchLearningContext(embedding?: number[]): Promise<{ lessons: any[]; feedback: any[] }> {
   try {
+    if (embedding && embedding.length > 0) {
+      const response = await axios.post(
+        `${HEROKU_API_URL}/api/ai-learning-context?limit=5`,
+        { embedding },
+        { headers: herokuHeaders(), timeout: 15000 },
+      );
+      return { lessons: response.data.lessons || [], feedback: response.data.feedback || [] };
+    }
     const response = await axios.get(
       `${HEROKU_API_URL}/api/ai-learning-context?limit=5`,
       { headers: herokuHeaders(), timeout: 15000 },
@@ -175,9 +183,9 @@ async function reportAnalysisResults(data: {
   });
 }
 
-async function reportLessons(prUrl: string, aiReview: any, peerComments: any[], lessons: any): Promise<void> {
+async function reportLessons(prUrl: string, aiReview: any, peerComments: any[], lessons: any, embedding?: number[]): Promise<void> {
   await axios.post(`${HEROKU_API_URL}/api/ai-lessons`, {
-    pr_url: prUrl, ai_review: aiReview, peer_comments: peerComments, lessons,
+    pr_url: prUrl, ai_review: aiReview, peer_comments: peerComments, lessons, embedding,
   }, { headers: herokuHeaders(), timeout: 30000 });
 }
 
@@ -430,8 +438,8 @@ async function processPR(pr: any): Promise<boolean> {
     } catch { /* no results */ }
     log(`         ${similarReviews.length} similar reviews, ${similarCode.length} code chunks`);
 
-    // 4. Fetch learning context
-    const learningContext = await fetchLearningContext();
+    // 4. Fetch learning context (using embedding for relevance)
+    const learningContext = await fetchLearningContext(diffEmbedding);
 
     // 5. Generate AI review via LLM
     log('  [6/9] Generating AI review via Ollama...');
@@ -483,7 +491,7 @@ async function processPR(pr: any): Promise<boolean> {
       for (const t of lessons.key_takeaways || []) log(`         Takeaway: ${t}`);
     }
 
-    await reportLessons(pr_url, review, peerComments, lessons);
+    await reportLessons(pr_url, review, peerComments, lessons, diffEmbedding);
     log('  ✅ Complete!');
     return true;
   } catch (error: any) {

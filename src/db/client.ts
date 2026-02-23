@@ -594,14 +594,24 @@ export async function getRecentFeedback(limit: number = 5): Promise<any[]> {
 // ---------------------------------------------------------------------------
 
 export async function insertReviewLessons(
-  prUrl: string, aiReview: any, peerComments: any[], lessons: any,
+  prUrl: string, aiReview: any, peerComments: any[], lessons: any, embedding?: number[],
 ): Promise<void> {
-  await pool.query(`
-    INSERT INTO ai_review_lessons (pr_url, ai_review_json, peer_comments_json, lessons_json, created_at)
-    VALUES ($1, $2, $3, $4, NOW())
-    ON CONFLICT (pr_url) DO UPDATE SET
-      ai_review_json = $2, peer_comments_json = $3, lessons_json = $4, created_at = NOW()
-  `, [prUrl, JSON.stringify(aiReview), JSON.stringify(peerComments), JSON.stringify(lessons)]);
+  if (embedding && embedding.length > 0) {
+    const embeddingStr = `[${embedding.join(',')}]`;
+    await pool.query(`
+      INSERT INTO ai_review_lessons (pr_url, ai_review_json, peer_comments_json, lessons_json, embedding, created_at)
+      VALUES ($1, $2, $3, $4, $5::vector, NOW())
+      ON CONFLICT (pr_url) DO UPDATE SET
+        ai_review_json = $2, peer_comments_json = $3, lessons_json = $4, embedding = $5::vector, created_at = NOW()
+    `, [prUrl, JSON.stringify(aiReview), JSON.stringify(peerComments), JSON.stringify(lessons), embeddingStr]);
+  } else {
+    await pool.query(`
+      INSERT INTO ai_review_lessons (pr_url, ai_review_json, peer_comments_json, lessons_json, created_at)
+      VALUES ($1, $2, $3, $4, NOW())
+      ON CONFLICT (pr_url) DO UPDATE SET
+        ai_review_json = $2, peer_comments_json = $3, lessons_json = $4, created_at = NOW()
+    `, [prUrl, JSON.stringify(aiReview), JSON.stringify(peerComments), JSON.stringify(lessons)]);
+  }
 }
 
 export async function getRecentLessons(limit: number = 3): Promise<any[]> {
@@ -611,6 +621,19 @@ export async function getRecentLessons(limit: number = 3): Promise<any[]> {
     ORDER BY created_at DESC
     LIMIT $1
   `, [limit]);
+  return result.rows;
+}
+
+export async function getSimilarLessons(embedding: number[], limit: number = 5): Promise<any[]> {
+  const embeddingStr = `[${embedding.join(',')}]`;
+  const result = await pool.query(`
+    SELECT pr_url, lessons_json, created_at,
+           1 - (embedding <=> $1::vector) AS similarity
+    FROM ai_review_lessons
+    WHERE embedding IS NOT NULL
+    ORDER BY embedding <=> $1::vector
+    LIMIT $2
+  `, [embeddingStr, limit]);
   return result.rows;
 }
 

@@ -116,8 +116,12 @@ async function fetchSuggestedReviewers(filePaths, prAuthor, similarReviews) {
     const response = await axios_1.default.post(`${HEROKU_API_URL}/api/suggested-reviewers`, { file_paths: filePaths, pr_author: prAuthor, similar_reviews: similarReviews || [] }, { headers: herokuHeaders(), timeout: 30000 });
     return response.data.reviewers || [];
 }
-async function fetchLearningContext() {
+async function fetchLearningContext(embedding) {
     try {
+        if (embedding && embedding.length > 0) {
+            const response = await axios_1.default.post(`${HEROKU_API_URL}/api/ai-learning-context?limit=5`, { embedding }, { headers: herokuHeaders(), timeout: 15000 });
+            return { lessons: response.data.lessons || [], feedback: response.data.feedback || [] };
+        }
         const response = await axios_1.default.get(`${HEROKU_API_URL}/api/ai-learning-context?limit=5`, { headers: herokuHeaders(), timeout: 15000 });
         return { lessons: response.data.lessons || [], feedback: response.data.feedback || [] };
     }
@@ -281,10 +285,10 @@ async function analyzePR(prUrl, channelId, messageTs) {
     catch (error) {
         log(`  No related code found: ${error.message}`);
     }
-    // 3b. Fetch learning context (lessons + feedback from past reviews)
-    log('  Fetching learning context...');
-    const learningContext = await fetchLearningContext();
-    log(`  Got ${learningContext.lessons.length} lesson(s), ${learningContext.feedback.length} feedback item(s)`);
+    // 3b. Fetch learning context (lessons + feedback from similar past reviews)
+    log('  Fetching relevant learning context...');
+    const learningContext = await fetchLearningContext(diffEmbedding);
+    log(`  Got ${learningContext.lessons.length} relevant lesson(s), ${learningContext.feedback.length} feedback item(s)`);
     // 4. Generate review via LLM
     log('  Generating AI review via Ollama...');
     const client = getOllama();

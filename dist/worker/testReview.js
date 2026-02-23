@@ -114,8 +114,12 @@ async function fetchSuggestedReviewers(filePaths, prAuthor, similarReviews) {
     const response = await axios_1.default.post(`${HEROKU_API_URL}/api/suggested-reviewers`, { file_paths: filePaths, pr_author: prAuthor, similar_reviews: similarReviews || [] }, { headers: herokuHeaders(), timeout: 30000 });
     return response.data.reviewers || [];
 }
-async function fetchLearningContext() {
+async function fetchLearningContext(embedding) {
     try {
+        if (embedding && embedding.length > 0) {
+            const response = await axios_1.default.post(`${HEROKU_API_URL}/api/ai-learning-context?limit=5`, { embedding }, { headers: herokuHeaders(), timeout: 15000 });
+            return { lessons: response.data.lessons || [], feedback: response.data.feedback || [] };
+        }
         const response = await axios_1.default.get(`${HEROKU_API_URL}/api/ai-learning-context?limit=5`, { headers: herokuHeaders(), timeout: 15000 });
         return { lessons: response.data.lessons || [], feedback: response.data.feedback || [] };
     }
@@ -404,11 +408,15 @@ async function run() {
     separator('5. LEARNING CONTEXT');
     let learningContext = { lessons: [], feedback: [] };
     try {
-        learningContext = await fetchLearningContext();
-        console.log(`  ${learningContext.lessons.length} lesson(s) from past reviews, ${learningContext.feedback.length} feedback item(s)`);
+        learningContext = await fetchLearningContext(diffEmbedding);
+        console.log(`  ${learningContext.lessons.length} relevant lesson(s), ${learningContext.feedback.length} feedback item(s)`);
         for (const l of learningContext.lessons) {
             const lj = typeof l.lessons_json === 'string' ? JSON.parse(l.lessons_json) : l.lessons_json;
-            console.log(`  - Takeaway: ${lj.key_takeaway || 'N/A'}`);
+            const similarity = l.similarity ? ` (similarity: ${(l.similarity * 100).toFixed(1)}%)` : '';
+            for (const t of (lj.key_takeaways || []))
+                console.log(`  - Takeaway${similarity}: ${t}`);
+            if (lj.key_takeaway && !lj.key_takeaways)
+                console.log(`  - Takeaway${similarity}: ${lj.key_takeaway}`);
         }
         for (const f of learningContext.feedback) {
             console.log(`  - ${f.rating}: "${(f.feedback_text || '').substring(0, 100)}"`);
