@@ -33,7 +33,7 @@ function herokuHeaders(): Record<string, string> {
   };
 }
 
-function truncateForEmbedding(text: string, maxChars: number = 30000): string {
+function truncateForEmbedding(text: string, maxChars: number = 6000): string {
   if (text.length <= maxChars) return text;
   return text.substring(0, maxChars);
 }
