@@ -196,6 +196,68 @@ function parseReviewResponse(content) {
     }
 }
 // ---------------------------------------------------------------------------
+// Slack message formatter (mirrors formatSlackAnalysis in src/index.ts)
+// ---------------------------------------------------------------------------
+function formatSlackMessage(review, reviewers) {
+    const blocks = [];
+    blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: ':robot_face: *AI Review Intelligence*' },
+    });
+    const comments = review?.comments || [];
+    if (comments.length > 0) {
+        const commentsByType = { comment: [], question: [], suggestion: [] };
+        for (const c of comments) {
+            const t = c.type || 'comment';
+            if (!commentsByType[t])
+                commentsByType[t] = [];
+            commentsByType[t].push(c);
+        }
+        if (commentsByType.comment.length > 0) {
+            const lines = commentsByType.comment.map((c) => {
+                const prefix = c.file_path ? `\`${c.file_path}\`` : '';
+                const hint = c.line_hint ? ` (${c.line_hint})` : '';
+                return `• ${prefix}${hint} ${c.comment}`;
+            }).join('\n');
+            blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `:memo: *Review Comments:*\n${lines}` } });
+        }
+        if (commentsByType.question.length > 0) {
+            const lines = commentsByType.question.map((c) => {
+                const prefix = c.file_path ? `\`${c.file_path}\`` : '';
+                return `• ${prefix} ${c.comment}`;
+            }).join('\n');
+            blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `:question: *Questions:*\n${lines}` } });
+        }
+        if (commentsByType.suggestion.length > 0) {
+            const lines = commentsByType.suggestion.map((c) => {
+                const prefix = c.file_path ? `\`${c.file_path}\`` : '';
+                return `• ${prefix} ${c.comment}`;
+            }).join('\n');
+            blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `:bulb: *Suggestions:*\n${lines}` } });
+        }
+    }
+    else {
+        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: '_No specific review comments generated._' } });
+    }
+    if (review?.summary) {
+        blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `*Summary:* ${review.summary}` }] });
+    }
+    blocks.push({ type: 'divider' });
+    if (reviewers && reviewers.length > 0) {
+        const reviewerLines = reviewers.map((r, i) => {
+            const mention = r.slack_user_id ? `<@${r.slack_user_id}>` : `\`${r.ghe_login}\``;
+            const name = r.display_name ? ` (${r.display_name})` : '';
+            return `${i + 1}. ${mention}${name} — ${r.reason}`;
+        }).join('\n');
+        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `:busts_in_silhouette: *Suggested Reviewers:*\n${reviewerLines}` } });
+    }
+    else {
+        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: ':busts_in_silhouette: *Suggested Reviewers:*\n_No reviewer suggestions available yet._' } });
+    }
+    const text = `:robot_face: AI Review Intelligence — ${comments.length} comment(s), ${reviewers?.length || 0} reviewer suggestion(s)`;
+    return { text, blocks };
+}
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 async function run() {
@@ -316,7 +378,8 @@ async function run() {
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: userPrompt },
             ],
-            options: { temperature: 0.3, num_predict: 4096 },
+            format: 'json',
+            options: { temperature: 0.3, num_predict: 8192 },
         });
         const rawResponse = response.message.content.trim();
         review = parseReviewResponse(rawResponse);
@@ -340,8 +403,9 @@ async function run() {
     }
     // 5. Suggested reviewers
     separator('6. SUGGESTED REVIEWERS');
+    let reviewers = [];
     try {
-        const reviewers = await fetchSuggestedReviewers(changedFiles, prAuthor);
+        reviewers = await fetchSuggestedReviewers(changedFiles, prAuthor);
         if (reviewers.length === 0) {
             console.log('  No reviewer suggestions (not enough review history yet)');
         }
@@ -349,15 +413,78 @@ async function run() {
             for (let i = 0; i < reviewers.length; i++) {
                 const r = reviewers[i];
                 console.log(`  [${i + 1}] ${r.ghe_login}${r.slack_user_id ? ` (Slack: <@${r.slack_user_id}>)` : ''}`);
-                console.log(`      Score: ${r.score}  Reviews: ${r.review_count || 0}  File touches: ${r.file_touch_count || 0}`);
+                console.log(`      Score: ${r.score}  Reason: ${r.reason || 'N/A'}`);
             }
         }
     }
     catch (error) {
         console.log(`  Could not fetch reviewer suggestions: ${error.message}`);
     }
+    // 6. Slack message preview
+    separator('7. SLACK MESSAGE PREVIEW');
+    const slackMessage = formatSlackMessage(review, reviewers);
+    console.log('  Below is what would be posted as a Slack thread reply:\n');
+    console.log('  ┌─────────────────────────────────────────────────────────┐');
+    for (const block of slackMessage.blocks) {
+        if (block.type === 'divider') {
+            console.log('  │ ─────────────────────────────────────────────────────── │');
+        }
+        else if (block.type === 'section' && block.text?.text) {
+            const lines = block.text.text.split('\n');
+            for (const line of lines) {
+                console.log(`  │ ${line}`);
+            }
+        }
+        else if (block.type === 'context' && block.elements) {
+            for (const el of block.elements) {
+                console.log(`  │ ${el.text}`);
+            }
+        }
+    }
+    console.log('  └─────────────────────────────────────────────────────────┘');
+    // Post to Slack if --post flag is passed
+    const shouldPost = process.argv.includes('--post');
+    const postChannel = process.argv.find(a => a.startsWith('--channel='))?.split('=')[1];
+    if (shouldPost) {
+        separator('8. POSTING TO SLACK');
+        const slackToken = process.env.SLACK_BOT_TOKEN;
+        if (!slackToken) {
+            logError('SLACK_BOT_TOKEN is required to post. Skipping Slack post.');
+        }
+        else if (!postChannel) {
+            logError('Provide --channel=CHANNEL_ID to post. Example: --post --channel=C0123456');
+        }
+        else {
+            log(`Posting to channel ${postChannel}...`);
+            try {
+                const postResp = await axios_1.default.post('https://slack.com/api/chat.postMessage', {
+                    channel: postChannel,
+                    text: slackMessage.text,
+                    blocks: slackMessage.blocks,
+                }, {
+                    headers: {
+                        Authorization: `Bearer ${slackToken}`,
+                        'Content-Type': 'application/json',
+                    },
+                    timeout: 15000,
+                });
+                if (postResp.data.ok) {
+                    log(`✅ Posted to Slack! ts=${postResp.data.ts}`);
+                }
+                else {
+                    logError(`Slack API error: ${postResp.data.error}`);
+                }
+            }
+            catch (error) {
+                logError(`Failed to post to Slack: ${error.message}`);
+            }
+        }
+    }
     separator('DONE');
-    console.log('  This was a dry run — nothing was saved or posted to Slack.\n');
+    if (!shouldPost) {
+        console.log('  This was a dry run — nothing was saved or posted to Slack.');
+        console.log('  To post to Slack, re-run with: --post --channel=CHANNEL_ID\n');
+    }
 }
 run().then(() => process.exit(0)).catch((error) => {
     logError(`Fatal error: ${error}`);

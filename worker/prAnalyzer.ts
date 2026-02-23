@@ -332,7 +332,8 @@ async function analyzePR(prUrl: string, channelId: string, messageTs: string): P
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
       ],
-      options: { temperature: 0.3, num_predict: 4096 },
+      format: 'json',
+      options: { temperature: 0.3, num_predict: 8192 },
     });
     review = parseReviewResponse(response.message.content.trim());
     log(`  Generated ${review.comments?.length || 0} review comments`);
