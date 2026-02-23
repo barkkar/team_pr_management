@@ -58,7 +58,7 @@ export async function generateBatchEmbeddings(texts: string[]): Promise<number[]
  * Truncate text to fit within embedding model context window.
  * Most embedding models handle ~8192 tokens; we approximate at ~4 chars/token.
  */
-export function truncateForEmbedding(text: string, maxChars: number = 2000): string {
+export function truncateForEmbedding(text: string, maxChars: number = 30000): string {
   if (text.length <= maxChars) return text;
   return text.substring(0, maxChars);
 }

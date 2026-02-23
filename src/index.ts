@@ -469,6 +469,7 @@ async function main(): Promise<void> {
           return;
         }
 
+<<<<<<< /Users/aarasakutti/Documents/GitHub/team_pr_management/src/index.ts
         try {
           const body = await parseJsonBody(req);
           let count = 0;
@@ -489,6 +490,22 @@ async function main(): Promise<void> {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: err.message }));
         }
+=======
+        const body = await parseJsonBody(req);
+        let count = 0;
+
+        for (const emb of (body.embeddings || [])) {
+          await insertEmbedding(
+            emb.content_type, emb.source_id, emb.content_text,
+            emb.embedding, emb.metadata || {},
+          );
+          count++;
+        }
+
+        console.log(`[Worker API] Stored ${count} embeddings`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ count }));
+>>>>>>> /Users/aarasakutti/.windsurf/worktrees/team_pr_management/team_pr_management-fa43e581/src/index.ts
         return;
       }
 
@@ -500,6 +517,7 @@ async function main(): Promise<void> {
           return;
         }
 
+<<<<<<< /Users/aarasakutti/Documents/GitHub/team_pr_management/src/index.ts
         try {
           const body = await parseJsonBody(req);
           let count = 0;
@@ -517,6 +535,19 @@ async function main(): Promise<void> {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: err.message }));
         }
+=======
+        const body = await parseJsonBody(req);
+        let count = 0;
+
+        for (const update of (body.updates || [])) {
+          await updateRepoKnowledgeEmbedding(update.id, update.embedding);
+          count++;
+        }
+
+        console.log(`[Worker API] Updated ${count} repo knowledge embeddings`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ count }));
+>>>>>>> /Users/aarasakutti/.windsurf/worktrees/team_pr_management/team_pr_management-fa43e581/src/index.ts
         return;
       }
 
