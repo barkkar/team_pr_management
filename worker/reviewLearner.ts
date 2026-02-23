@@ -113,9 +113,14 @@ interface Lessons {
 async function generateLessons(aiReview: any, peerComments: any[]): Promise<Lessons> {
   const client = getOllama();
 
-  const systemPrompt = `You are an expert code review analyst comparing an AI-generated code review against actual human peer review comments on the same pull request. You MUST respond with valid JSON only.
+  const peerCount = peerComments.length;
+  const aiCount = (aiReview.comments || []).length;
 
-Return a JSON object with this EXACT structure:
+  const systemPrompt = `You are an expert code review analyst. You MUST compare an AI code review against actual human peer review comments on the same PR. Respond with valid JSON ONLY.
+
+CRITICAL: Be EXHAUSTIVE. List EVERY missed issue, not just one representative example. If peers left ${peerCount} comments and AI left ${aiCount}, there are likely multiple missed issues.
+
+Return JSON with this structure:
 {
   "missed_issues": [
     {
@@ -123,38 +128,38 @@ Return a JSON object with this EXACT structure:
       "issue": "Detailed description of what the peer caught",
       "category": "error_handling|security|performance|naming|testing|architecture|accessibility|documentation|logic_error|style",
       "severity": "high|medium|low",
-      "peer_quote": "Relevant quote from peer comment"
+      "peer_quote": "Direct quote from the peer comment"
     }
   ],
   "wrong_calls": [
     {
-      "ai_comment": "What the AI said",
-      "why_wrong": "Why it was incorrect, irrelevant, or too generic",
+      "ai_comment": "The exact AI comment that was wrong",
+      "why_wrong": "Specific reason it was wrong (reference the code)",
       "category": "false_positive|too_generic|incorrect|irrelevant"
     }
   ],
   "correct_calls": [
     {
-      "ai_comment": "What the AI correctly identified",
+      "ai_comment": "The AI comment that was correct",
       "peer_agreed": true
     }
   ],
   "patterns": [
-    "Specific, reusable pattern for future reviews (e.g., 'In Java entity classes, always verify @Column nullable/length annotations')"
+    "Specific reusable rule, e.g. 'In LWC components, always check wire service error handling'"
   ],
   "review_blind_spots": ["category1", "category2"],
   "key_takeaways": [
-    "Detailed, actionable takeaway with specific file/pattern references"
+    "Detailed takeaway referencing specific files and patterns from THIS PR"
   ]
 }
 
 Rules:
-- missed_issues: Issues peers raised that AI completely missed. Include the specific file, category, and severity. Quote the peer.
-- wrong_calls: AI comments that were factually wrong, too generic to be useful, or irrelevant to the actual changes.
-- correct_calls: AI comments that aligned with peer feedback.
-- patterns: Reusable review rules derived from this comparison. Be specific — mention file types, frameworks, or code patterns. NOT generic advice like "Be more thorough".
-- review_blind_spots: Categories where AI consistently missed issues.
-- key_takeaways: 2-4 detailed, actionable lessons. Reference specific files, patterns, or issue types. NOT generic advice like "be more specific".`;
+- missed_issues: List ALL peer comments that AI missed, one entry per distinct issue. Each must include the actual file_path and a direct peer_quote.
+- wrong_calls: List ALL AI comments that were wrong, too vague, or irrelevant.
+- correct_calls: AI comments that genuinely matched peer concerns.
+- patterns: 2-5 reusable rules. Must reference specific technologies or code patterns. NEVER write generic advice like "be more specific" or "provide actionable feedback".
+- review_blind_spots: Which categories did AI systematically miss?
+- key_takeaways: 2-4 lessons that reference specific files, classes, or patterns FROM THIS PR. NEVER write "provide actionable feedback" or "be more specific".`;
 
   const aiComments = (aiReview.comments || [])
     .map((c: any) => `- [${c.type || 'comment'}] ${c.file_path || 'general'}: ${c.comment}`)
@@ -164,17 +169,17 @@ Rules:
     .map(c => `- [${c.reviewer}] ${c.file_path || 'general'}: ${c.body}`)
     .join('\n');
 
-  const userPrompt = `Compare these two reviews of the same PR.
+  const userPrompt = `Here is a PR with ${peerCount} peer comments and ${aiCount} AI comments. The AI likely missed many issues. Find ALL of them.
 
-AI Review (${(aiReview.comments || []).length} comments):
+AI Review (${aiCount} comments):
 ${aiComments || '(no AI comments)'}
 
 AI Summary: ${aiReview.summary || 'N/A'}
 
-Peer Review (${peerComments.length} comments):
+Peer Review (${peerCount} comments):
 ${peerLines || '(no peer comments)'}
 
-Analyze what the AI got right, what it missed, and what it got wrong. Derive specific, reusable patterns for future reviews. Respond with the structured JSON.`;
+For EACH peer comment above, determine: did the AI catch this issue? If not, add it to missed_issues with the exact file_path and a direct quote. Then check each AI comment: was it actually useful or too generic? Finally, derive specific reusable patterns. Respond with JSON.`;
 
   try {
     const response = await client.chat({

@@ -147,7 +147,8 @@ async function reportLessons(prUrl, aiReview, peerComments, lessons) {
 // ---------------------------------------------------------------------------
 // LLM Prompts (identical to prAnalyzer)
 // ---------------------------------------------------------------------------
-function buildSystemPrompt() {
+function buildSystemPrompt(fileCount) {
+    const minComments = Math.max(3, Math.min(fileCount, 10));
     return `You are an expert code reviewer. You MUST respond with valid JSON only. No markdown, no explanations, just JSON.
 
 Review the pull request diff and return a JSON object with this exact structure:
@@ -156,10 +157,12 @@ Review the pull request diff and return a JSON object with this exact structure:
 
 Rules:
 - type must be one of: "comment", "question", "suggestion"
-- Focus on: bugs, security issues, performance, logic errors, edge cases
+- Focus on: bugs, security issues, performance, logic errors, edge cases, error handling, naming conventions, missing null checks, accessibility (for UI code), test coverage gaps
 - Skip trivial style/formatting issues
 - Each comment must reference a specific file_path from the PR
-- You MUST return at least 1 comment`;
+- You MUST return at least ${minComments} comments — review EVERY changed file, not just the first few
+- Spread comments across different files — do not focus on just one file
+- For each file, look for: missing error handling, potential null/undefined, security issues, logic bugs, naming issues, missing tests`;
 }
 function buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext) {
     const parts = [];
@@ -236,9 +239,13 @@ function parseReviewResponse(content) {
 // ---------------------------------------------------------------------------
 async function generateLessonsViaLLM(aiReview, peerComments, prDiff) {
     const client = getOllama();
-    const systemPrompt = `You are an expert code review analyst comparing an AI-generated code review against actual human peer review comments on the same pull request. You have access to the PR diff for reference. You MUST respond with valid JSON only.
+    const peerCount = peerComments.length;
+    const aiCount = (aiReview.comments || []).length;
+    const systemPrompt = `You are an expert code review analyst. You MUST compare an AI code review against actual human peer review comments on the same PR. You have the PR diff for reference. Respond with valid JSON ONLY.
 
-Return a JSON object with this EXACT structure:
+CRITICAL: Be EXHAUSTIVE. List EVERY missed issue, not just one representative example. If peers left ${peerCount} comments and AI left ${aiCount}, there are likely multiple missed issues.
+
+Return JSON with this structure:
 {
   "missed_issues": [
     {
@@ -246,60 +253,59 @@ Return a JSON object with this EXACT structure:
       "issue": "Detailed description of what the peer caught",
       "category": "error_handling|security|performance|naming|testing|architecture|accessibility|documentation|logic_error|style",
       "severity": "high|medium|low",
-      "peer_quote": "Relevant quote from peer comment"
+      "peer_quote": "Direct quote from the peer comment"
     }
   ],
   "wrong_calls": [
     {
-      "ai_comment": "What the AI said",
-      "why_wrong": "Why it was incorrect, irrelevant, or too generic",
+      "ai_comment": "The exact AI comment that was wrong",
+      "why_wrong": "Specific reason it was wrong (reference the code)",
       "category": "false_positive|too_generic|incorrect|irrelevant"
     }
   ],
   "correct_calls": [
     {
-      "ai_comment": "What the AI correctly identified",
+      "ai_comment": "The AI comment that was correct",
       "peer_agreed": true
     }
   ],
   "patterns": [
-    "Specific, reusable pattern for future reviews (e.g., 'In Java entity classes, always verify @Column nullable/length annotations')"
+    "Specific reusable rule, e.g. 'In LWC components, always check wire service error handling' or 'In Java entity classes, verify @Column nullable annotations'"
   ],
   "review_blind_spots": ["category1", "category2"],
   "key_takeaways": [
-    "Detailed, actionable takeaway with specific file/pattern references"
+    "Detailed takeaway referencing specific files and patterns from THIS PR"
   ]
 }
 
 Rules:
-- missed_issues: Issues peers raised that AI completely missed. Include the specific file, category, and severity. Quote the peer.
-- wrong_calls: AI comments that were factually wrong, too generic to be useful, or irrelevant to the actual changes.
-- correct_calls: AI comments that aligned with peer feedback.
-- patterns: Reusable review rules derived from this comparison. Be specific — mention file types, frameworks, or code patterns. E.g., "When reviewing LWC components, always check for accessibility aria-* attributes" NOT "Be more thorough".
-- review_blind_spots: Categories (from the category enum) where AI consistently missed issues.
-- key_takeaways: 2-4 detailed, actionable lessons. Reference specific files, patterns, or issue types. NOT generic advice like "be more specific".
-- Use the PR diff to ground your analysis in actual code locations.`;
+- missed_issues: List ALL peer comments that AI missed, one entry per distinct issue. If peers left 10 comments and AI left 3, expect at least 5-7 missed issues. Each must include the actual file_path from the diff and a direct peer_quote.
+- wrong_calls: List ALL AI comments that were wrong, too vague, or irrelevant. An AI comment like "consider adding tests" when tests already exist is wrong. "Consider error handling" without specifying where is too_generic.
+- correct_calls: AI comments that genuinely matched peer concerns.
+- patterns: 2-5 reusable rules. Must reference specific technologies (LWC, Java, Apex, JSP, etc.) or code patterns (null checks, event handlers, schema validation). NEVER write generic advice like "be more specific" or "provide actionable feedback".
+- review_blind_spots: Which categories did AI systematically miss?
+- key_takeaways: 2-4 lessons that reference specific files, classes, or patterns FROM THIS PR. NEVER write "provide actionable feedback" or "be more specific" — those are useless. Instead: "AI missed all naming convention issues in LWC component files — future reviews should check component names match directory names".`;
     const aiComments = (aiReview.comments || [])
         .map((c) => `- [${c.type || 'comment'}] ${c.file_path || 'general'}: ${c.comment}`)
         .join('\n');
     const peerLines = peerComments
         .map((c) => `- [${c.reviewer}] ${c.file_path || 'general'}: ${c.body}`)
         .join('\n');
-    const diffExcerpt = prDiff.substring(0, 4000);
-    const userPrompt = `Compare these two reviews of the same PR.
+    const diffExcerpt = prDiff.substring(0, 6000);
+    const userPrompt = `Here is a PR with ${peerCount} peer comments and ${aiCount} AI comments. The AI likely missed many issues. Find ALL of them.
 
 PR Diff (excerpt):
 ${diffExcerpt}
 
-AI Review (${(aiReview.comments || []).length} comments):
+AI Review (${aiCount} comments):
 ${aiComments || '(no AI comments)'}
 
 AI Summary: ${aiReview.summary || 'N/A'}
 
-Peer Review (${peerComments.length} comments):
+Peer Review (${peerCount} comments):
 ${peerLines || '(no peer comments)'}
 
-Analyze what the AI got right, what it missed, and what it got wrong. Derive specific, reusable patterns for future reviews. Respond with the structured JSON.`;
+For EACH peer comment above, determine: did the AI catch this issue? If not, add it to missed_issues with the exact file_path and a direct quote. Then check each AI comment: was it actually useful or too generic? Finally, derive specific reusable patterns (mentioning actual technologies like LWC, Java, Apex, etc). Respond with JSON.`;
     try {
         const response = await client.chat({
             model: OLLAMA_MODEL,
@@ -371,7 +377,7 @@ async function processPR(pr) {
         // 5. Generate AI review via LLM
         log('  [6/9] Generating AI review via Ollama...');
         const client = getOllama();
-        const systemPrompt = buildSystemPrompt();
+        const systemPrompt = buildSystemPrompt(changedFiles.length);
         const userPrompt = buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext);
         let review;
         try {
