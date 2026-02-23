@@ -19,12 +19,8 @@
     "harvest:repos": "node dist/worker/repoHarvester.js",
     "embed": "node dist/worker/embeddingPipeline.js",
     "map-users": "node dist/worker/userMapper.js",
-<<<<<<< /Users/aarasakutti/Documents/GitHub/team_pr_management/package.json
-    "analyze-pr": "node dist/worker/prAnalyzer.js"
-=======
-    "analyze-pr": "node dist/worker/prAnalyzer.js",
-    "test-review": "node dist/worker/testReview.js"
->>>>>>> /Users/aarasakutti/.windsurf/worktrees/team_pr_management/team_pr_management-fa43e581/package.json
+"analyze-pr": "node dist/worker/prAnalyzer.js",
+"test-review": "node dist/worker/testReview.js"
   },
   "engines": {
     "node": "20.x",
