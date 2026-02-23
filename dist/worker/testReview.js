@@ -55,7 +55,7 @@ function getOllama() {
 }
 async function generateEmbedding(text) {
     const client = getOllama();
-    const truncated = text.length > 30000 ? text.substring(0, 30000) : text;
+    const truncated = text.length > 6000 ? text.substring(0, 6000) : text;
     const response = await client.embed({
         model: OLLAMA_EMBED_MODEL,
         input: truncated,
@@ -264,7 +264,7 @@ async function run() {
     // 2. Generate embedding
     separator('2. EMBEDDING');
     log('Generating embedding for PR diff...');
-    const diffSummary = `PR: ${prTitle}\nAuthor: ${prAuthor}\nFiles: ${changedFiles.join(', ')}\n\n${prDiff.substring(0, 10000)}`;
+    const diffSummary = `PR: ${prTitle}\nAuthor: ${prAuthor}\nFiles: ${changedFiles.join(', ')}\n\n${prDiff.substring(0, 4000)}`;
     const diffEmbedding = await generateEmbedding(diffSummary);
     console.log(`  Embedding dimensions: ${diffEmbedding.length}`);
     // 3. Vector search

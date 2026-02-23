@@ -32,7 +32,7 @@ function herokuHeaders() {
         'X-Worker-API-Key': WORKER_API_KEY,
     };
 }
-function truncateForEmbedding(text, maxChars = 30000) {
+function truncateForEmbedding(text, maxChars = 6000) {
     if (text.length <= maxChars)
         return text;
     return text.substring(0, maxChars);

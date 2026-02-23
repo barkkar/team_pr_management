@@ -62,7 +62,7 @@ function getOllama(): Ollama {
 
 async function generateEmbedding(text: string): Promise<number[]> {
   const client = getOllama();
-  const truncated = text.length > 30000 ? text.substring(0, 30000) : text;
+  const truncated = text.length > 6000 ? text.substring(0, 6000) : text;
   const response = await client.embed({
     model: OLLAMA_EMBED_MODEL,
     input: truncated,
@@ -296,7 +296,7 @@ async function analyzePR(prUrl: string, channelId: string, messageTs: string): P
 
   // 2. Generate embedding for the PR diff
   log('  Generating embedding for PR diff...');
-  const diffSummary = `PR: ${prTitle}\nAuthor: ${prAuthor}\nFiles: ${changedFiles.join(', ')}\n\n${prDiff.substring(0, 10000)}`;
+  const diffSummary = `PR: ${prTitle}\nAuthor: ${prAuthor}\nFiles: ${changedFiles.join(', ')}\n\n${prDiff.substring(0, 4000)}`;
   const diffEmbedding = await generateEmbedding(diffSummary);
 
   // 3. Search for similar past reviews and codebase context
