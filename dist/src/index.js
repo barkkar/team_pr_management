@@ -586,15 +586,21 @@ async function main() {
                         }
                     }
                 }
-                // Resolve Slack IDs
-                const sorted = Array.from(candidateMap.values()).sort((a, b) => b.score - a.score).slice(0, 5);
+                // Resolve Slack IDs and filter to only mapped users
+                const sorted = Array.from(candidateMap.values()).sort((a, b) => b.score - a.score);
+                const mapped = [];
                 for (const c of sorted) {
+                    if (mapped.length >= 5)
+                        break;
                     const mapping = await (0, client_1.getUserMapping)(c.ghe_login);
-                    c.slack_user_id = mapping?.slack_user_id || null;
-                    c.display_name = mapping?.display_name || null;
+                    if (!mapping?.slack_user_id)
+                        continue; // Skip users not in channel/mapping
+                    c.slack_user_id = mapping.slack_user_id;
+                    c.display_name = mapping.display_name || null;
+                    mapped.push(c);
                 }
                 res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ reviewers: sorted }));
+                res.end(JSON.stringify({ reviewers: mapped }));
                 return;
             }
             // Get PRs needing AI analysis (newly tracked, not yet analyzed)
