@@ -56,7 +56,7 @@ async function generateBatchEmbeddings(texts) {
  * Truncate text to fit within embedding model context window.
  * Most embedding models handle ~8192 tokens; we approximate at ~4 chars/token.
  */
-function truncateForEmbedding(text, maxChars = 2000) {
+function truncateForEmbedding(text, maxChars = 30000) {
     if (text.length <= maxChars)
         return text;
     return text.substring(0, maxChars);
