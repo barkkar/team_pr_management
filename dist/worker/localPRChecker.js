@@ -22,6 +22,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
 const axios_1 = __importDefault(require("axios"));
+const ollama_1 = require("ollama");
 const gheTokenResolver_1 = require("../src/utils/gheTokenResolver");
 function log(message) {
     console.log(`[${new Date().toISOString()}] ${message}`);
@@ -32,7 +33,15 @@ function logError(message) {
 // Configuration
 const HEROKU_API_URL = process.env.HEROKU_API_URL;
 const WORKER_API_KEY = process.env.WORKER_API_KEY;
+const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3';
 const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+let ollama = null;
+function getOllama() {
+    if (!ollama)
+        ollama = new ollama_1.Ollama({ host: OLLAMA_HOST });
+    return ollama;
+}
 /**
  * Extract hostname from a PR URL
  */
@@ -116,6 +125,143 @@ async function reportStatus(results) {
     });
     return response.data.updated || 0;
 }
+// ---------------------------------------------------------------------------
+// Lesson Extraction — triggered automatically when PRs close
+// ---------------------------------------------------------------------------
+function herokuHeaders() {
+    return { 'Content-Type': 'application/json', 'X-Worker-API-Key': WORKER_API_KEY };
+}
+async function fetchPeerComments(hostname, org, repo, prNumber) {
+    const token = (0, gheTokenResolver_1.requireTokenForHost)(hostname);
+    const headers = { Authorization: `token ${token}`, Accept: 'application/vnd.github.v3+json' };
+    const base = `https://${hostname}/api/v3/repos/${org}/${repo}/pulls/${prNumber}`;
+    const comments = [];
+    try {
+        const resp = await axios_1.default.get(`${base}/comments`, {
+            params: { per_page: 100 }, headers, timeout: 30000,
+        });
+        for (const c of resp.data || []) {
+            comments.push({
+                reviewer: c.user?.login || 'unknown',
+                file_path: c.path || null,
+                body: (c.body || '').substring(0, 500),
+                type: 'inline',
+            });
+        }
+    }
+    catch (e) {
+        logError(`    Failed to fetch inline comments: ${e.message}`);
+    }
+    try {
+        const resp = await axios_1.default.get(`${base}/reviews`, {
+            params: { per_page: 100 }, headers, timeout: 30000,
+        });
+        for (const r of resp.data || []) {
+            if (r.body && r.body.trim().length > 0) {
+                comments.push({
+                    reviewer: r.user?.login || 'unknown',
+                    file_path: null,
+                    body: (r.body || '').substring(0, 500),
+                    type: r.state || 'COMMENTED',
+                });
+            }
+        }
+    }
+    catch (e) {
+        logError(`    Failed to fetch top-level reviews: ${e.message}`);
+    }
+    return comments;
+}
+async function generateLessons(aiReview, peerComments) {
+    const client = getOllama();
+    const systemPrompt = `You are analyzing the quality of an AI code review by comparing it to actual human peer review comments on the same PR. You MUST respond with valid JSON only.
+
+Return a JSON object with this exact structure:
+{"ai_correct": ["things AI got right"], "ai_missed": ["things peers caught that AI missed"], "ai_wrong": ["things AI said that were inaccurate or unhelpful"], "key_takeaway": "one sentence summary of what to improve"}`;
+    const aiComments = (aiReview.comments || [])
+        .map((c) => `- [${c.type || 'comment'}] ${c.file_path || 'general'}: ${c.comment}`)
+        .join('\n');
+    const peerLines = peerComments
+        .map((c) => `- [${c.reviewer}] ${c.file_path || 'general'}: ${c.body}`)
+        .join('\n');
+    const userPrompt = `Compare these two reviews of the same PR:
+
+AI Review (${(aiReview.comments || []).length} comments):
+${aiComments || '(no AI comments)'}
+
+AI Summary: ${aiReview.summary || 'N/A'}
+
+Peer Review (${peerComments.length} comments):
+${peerLines || '(no peer comments)'}
+
+Respond with JSON: {"ai_correct": [...], "ai_missed": [...], "ai_wrong": [...], "key_takeaway": "..."}`;
+    try {
+        const response = await client.chat({
+            model: OLLAMA_MODEL,
+            messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt },
+            ],
+            format: 'json',
+            options: { temperature: 0.3, num_predict: 2048 },
+        });
+        const parsed = JSON.parse(response.message.content.trim());
+        return {
+            ai_correct: Array.isArray(parsed.ai_correct) ? parsed.ai_correct : [],
+            ai_missed: Array.isArray(parsed.ai_missed) ? parsed.ai_missed : [],
+            ai_wrong: Array.isArray(parsed.ai_wrong) ? parsed.ai_wrong : [],
+            key_takeaway: String(parsed.key_takeaway || ''),
+        };
+    }
+    catch (e) {
+        logError(`    LLM lesson generation failed: ${e.message}`);
+        return { ai_correct: [], ai_missed: [], ai_wrong: [], key_takeaway: 'Lesson extraction failed' };
+    }
+}
+async function triggerLessonExtraction() {
+    try {
+        // Fetch closed PRs that have AI reviews but no lessons yet
+        const resp = await axios_1.default.get(`${HEROKU_API_URL}/api/prs-needing-lessons`, {
+            headers: herokuHeaders(), timeout: 30000,
+        });
+        const prs = resp.data.prs || [];
+        if (prs.length === 0) {
+            log('  No PRs need lesson extraction.');
+            return;
+        }
+        log(`  Found ${prs.length} PR(s) needing lesson extraction`);
+        for (const pr of prs) {
+            const { pr_url, review_json, org, repo, pr_number } = pr;
+            log(`  Processing ${org}/${repo}#${pr_number}...`);
+            const hostname = extractHostname(pr_url);
+            if (!hostname) {
+                logError(`    Cannot extract hostname from ${pr_url}`);
+                continue;
+            }
+            // Fetch peer comments
+            const peerComments = await fetchPeerComments(hostname, org, repo, pr_number);
+            log(`    ${peerComments.length} peer comment(s)`);
+            let lessons;
+            if (peerComments.length === 0) {
+                lessons = { ai_correct: [], ai_missed: [], ai_wrong: [], key_takeaway: 'No peer comments available for comparison' };
+            }
+            else {
+                log('    Generating lessons via LLM...');
+                lessons = await generateLessons(review_json, peerComments);
+                log(`    Takeaway: ${lessons.key_takeaway}`);
+            }
+            // Store lessons
+            await axios_1.default.post(`${HEROKU_API_URL}/api/ai-lessons`, {
+                pr_url, ai_review: review_json, peer_comments: peerComments, lessons,
+            }, { headers: herokuHeaders(), timeout: 30000 });
+            log('    ✅ Lessons stored');
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+    }
+    catch (e) {
+        logError(`  Lesson extraction error: ${e.message}`);
+    }
+}
 /**
  * Main worker function
  */
@@ -166,6 +312,12 @@ async function runWorker() {
         log('Reporting status to Heroku...');
         const updated = await reportStatus(results);
         log(`Updated ${updated} PRs`);
+        // Trigger lesson extraction for newly closed PRs
+        const closedPRs = results.filter(r => !r.error && !r.is_open);
+        if (closedPRs.length > 0) {
+            log(`\n${closedPRs.length} PR(s) detected as closed — triggering lesson extraction...`);
+            await triggerLessonExtraction();
+        }
         log('Worker completed successfully!');
     }
     catch (error) {
