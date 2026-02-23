@@ -594,28 +594,30 @@ async function main(): Promise<void> {
         // Build candidate list with scores
         const candidateMap = new Map<string, any>();
 
-        // Signal 1: Past reviewers of similar files
+        // Signal 1: Past reviewers of similar files (capped to avoid fuzzy match inflation)
         for (const r of reviewers) {
           if (r.reviewer_login === prAuthor) continue;
+          const cappedCount = Math.min(r.review_count, 20);
           candidateMap.set(r.reviewer_login, {
             ghe_login: r.reviewer_login,
-            score: r.review_count * 2,
+            score: cappedCount * 2,
             reason: `reviewed ${r.review_count} similar file(s)`,
             files: r.files,
           });
         }
 
-        // Signal 2: Past authors of changes to similar files
+        // Signal 2: Past authors of changes to similar files (capped)
         for (const t of touchers) {
           if (t.author_login === prAuthor) continue;
+          const cappedCount = Math.min(t.change_count, 20);
           const existing = candidateMap.get(t.author_login);
           if (existing) {
-            existing.score += t.change_count;
+            existing.score += cappedCount;
             existing.reason += `, changed ${t.change_count} related file(s)`;
           } else {
             candidateMap.set(t.author_login, {
               ghe_login: t.author_login,
-              score: t.change_count,
+              score: cappedCount,
               reason: `changed ${t.change_count} related file(s)`,
               files: t.files,
             });
