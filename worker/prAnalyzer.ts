@@ -151,8 +151,16 @@ async function fetchSuggestedReviewers(filePaths: string[], prAuthor: string, si
   return response.data.reviewers || [];
 }
 
-async function fetchLearningContext(): Promise<{ lessons: any[]; feedback: any[] }> {
+async function fetchLearningContext(embedding?: number[]): Promise<{ lessons: any[]; feedback: any[] }> {
   try {
+    if (embedding && embedding.length > 0) {
+      const response = await axios.post(
+        `${HEROKU_API_URL}/api/ai-learning-context?limit=5`,
+        { embedding },
+        { headers: herokuHeaders(), timeout: 15000 },
+      );
+      return { lessons: response.data.lessons || [], feedback: response.data.feedback || [] };
+    }
     const response = await axios.get(
       `${HEROKU_API_URL}/api/ai-learning-context?limit=5`,
       { headers: herokuHeaders(), timeout: 15000 },
@@ -344,10 +352,10 @@ async function analyzePR(prUrl: string, channelId: string, messageTs: string): P
     log(`  No related code found: ${error.message}`);
   }
 
-  // 3b. Fetch learning context (lessons + feedback from past reviews)
-  log('  Fetching learning context...');
-  const learningContext = await fetchLearningContext();
-  log(`  Got ${learningContext.lessons.length} lesson(s), ${learningContext.feedback.length} feedback item(s)`);
+  // 3b. Fetch learning context (lessons + feedback from similar past reviews)
+  log('  Fetching relevant learning context...');
+  const learningContext = await fetchLearningContext(diffEmbedding);
+  log(`  Got ${learningContext.lessons.length} relevant lesson(s), ${learningContext.feedback.length} feedback item(s)`);
 
   // 4. Generate review via LLM
   log('  Generating AI review via Ollama...');

@@ -125,8 +125,12 @@ async function fetchSimilarCode(embedding, topK = 5) {
     const response = await axios_1.default.post(`${HEROKU_API_URL}/api/search-similar-code`, { embedding, top_k: topK }, { headers: herokuHeaders(), timeout: 30000 });
     return response.data.chunks || [];
 }
-async function fetchLearningContext() {
+async function fetchLearningContext(embedding) {
     try {
+        if (embedding && embedding.length > 0) {
+            const response = await axios_1.default.post(`${HEROKU_API_URL}/api/ai-learning-context?limit=5`, { embedding }, { headers: herokuHeaders(), timeout: 15000 });
+            return { lessons: response.data.lessons || [], feedback: response.data.feedback || [] };
+        }
         const response = await axios_1.default.get(`${HEROKU_API_URL}/api/ai-learning-context?limit=5`, { headers: herokuHeaders(), timeout: 15000 });
         return { lessons: response.data.lessons || [], feedback: response.data.feedback || [] };
     }
@@ -139,9 +143,9 @@ async function reportAnalysisResults(data) {
         headers: herokuHeaders(), timeout: 30000,
     });
 }
-async function reportLessons(prUrl, aiReview, peerComments, lessons) {
+async function reportLessons(prUrl, aiReview, peerComments, lessons, embedding) {
     await axios_1.default.post(`${HEROKU_API_URL}/api/ai-lessons`, {
-        pr_url: prUrl, ai_review: aiReview, peer_comments: peerComments, lessons,
+        pr_url: prUrl, ai_review: aiReview, peer_comments: peerComments, lessons, embedding,
     }, { headers: herokuHeaders(), timeout: 30000 });
 }
 // ---------------------------------------------------------------------------
@@ -372,8 +376,8 @@ async function processPR(pr) {
         }
         catch { /* no results */ }
         log(`         ${similarReviews.length} similar reviews, ${similarCode.length} code chunks`);
-        // 4. Fetch learning context
-        const learningContext = await fetchLearningContext();
+        // 4. Fetch learning context (using embedding for relevance)
+        const learningContext = await fetchLearningContext(diffEmbedding);
         // 5. Generate AI review via LLM
         log('  [6/9] Generating AI review via Ollama...');
         const client = getOllama();
@@ -422,7 +426,7 @@ async function processPR(pr) {
             for (const t of lessons.key_takeaways || [])
                 log(`         Takeaway: ${t}`);
         }
-        await reportLessons(pr_url, review, peerComments, lessons);
+        await reportLessons(pr_url, review, peerComments, lessons, diffEmbedding);
         log('  ✅ Complete!');
         return true;
     }

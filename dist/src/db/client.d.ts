@@ -188,8 +188,9 @@ export declare function getDistinctRepos(): Promise<{
 }[]>;
 export declare function insertOrUpdateFeedback(prUrl: string, userId: string, rating: string, feedbackText?: string): Promise<void>;
 export declare function getRecentFeedback(limit?: number): Promise<any[]>;
-export declare function insertReviewLessons(prUrl: string, aiReview: any, peerComments: any[], lessons: any): Promise<void>;
+export declare function insertReviewLessons(prUrl: string, aiReview: any, peerComments: any[], lessons: any, embedding?: number[]): Promise<void>;
 export declare function getRecentLessons(limit?: number): Promise<any[]>;
+export declare function getSimilarLessons(embedding: number[], limit?: number): Promise<any[]>;
 export declare function getPRsNeedingLessonExtraction(): Promise<any[]>;
 export { pool };
 //# sourceMappingURL=client.d.ts.map

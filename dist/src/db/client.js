@@ -39,6 +39,7 @@ exports.insertOrUpdateFeedback = insertOrUpdateFeedback;
 exports.getRecentFeedback = getRecentFeedback;
 exports.insertReviewLessons = insertReviewLessons;
 exports.getRecentLessons = getRecentLessons;
+exports.getSimilarLessons = getSimilarLessons;
 exports.getPRsNeedingLessonExtraction = getPRsNeedingLessonExtraction;
 const pg_1 = require("pg");
 const pool = new pg_1.Pool({
@@ -427,13 +428,24 @@ async function getRecentFeedback(limit = 5) {
 // ---------------------------------------------------------------------------
 // AI Review Lessons (automated post-merge comparison)
 // ---------------------------------------------------------------------------
-async function insertReviewLessons(prUrl, aiReview, peerComments, lessons) {
-    await pool.query(`
-    INSERT INTO ai_review_lessons (pr_url, ai_review_json, peer_comments_json, lessons_json, created_at)
-    VALUES ($1, $2, $3, $4, NOW())
-    ON CONFLICT (pr_url) DO UPDATE SET
-      ai_review_json = $2, peer_comments_json = $3, lessons_json = $4, created_at = NOW()
-  `, [prUrl, JSON.stringify(aiReview), JSON.stringify(peerComments), JSON.stringify(lessons)]);
+async function insertReviewLessons(prUrl, aiReview, peerComments, lessons, embedding) {
+    if (embedding && embedding.length > 0) {
+        const embeddingStr = `[${embedding.join(',')}]`;
+        await pool.query(`
+      INSERT INTO ai_review_lessons (pr_url, ai_review_json, peer_comments_json, lessons_json, embedding, created_at)
+      VALUES ($1, $2, $3, $4, $5::vector, NOW())
+      ON CONFLICT (pr_url) DO UPDATE SET
+        ai_review_json = $2, peer_comments_json = $3, lessons_json = $4, embedding = $5::vector, created_at = NOW()
+    `, [prUrl, JSON.stringify(aiReview), JSON.stringify(peerComments), JSON.stringify(lessons), embeddingStr]);
+    }
+    else {
+        await pool.query(`
+      INSERT INTO ai_review_lessons (pr_url, ai_review_json, peer_comments_json, lessons_json, created_at)
+      VALUES ($1, $2, $3, $4, NOW())
+      ON CONFLICT (pr_url) DO UPDATE SET
+        ai_review_json = $2, peer_comments_json = $3, lessons_json = $4, created_at = NOW()
+    `, [prUrl, JSON.stringify(aiReview), JSON.stringify(peerComments), JSON.stringify(lessons)]);
+    }
 }
 async function getRecentLessons(limit = 3) {
     const result = await pool.query(`
@@ -442,6 +454,18 @@ async function getRecentLessons(limit = 3) {
     ORDER BY created_at DESC
     LIMIT $1
   `, [limit]);
+    return result.rows;
+}
+async function getSimilarLessons(embedding, limit = 5) {
+    const embeddingStr = `[${embedding.join(',')}]`;
+    const result = await pool.query(`
+    SELECT pr_url, lessons_json, created_at,
+           1 - (embedding <=> $1::vector) AS similarity
+    FROM ai_review_lessons
+    WHERE embedding IS NOT NULL
+    ORDER BY embedding <=> $1::vector
+    LIMIT $2
+  `, [embeddingStr, limit]);
     return result.rows;
 }
 async function getPRsNeedingLessonExtraction() {

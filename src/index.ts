@@ -11,7 +11,7 @@ import {
   findReviewersByFiles, findCodeTouchersByFiles,
   getUserMapping,
   insertOrUpdateFeedback, getRecentFeedback,
-  insertReviewLessons, getRecentLessons, getPRsNeedingLessonExtraction,
+  insertReviewLessons, getRecentLessons, getSimilarLessons, getPRsNeedingLessonExtraction,
   pool,
 } from './db/client';
 
@@ -842,22 +842,23 @@ async function main(): Promise<void> {
         }
 
         const body = await parseJsonBody(req);
-        const { pr_url, ai_review, peer_comments, lessons } = body;
+        const { pr_url, ai_review, peer_comments, lessons, embedding } = body;
         if (!pr_url) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'pr_url is required' }));
           return;
         }
 
-        await insertReviewLessons(pr_url, ai_review || {}, peer_comments || [], lessons || {});
-        console.log(`[Worker API] Stored lessons for ${pr_url}`);
+        await insertReviewLessons(pr_url, ai_review || {}, peer_comments || [], lessons || {}, embedding);
+        console.log(`[Worker API] Stored lessons for ${pr_url} (embedding: ${embedding ? 'yes' : 'no'})`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
         return;
       }
 
       // Get combined learning context (lessons + feedback) for LLM prompt enrichment
-      if (url.startsWith('/api/ai-learning-context') && method === 'GET') {
+      // POST with embedding → semantic similarity search; GET → recency fallback
+      if (url.startsWith('/api/ai-learning-context') && (method === 'POST' || method === 'GET')) {
         if (!validateApiKey(req)) {
           res.writeHead(401, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Unauthorized' }));
@@ -867,7 +868,18 @@ async function main(): Promise<void> {
         const params = new URL(url, `http://${req.headers.host}`).searchParams;
         const limit = parseInt(params.get('limit') || '5', 10);
 
-        const lessons = await getRecentLessons(Math.min(limit, 3));
+        let lessons: any[];
+        if (method === 'POST') {
+          const body = await parseJsonBody(req);
+          if (body.embedding && Array.isArray(body.embedding) && body.embedding.length > 0) {
+            lessons = await getSimilarLessons(body.embedding, Math.min(limit, 5));
+            console.log(`[Worker API] Returning ${lessons.length} similar lessons (by embedding)`);
+          } else {
+            lessons = await getRecentLessons(Math.min(limit, 5));
+          }
+        } else {
+          lessons = await getRecentLessons(Math.min(limit, 5));
+        }
         const feedback = await getRecentFeedback(Math.min(limit, 3));
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
