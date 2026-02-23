@@ -174,17 +174,55 @@ async function fetchPeerComments(hostname, org, repo, prNumber) {
 }
 async function generateLessons(aiReview, peerComments) {
     const client = getOllama();
-    const systemPrompt = `You are analyzing the quality of an AI code review by comparing it to actual human peer review comments on the same PR. You MUST respond with valid JSON only.
+    const systemPrompt = `You are an expert code review analyst comparing an AI-generated code review against actual human peer review comments on the same pull request. You MUST respond with valid JSON only.
 
-Return a JSON object with this exact structure:
-{"ai_correct": ["things AI got right"], "ai_missed": ["things peers caught that AI missed"], "ai_wrong": ["things AI said that were inaccurate or unhelpful"], "key_takeaway": "one sentence summary of what to improve"}`;
+Return a JSON object with this EXACT structure:
+{
+  "missed_issues": [
+    {
+      "file_path": "path/to/file.ext",
+      "issue": "Detailed description of what the peer caught",
+      "category": "error_handling|security|performance|naming|testing|architecture|accessibility|documentation|logic_error|style",
+      "severity": "high|medium|low",
+      "peer_quote": "Relevant quote from peer comment"
+    }
+  ],
+  "wrong_calls": [
+    {
+      "ai_comment": "What the AI said",
+      "why_wrong": "Why it was incorrect, irrelevant, or too generic",
+      "category": "false_positive|too_generic|incorrect|irrelevant"
+    }
+  ],
+  "correct_calls": [
+    {
+      "ai_comment": "What the AI correctly identified",
+      "peer_agreed": true
+    }
+  ],
+  "patterns": [
+    "Specific, reusable pattern for future reviews"
+  ],
+  "review_blind_spots": ["category1", "category2"],
+  "key_takeaways": [
+    "Detailed, actionable takeaway with specific file/pattern references"
+  ]
+}
+
+Rules:
+- missed_issues: Issues peers raised that AI completely missed. Include the specific file, category, and severity. Quote the peer.
+- wrong_calls: AI comments that were factually wrong, too generic to be useful, or irrelevant.
+- correct_calls: AI comments that aligned with peer feedback.
+- patterns: Reusable review rules. Be specific — mention file types, frameworks, or code patterns. NOT generic advice.
+- review_blind_spots: Categories where AI consistently missed issues.
+- key_takeaways: 2-4 detailed, actionable lessons. NOT generic advice like "be more specific".`;
     const aiComments = (aiReview.comments || [])
         .map((c) => `- [${c.type || 'comment'}] ${c.file_path || 'general'}: ${c.comment}`)
         .join('\n');
     const peerLines = peerComments
         .map((c) => `- [${c.reviewer}] ${c.file_path || 'general'}: ${c.body}`)
         .join('\n');
-    const userPrompt = `Compare these two reviews of the same PR:
+    const userPrompt = `Compare these two reviews of the same PR.
 
 AI Review (${(aiReview.comments || []).length} comments):
 ${aiComments || '(no AI comments)'}
@@ -194,7 +232,7 @@ AI Summary: ${aiReview.summary || 'N/A'}
 Peer Review (${peerComments.length} comments):
 ${peerLines || '(no peer comments)'}
 
-Respond with JSON: {"ai_correct": [...], "ai_missed": [...], "ai_wrong": [...], "key_takeaway": "..."}`;
+Analyze what the AI got right, what it missed, and what it got wrong. Derive specific, reusable patterns for future reviews. Respond with the structured JSON.`;
     try {
         const response = await client.chat({
             model: OLLAMA_MODEL,
@@ -203,19 +241,21 @@ Respond with JSON: {"ai_correct": [...], "ai_missed": [...], "ai_wrong": [...], 
                 { role: 'user', content: userPrompt },
             ],
             format: 'json',
-            options: { temperature: 0.3, num_predict: 2048 },
+            options: { temperature: 0.3, num_predict: 4096 },
         });
         const parsed = JSON.parse(response.message.content.trim());
         return {
-            ai_correct: Array.isArray(parsed.ai_correct) ? parsed.ai_correct : [],
-            ai_missed: Array.isArray(parsed.ai_missed) ? parsed.ai_missed : [],
-            ai_wrong: Array.isArray(parsed.ai_wrong) ? parsed.ai_wrong : [],
-            key_takeaway: String(parsed.key_takeaway || ''),
+            missed_issues: Array.isArray(parsed.missed_issues) ? parsed.missed_issues : [],
+            wrong_calls: Array.isArray(parsed.wrong_calls) ? parsed.wrong_calls : [],
+            correct_calls: Array.isArray(parsed.correct_calls) ? parsed.correct_calls : [],
+            patterns: Array.isArray(parsed.patterns) ? parsed.patterns : [],
+            review_blind_spots: Array.isArray(parsed.review_blind_spots) ? parsed.review_blind_spots : [],
+            key_takeaways: Array.isArray(parsed.key_takeaways) ? parsed.key_takeaways : [String(parsed.key_takeaway || '')],
         };
     }
     catch (e) {
         logError(`    LLM lesson generation failed: ${e.message}`);
-        return { ai_correct: [], ai_missed: [], ai_wrong: [], key_takeaway: 'Lesson extraction failed' };
+        return { missed_issues: [], wrong_calls: [], correct_calls: [], patterns: [], review_blind_spots: [], key_takeaways: ['Lesson extraction failed'] };
     }
 }
 async function triggerLessonExtraction() {
@@ -243,12 +283,13 @@ async function triggerLessonExtraction() {
             log(`    ${peerComments.length} peer comment(s)`);
             let lessons;
             if (peerComments.length === 0) {
-                lessons = { ai_correct: [], ai_missed: [], ai_wrong: [], key_takeaway: 'No peer comments available for comparison' };
+                lessons = { missed_issues: [], wrong_calls: [], correct_calls: [], patterns: [], review_blind_spots: [], key_takeaways: ['No peer comments available for comparison'] };
             }
             else {
                 log('    Generating lessons via LLM...');
                 lessons = await generateLessons(review_json, peerComments);
-                log(`    Takeaway: ${lessons.key_takeaway}`);
+                for (const t of lessons.key_takeaways || [])
+                    log(`    Takeaway: ${t}`);
             }
             // Store lessons
             await axios_1.default.post(`${HEROKU_API_URL}/api/ai-lessons`, {
