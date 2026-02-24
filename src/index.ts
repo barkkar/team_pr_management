@@ -897,15 +897,29 @@ async function main(): Promise<void> {
 
         const params = new URL(url, `http://${req.headers.host}`).searchParams;
         const limit = Math.min(parseInt(params.get('limit') || '50', 10), 100);
+        const force = params.get('force') === 'true';
 
-        const result = await pool.query(`
-          SELECT tp.pr_url, tp.org, tp.repo, tp.pr_number, tp.channel_id, tp.message_ts
-          FROM tracked_prs tp
-          LEFT JOIN ai_review_lessons al ON tp.pr_url = al.pr_url
-          WHERE tp.is_open = FALSE AND al.id IS NULL
-          ORDER BY tp.created_at DESC
-          LIMIT $1
-        `, [limit]);
+        let result;
+        if (force) {
+          // Return all closed PRs (for re-processing / backfilling embeddings)
+          result = await pool.query(`
+            SELECT tp.pr_url, tp.org, tp.repo, tp.pr_number, tp.channel_id, tp.message_ts
+            FROM tracked_prs tp
+            JOIN pr_analysis_results ar ON tp.pr_url = ar.pr_url
+            WHERE tp.is_open = FALSE
+            ORDER BY tp.created_at DESC
+            LIMIT $1
+          `, [limit]);
+        } else {
+          result = await pool.query(`
+            SELECT tp.pr_url, tp.org, tp.repo, tp.pr_number, tp.channel_id, tp.message_ts
+            FROM tracked_prs tp
+            LEFT JOIN ai_review_lessons al ON tp.pr_url = al.pr_url
+            WHERE tp.is_open = FALSE AND al.id IS NULL
+            ORDER BY tp.created_at DESC
+            LIMIT $1
+          `, [limit]);
+        }
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ prs: result.rows }));

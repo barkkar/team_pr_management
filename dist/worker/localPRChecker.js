@@ -16,6 +16,39 @@
  *   GHE_TOKEN         - GitHub Enterprise personal access token (single-host fallback)
  *   GHE_TOKENS        - JSON map of hostname->token for multi-host (optional, preferred)
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -23,6 +56,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
 const axios_1 = __importDefault(require("axios"));
 const ollama_1 = require("ollama");
+const child_process_1 = require("child_process");
+const path = __importStar(require("path"));
 const gheTokenResolver_1 = require("../src/utils/gheTokenResolver");
 function log(message) {
     console.log(`[${new Date().toISOString()}] ${message}`);
@@ -308,6 +343,32 @@ async function triggerLessonExtraction() {
     }
 }
 /**
+ * Trigger AI analysis by spawning prAnalyzer as a child process
+ */
+async function triggerAnalysis() {
+    return new Promise((resolve) => {
+        const analyzerPath = path.join(__dirname, 'prAnalyzer.js');
+        log(`Spawning PR analyzer: ${analyzerPath}`);
+        const child = (0, child_process_1.spawn)('node', [analyzerPath], {
+            stdio: 'inherit',
+            env: process.env,
+        });
+        child.on('close', (code) => {
+            if (code === 0) {
+                log('AI analysis completed successfully');
+            }
+            else {
+                logError(`AI analysis exited with code ${code}`);
+            }
+            resolve();
+        });
+        child.on('error', (err) => {
+            logError(`Failed to spawn analyzer: ${err.message}`);
+            resolve();
+        });
+    });
+}
+/**
  * Main worker function
  */
 async function runWorker() {
@@ -333,36 +394,40 @@ async function runWorker() {
         log(`Fetching pending PRs from ${HEROKU_API_URL}...`);
         const pendingPRs = await fetchPendingPRs();
         log(`Found ${pendingPRs.length} PRs to check`);
-        if (pendingPRs.length === 0) {
-            log('No PRs need status checking. Done!');
-            return;
-        }
-        // Check each PR
-        log('Checking PR status from GitHub Enterprise...');
-        const results = [];
-        for (const pr of pendingPRs) {
-            log(`  Checking ${pr.org}/${pr.repo}#${pr.pr_number}...`);
-            const result = await checkPRStatus(pr);
-            results.push(result);
-            if (result.error) {
-                logError(`    ERROR: ${result.error}`);
+        if (pendingPRs.length > 0) {
+            // Check each PR
+            log('Checking PR status from GitHub Enterprise...');
+            const results = [];
+            for (const pr of pendingPRs) {
+                log(`  Checking ${pr.org}/${pr.repo}#${pr.pr_number}...`);
+                const result = await checkPRStatus(pr);
+                results.push(result);
+                if (result.error) {
+                    logError(`    ERROR: ${result.error}`);
+                }
+                else {
+                    log(`    is_open: ${result.is_open}, has_reviews: ${result.has_reviews}`);
+                }
+                // Small delay between API calls
+                await new Promise(resolve => setTimeout(resolve, 200));
             }
-            else {
-                log(`    is_open: ${result.is_open}, has_reviews: ${result.has_reviews}`);
+            // Report status back to Heroku
+            log('Reporting status to Heroku...');
+            const updated = await reportStatus(results);
+            log(`Updated ${updated} PRs`);
+            // Trigger lesson extraction for newly closed PRs
+            const closedPRs = results.filter(r => !r.error && !r.is_open);
+            if (closedPRs.length > 0) {
+                log(`\n${closedPRs.length} PR(s) detected as closed — triggering lesson extraction...`);
+                await triggerLessonExtraction();
             }
-            // Small delay between API calls
-            await new Promise(resolve => setTimeout(resolve, 200));
         }
-        // Report status back to Heroku
-        log('Reporting status to Heroku...');
-        const updated = await reportStatus(results);
-        log(`Updated ${updated} PRs`);
-        // Trigger lesson extraction for newly closed PRs
-        const closedPRs = results.filter(r => !r.error && !r.is_open);
-        if (closedPRs.length > 0) {
-            log(`\n${closedPRs.length} PR(s) detected as closed — triggering lesson extraction...`);
-            await triggerLessonExtraction();
+        else {
+            log('No PRs need status checking.');
         }
+        // Always trigger AI analysis for PRs needing review
+        log('\nTriggering AI analysis for new PRs...');
+        await triggerAnalysis();
         log('Worker completed successfully!');
     }
     catch (error) {
