@@ -425,45 +425,44 @@ async function runWorker(): Promise<void> {
     const pendingPRs = await fetchPendingPRs();
     log(`Found ${pendingPRs.length} PRs to check`);
 
-    if (pendingPRs.length === 0) {
-      log('No PRs need status checking. Done!');
-      return;
-    }
-
-    // Check each PR
-    log('Checking PR status from GitHub Enterprise...');
-    const results: PRStatusResult[] = [];
-    
-    for (const pr of pendingPRs) {
-      log(`  Checking ${pr.org}/${pr.repo}#${pr.pr_number}...`);
-      const result = await checkPRStatus(pr);
-      results.push(result);
+    if (pendingPRs.length > 0) {
+      // Check each PR
+      log('Checking PR status from GitHub Enterprise...');
+      const results: PRStatusResult[] = [];
       
-      if (result.error) {
-        logError(`    ERROR: ${result.error}`);
-      } else {
-        log(`    is_open: ${result.is_open}, has_reviews: ${result.has_reviews}`);
+      for (const pr of pendingPRs) {
+        log(`  Checking ${pr.org}/${pr.repo}#${pr.pr_number}...`);
+        const result = await checkPRStatus(pr);
+        results.push(result);
+        
+        if (result.error) {
+          logError(`    ERROR: ${result.error}`);
+        } else {
+          log(`    is_open: ${result.is_open}, has_reviews: ${result.has_reviews}`);
+        }
+        
+        // Small delay between API calls
+        await new Promise(resolve => setTimeout(resolve, 200));
       }
-      
-      // Small delay between API calls
-      await new Promise(resolve => setTimeout(resolve, 200));
+
+      // Report status back to Heroku
+      log('Reporting status to Heroku...');
+      const updated = await reportStatus(results);
+      log(`Updated ${updated} PRs`);
+
+      // Trigger lesson extraction for newly closed PRs
+      const closedPRs = results.filter(r => !r.error && !r.is_open);
+      if (closedPRs.length > 0) {
+        log(`\n${closedPRs.length} PR(s) detected as closed — triggering lesson extraction...`);
+        await triggerLessonExtraction();
+      }
+    } else {
+      log('No PRs need status checking.');
     }
 
-    // Report status back to Heroku
-    log('Reporting status to Heroku...');
-    const updated = await reportStatus(results);
-    log(`Updated ${updated} PRs`);
-
-    // Trigger AI analysis for newly tracked PRs
+    // Always trigger AI analysis for PRs needing review
     log('\nTriggering AI analysis for new PRs...');
     await triggerAnalysis();
-
-    // Trigger lesson extraction for newly closed PRs
-    const closedPRs = results.filter(r => !r.error && !r.is_open);
-    if (closedPRs.length > 0) {
-      log(`\n${closedPRs.length} PR(s) detected as closed — triggering lesson extraction...`);
-      await triggerLessonExtraction();
-    }
 
     log('Worker completed successfully!');
   } catch (error: any) {
