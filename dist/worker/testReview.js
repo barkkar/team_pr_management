@@ -55,7 +55,7 @@ function getOllama() {
 }
 async function generateEmbedding(text) {
     const client = getOllama();
-    const truncated = text.length > 6000 ? text.substring(0, 6000) : text;
+    const truncated = text.substring(0, 2000);
     const response = await client.embed({
         model: OLLAMA_EMBED_MODEL,
         input: truncated,
@@ -110,6 +110,15 @@ async function fetchSimilarCode(embedding, topK = 5) {
     const response = await axios_1.default.post(`${HEROKU_API_URL}/api/search-similar-code`, { embedding, top_k: topK }, { headers: herokuHeaders(), timeout: 30000 });
     return response.data.chunks || [];
 }
+async function fetchSimilarDocs(embedding, topK = 3) {
+    try {
+        const response = await axios_1.default.post(`${HEROKU_API_URL}/api/search-similar-docs`, { embedding, top_k: topK }, { headers: herokuHeaders(), timeout: 15000 });
+        return response.data.docs || [];
+    }
+    catch {
+        return [];
+    }
+}
 async function fetchSuggestedReviewers(filePaths, prAuthor, similarReviews) {
     const response = await axios_1.default.post(`${HEROKU_API_URL}/api/suggested-reviewers`, { file_paths: filePaths, pr_author: prAuthor, similar_reviews: similarReviews || [] }, { headers: herokuHeaders(), timeout: 30000 });
     return response.data.reviewers || [];
@@ -146,7 +155,7 @@ Rules for comments:
 - Each comment must reference a specific file_path from the PR
 - You MUST return at least 1 comment`;
 }
-function buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext) {
+function buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext, similarDocs) {
     const parts = [];
     parts.push(`Review this PR: "${prTitle}"`);
     parts.push(`\nChanged files: ${changedFiles.join(', ')}`);
@@ -154,6 +163,14 @@ function buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarC
         parts.push('\nPast team review comments on similar code:');
         for (const review of similarReviews.slice(0, 5)) {
             parts.push(`- ${review.file_path || 'general'}: "${(review.comment_body || '').substring(0, 300)}"`);
+        }
+    }
+    // Include relevant team design docs / requirements
+    if (similarDocs && similarDocs.length > 0) {
+        parts.push('\nTEAM DESIGN DOCS (apply these requirements during review):');
+        for (const doc of similarDocs.slice(0, 3)) {
+            const excerpt = doc.content_chunk.substring(0, 1500);
+            parts.push(`- [${doc.title}]: "${excerpt}"`);
         }
     }
     // Include learning context from past feedback and lessons
@@ -191,8 +208,8 @@ function buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarC
             }
         }
     }
-    // Limit diff to 8000 chars to leave room for LLM response
-    parts.push(`\nDiff:\n${prDiff.substring(0, 8000)}`);
+    // Limit diff to 16000 chars — larger context model allows more
+    parts.push(`\nDiff:\n${prDiff.substring(0, 16000)}`);
     parts.push('\nRespond with JSON: {"summary": "...", "comments": [{"file_path": "...", "line_hint": "...", "comment": "...", "type": "comment|question|suggestion"}]}');
     return parts.join('\n');
 }
@@ -366,7 +383,8 @@ async function run() {
     // 2. Generate embedding
     separator('2. EMBEDDING');
     log('Generating embedding for PR diff...');
-    const diffSummary = `PR: ${prTitle}\nAuthor: ${prAuthor}\nFiles: ${changedFiles.join(', ')}\n\n${prDiff.substring(0, 4000)}`;
+    const fileList = changedFiles.slice(0, 15).join(', ') + (changedFiles.length > 15 ? ` (+${changedFiles.length - 15} more)` : '');
+    const diffSummary = `PR: ${prTitle}\nAuthor: ${prAuthor}\nFiles: ${fileList}\n\n${prDiff.substring(0, 1500)}`;
     const diffEmbedding = await generateEmbedding(diffSummary);
     console.log(`  Embedding dimensions: ${diffEmbedding.length}`);
     // 3. Vector search
@@ -428,11 +446,18 @@ async function run() {
     catch (error) {
         console.log(`  Could not fetch learning context: ${error.message}`);
     }
+    // 4b. Similar docs
+    separator('5b. TEAM DOCS');
+    const similarDocs = await fetchSimilarDocs(diffEmbedding, 3);
+    console.log(`  Found ${similarDocs.length} relevant doc chunk(s)`);
+    for (const d of similarDocs) {
+        console.log(`  - [${d.title}] (similarity: ${((d.similarity || 0) * 100).toFixed(1)}%) ${d.content_chunk.substring(0, 100)}...`);
+    }
     // 5. LLM review
     separator('6. AI REVIEW (via Ollama)');
     log(`Generating review with ${OLLAMA_MODEL}... (this may take a minute)`);
     const systemPrompt = buildSystemPrompt();
-    const userPrompt = buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext);
+    const userPrompt = buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext, similarDocs);
     let review;
     try {
         const client = getOllama();
@@ -443,7 +468,7 @@ async function run() {
                 { role: 'user', content: userPrompt },
             ],
             format: 'json',
-            options: { temperature: 0.3, num_predict: 8192 },
+            options: { temperature: 0.3, num_predict: 8192, num_ctx: 32768 },
         });
         const rawResponse = response.message.content.trim();
         console.log(`\n  Raw LLM response (first 500 chars):\n  ${rawResponse.substring(0, 500)}\n`);

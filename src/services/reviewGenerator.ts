@@ -104,7 +104,7 @@ function buildUserPrompt(
 
   // Add the PR diff (truncated to fit context window)
   parts.push('\n### PR Diff:');
-  parts.push(`\`\`\`diff\n${prDiff.substring(0, 15000)}\n\`\`\``);
+  parts.push(`\`\`\`diff\n${prDiff.substring(0, 16000)}\n\`\`\``);
 
   return parts.join('\n');
 }
@@ -134,6 +134,7 @@ export async function generateReview(
       options: {
         temperature: 0.3,
         num_predict: 4096,
+        num_ctx: 32768,
       },
     });
 

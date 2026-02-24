@@ -41,6 +41,10 @@ exports.insertReviewLessons = insertReviewLessons;
 exports.getRecentLessons = getRecentLessons;
 exports.getSimilarLessons = getSimilarLessons;
 exports.getPRsNeedingLessonExtraction = getPRsNeedingLessonExtraction;
+exports.searchSimilarDocs = searchSimilarDocs;
+exports.upsertDocumentChunks = upsertDocumentChunks;
+exports.listDocuments = listDocuments;
+exports.deleteDocument = deleteDocument;
 const pg_1 = require("pg");
 const pool = new pg_1.Pool({
     connectionString: process.env.DATABASE_URL,
@@ -480,5 +484,48 @@ async function getPRsNeedingLessonExtraction() {
     LIMIT 20
   `);
     return result.rows;
+}
+// --- Team Documents (design docs, requirements) ---
+async function searchSimilarDocs(embedding, topK = 3) {
+    const embeddingStr = `[${embedding.join(',')}]`;
+    const result = await pool.query(`
+    SELECT id, title, source_url, doc_type, content_chunk, chunk_index,
+           1 - (embedding <=> $1::vector) AS similarity
+    FROM team_documents
+    WHERE embedding IS NOT NULL
+    ORDER BY embedding <=> $1::vector
+    LIMIT $2
+  `, [embeddingStr, topK]);
+    return result.rows;
+}
+async function upsertDocumentChunks(sourceUrl, title, docType, chunks) {
+    // Delete old chunks for this doc
+    await pool.query('DELETE FROM team_documents WHERE source_url = $1', [sourceUrl]);
+    let inserted = 0;
+    for (let i = 0; i < chunks.length; i++) {
+        const embeddingStr = `[${chunks[i].embedding.join(',')}]`;
+        await pool.query(`
+      INSERT INTO team_documents (title, source_url, doc_type, content_chunk, chunk_index, embedding, last_fetched_at, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6::vector, NOW(), NOW(), NOW())
+    `, [title, sourceUrl, docType, chunks[i].content, i, embeddingStr]);
+        inserted++;
+    }
+    return inserted;
+}
+async function listDocuments() {
+    const result = await pool.query(`
+    SELECT source_url, title, doc_type,
+           COUNT(*) AS chunk_count,
+           MIN(created_at) AS created_at,
+           MAX(last_fetched_at) AS last_fetched_at
+    FROM team_documents
+    GROUP BY source_url, title, doc_type
+    ORDER BY MAX(created_at) DESC
+  `);
+    return result.rows;
+}
+async function deleteDocument(sourceUrl) {
+    const result = await pool.query('DELETE FROM team_documents WHERE source_url = $1', [sourceUrl]);
+    return result.rowCount || 0;
 }
 //# sourceMappingURL=client.js.map

@@ -57,7 +57,7 @@ function getOllama() {
 }
 async function generateEmbedding(text) {
     const client = getOllama();
-    const truncated = text.length > 6000 ? text.substring(0, 6000) : text;
+    const truncated = text.substring(0, 2000);
     const response = await client.embed({
         model: OLLAMA_EMBED_MODEL,
         input: truncated,
@@ -112,6 +112,15 @@ async function fetchSimilarCode(embedding, topK = 5) {
     const response = await axios_1.default.post(`${HEROKU_API_URL}/api/search-similar-code`, { embedding, top_k: topK }, { headers: herokuHeaders(), timeout: 30000 });
     return response.data.chunks || [];
 }
+async function fetchSimilarDocs(embedding, topK = 3) {
+    try {
+        const response = await axios_1.default.post(`${HEROKU_API_URL}/api/search-similar-docs`, { embedding, top_k: topK }, { headers: herokuHeaders(), timeout: 15000 });
+        return response.data.docs || [];
+    }
+    catch {
+        return [];
+    }
+}
 async function fetchSuggestedReviewers(filePaths, prAuthor, similarReviews) {
     const response = await axios_1.default.post(`${HEROKU_API_URL}/api/suggested-reviewers`, { file_paths: filePaths, pr_author: prAuthor, similar_reviews: similarReviews || [] }, { headers: herokuHeaders(), timeout: 30000 });
     return response.data.reviewers || [];
@@ -154,7 +163,7 @@ Rules for comments:
 - Each comment must reference a specific file_path from the PR
 - You MUST return at least 1 comment`;
 }
-function buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext) {
+function buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext, similarDocs) {
     const parts = [];
     parts.push(`Review this PR: "${prTitle}"`);
     parts.push(`\nChanged files: ${changedFiles.join(', ')}`);
@@ -162,6 +171,14 @@ function buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarC
         parts.push('\nPast team review comments on similar code:');
         for (const review of similarReviews.slice(0, 5)) {
             parts.push(`- ${review.file_path || 'general'}: "${(review.comment_body || '').substring(0, 300)}"`);
+        }
+    }
+    // Include relevant team design docs / requirements
+    if (similarDocs && similarDocs.length > 0) {
+        parts.push('\nTEAM DESIGN DOCS (apply these requirements during review):');
+        for (const doc of similarDocs.slice(0, 3)) {
+            const excerpt = doc.content_chunk.substring(0, 1500);
+            parts.push(`- [${doc.title}]: "${excerpt}"`);
         }
     }
     // Include learning context from past feedback and lessons
@@ -199,8 +216,8 @@ function buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarC
             }
         }
     }
-    // Limit diff to 8000 chars to leave room for LLM response
-    parts.push(`\nDiff:\n${prDiff.substring(0, 8000)}`);
+    // Limit diff to 16000 chars — larger context model allows more
+    parts.push(`\nDiff:\n${prDiff.substring(0, 16000)}`);
     parts.push('\nRespond with JSON: {"summary": "...", "comments": [{"file_path": "...", "line_hint": "...", "comment": "...", "type": "comment|question|suggestion"}]}');
     return parts.join('\n');
 }
@@ -264,7 +281,8 @@ async function analyzePR(prUrl, channelId, messageTs) {
     log(`  PR "${prTitle}" by ${prAuthor}: ${changedFiles.length} files changed`);
     // 2. Generate embedding for the PR diff
     log('  Generating embedding for PR diff...');
-    const diffSummary = `PR: ${prTitle}\nAuthor: ${prAuthor}\nFiles: ${changedFiles.join(', ')}\n\n${prDiff.substring(0, 4000)}`;
+    const fileList = changedFiles.slice(0, 15).join(', ') + (changedFiles.length > 15 ? ` (+${changedFiles.length - 15} more)` : '');
+    const diffSummary = `PR: ${prTitle}\nAuthor: ${prAuthor}\nFiles: ${fileList}\n\n${prDiff.substring(0, 1500)}`;
     const diffEmbedding = await generateEmbedding(diffSummary);
     // 3. Search for similar past reviews and codebase context
     log('  Searching for similar past reviews...');
@@ -285,7 +303,11 @@ async function analyzePR(prUrl, channelId, messageTs) {
     catch (error) {
         log(`  No related code found: ${error.message}`);
     }
-    // 3b. Fetch learning context (lessons + feedback from similar past reviews)
+    // 3b. Fetch relevant team docs
+    log('  Searching for relevant team docs...');
+    const similarDocs = await fetchSimilarDocs(diffEmbedding, 3);
+    log(`  Found ${similarDocs.length} relevant doc chunk(s)`);
+    // 3c. Fetch learning context (lessons + feedback from similar past reviews)
     log('  Fetching relevant learning context...');
     const learningContext = await fetchLearningContext(diffEmbedding);
     log(`  Got ${learningContext.lessons.length} relevant lesson(s), ${learningContext.feedback.length} feedback item(s)`);
@@ -293,7 +315,7 @@ async function analyzePR(prUrl, channelId, messageTs) {
     log('  Generating AI review via Ollama...');
     const client = getOllama();
     const systemPrompt = buildSystemPrompt();
-    const userPrompt = buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext);
+    const userPrompt = buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext, similarDocs);
     let review;
     try {
         const response = await client.chat({
@@ -303,7 +325,7 @@ async function analyzePR(prUrl, channelId, messageTs) {
                 { role: 'user', content: userPrompt },
             ],
             format: 'json',
-            options: { temperature: 0.3, num_predict: 8192 },
+            options: { temperature: 0.3, num_predict: 8192, num_ctx: 32768 },
         });
         review = parseReviewResponse(response.message.content.trim());
         log(`  Generated ${review.comments?.length || 0} review comments`);

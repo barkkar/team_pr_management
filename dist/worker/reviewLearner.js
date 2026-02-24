@@ -162,7 +162,7 @@ For EACH peer comment above, determine: did the AI catch this issue? If not, add
                 { role: 'user', content: userPrompt },
             ],
             format: 'json',
-            options: { temperature: 0.3, num_predict: 4096 },
+            options: { temperature: 0.3, num_predict: 4096, num_ctx: 32768 },
         });
         const parsed = JSON.parse(response.message.content.trim());
         return {

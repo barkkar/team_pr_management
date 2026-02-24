@@ -23,7 +23,8 @@
     "test-review": "node dist/worker/testReview.js",
     "review-learn": "node dist/worker/reviewLearner.js",
     "review-learn:watch": "node dist/worker/reviewLearner.js --watch",
-    "bootstrap-learn": "node dist/worker/bootstrapLearner.js"
+    "bootstrap-learn": "node dist/worker/bootstrapLearner.js",
+    "ingest-doc": "node dist/worker/docIngester.js"
   },
   "engines": {
     "node": "20.x",
