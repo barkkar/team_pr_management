@@ -79,7 +79,7 @@ function buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarC
     }
     // Add the PR diff (truncated to fit context window)
     parts.push('\n### PR Diff:');
-    parts.push(`\`\`\`diff\n${prDiff.substring(0, 15000)}\n\`\`\``);
+    parts.push(`\`\`\`diff\n${prDiff.substring(0, 16000)}\n\`\`\``);
     return parts.join('\n');
 }
 /**
@@ -99,6 +99,7 @@ async function generateReview(prTitle, prDiff, changedFiles, similarReviews, sim
             options: {
                 temperature: 0.3,
                 num_predict: 4096,
+                num_ctx: 32768,
             },
         });
         const content = response.message.content.trim();

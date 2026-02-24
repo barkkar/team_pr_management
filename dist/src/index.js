@@ -823,6 +823,61 @@ async function main() {
                 res.end(JSON.stringify({ prs: result.rows }));
                 return;
             }
+            // --- Team Documents ---
+            // Vector search: similar docs
+            if (url === '/api/search-similar-docs' && method === 'POST') {
+                if (!validateApiKey(req)) {
+                    res.writeHead(401, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Unauthorized' }));
+                    return;
+                }
+                const body = await parseJsonBody(req);
+                const docs = await (0, client_1.searchSimilarDocs)(body.embedding, body.top_k || 3);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ docs }));
+                return;
+            }
+            // Register / list / delete team documents
+            if (url.startsWith('/api/team-documents')) {
+                if (!validateApiKey(req)) {
+                    res.writeHead(401, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Unauthorized' }));
+                    return;
+                }
+                if (method === 'GET') {
+                    const docs = await (0, client_1.listDocuments)();
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ docs }));
+                    return;
+                }
+                if (method === 'POST') {
+                    const body = await parseJsonBody(req);
+                    const { source_url, title, doc_type, chunks } = body;
+                    if (!source_url || !title || !chunks || !Array.isArray(chunks)) {
+                        res.writeHead(400, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ error: 'source_url, title, and chunks[] are required' }));
+                        return;
+                    }
+                    const inserted = await (0, client_1.upsertDocumentChunks)(source_url, title, doc_type || 'design', chunks);
+                    console.log(`[Worker API] Stored ${inserted} chunks for doc "${title}"`);
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: true, chunks_stored: inserted }));
+                    return;
+                }
+                if (method === 'DELETE') {
+                    const body = await parseJsonBody(req);
+                    if (!body.source_url) {
+                        res.writeHead(400, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ error: 'source_url is required' }));
+                        return;
+                    }
+                    const deleted = await (0, client_1.deleteDocument)(body.source_url);
+                    console.log(`[Worker API] Deleted ${deleted} chunks for doc "${body.source_url}"`);
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: true, chunks_deleted: deleted }));
+                    return;
+                }
+            }
             // Not found
             res.writeHead(404, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'Not Found' }));

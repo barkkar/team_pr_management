@@ -651,4 +651,56 @@ export async function getPRsNeedingLessonExtraction(): Promise<any[]> {
   return result.rows;
 }
 
+// --- Team Documents (design docs, requirements) ---
+
+export async function searchSimilarDocs(embedding: number[], topK: number = 3): Promise<any[]> {
+  const embeddingStr = `[${embedding.join(',')}]`;
+  const result = await pool.query(`
+    SELECT id, title, source_url, doc_type, content_chunk, chunk_index,
+           1 - (embedding <=> $1::vector) AS similarity
+    FROM team_documents
+    WHERE embedding IS NOT NULL
+    ORDER BY embedding <=> $1::vector
+    LIMIT $2
+  `, [embeddingStr, topK]);
+  return result.rows;
+}
+
+export async function upsertDocumentChunks(
+  sourceUrl: string, title: string, docType: string,
+  chunks: { content: string; embedding: number[] }[],
+): Promise<number> {
+  // Delete old chunks for this doc
+  await pool.query('DELETE FROM team_documents WHERE source_url = $1', [sourceUrl]);
+
+  let inserted = 0;
+  for (let i = 0; i < chunks.length; i++) {
+    const embeddingStr = `[${chunks[i].embedding.join(',')}]`;
+    await pool.query(`
+      INSERT INTO team_documents (title, source_url, doc_type, content_chunk, chunk_index, embedding, last_fetched_at, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6::vector, NOW(), NOW(), NOW())
+    `, [title, sourceUrl, docType, chunks[i].content, i, embeddingStr]);
+    inserted++;
+  }
+  return inserted;
+}
+
+export async function listDocuments(): Promise<any[]> {
+  const result = await pool.query(`
+    SELECT source_url, title, doc_type,
+           COUNT(*) AS chunk_count,
+           MIN(created_at) AS created_at,
+           MAX(last_fetched_at) AS last_fetched_at
+    FROM team_documents
+    GROUP BY source_url, title, doc_type
+    ORDER BY MAX(created_at) DESC
+  `);
+  return result.rows;
+}
+
+export async function deleteDocument(sourceUrl: string): Promise<number> {
+  const result = await pool.query('DELETE FROM team_documents WHERE source_url = $1', [sourceUrl]);
+  return result.rowCount || 0;
+}
+
 export { pool };

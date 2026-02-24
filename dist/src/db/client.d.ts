@@ -192,5 +192,12 @@ export declare function insertReviewLessons(prUrl: string, aiReview: any, peerCo
 export declare function getRecentLessons(limit?: number): Promise<any[]>;
 export declare function getSimilarLessons(embedding: number[], limit?: number): Promise<any[]>;
 export declare function getPRsNeedingLessonExtraction(): Promise<any[]>;
+export declare function searchSimilarDocs(embedding: number[], topK?: number): Promise<any[]>;
+export declare function upsertDocumentChunks(sourceUrl: string, title: string, docType: string, chunks: {
+    content: string;
+    embedding: number[];
+}[]): Promise<number>;
+export declare function listDocuments(): Promise<any[]>;
+export declare function deleteDocument(sourceUrl: string): Promise<number>;
 export { pool };
 //# sourceMappingURL=client.d.ts.map

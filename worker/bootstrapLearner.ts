@@ -58,7 +58,7 @@ function getOllama(): Ollama {
 
 async function generateEmbedding(text: string): Promise<number[]> {
   const client = getOllama();
-  const truncated = text.length > 6000 ? text.substring(0, 6000) : text;
+  const truncated = text.substring(0, 2000);
   const response = await client.embed({ model: OLLAMA_EMBED_MODEL, input: truncated });
   return response.embeddings[0];
 }
@@ -155,6 +155,19 @@ async function fetchSimilarCode(embedding: number[], topK: number = 5): Promise<
   return response.data.chunks || [];
 }
 
+async function fetchSimilarDocs(embedding: number[], topK: number = 3): Promise<any[]> {
+  try {
+    const response = await axios.post(
+      `${HEROKU_API_URL}/api/search-similar-docs`,
+      { embedding, top_k: topK },
+      { headers: herokuHeaders(), timeout: 15000 },
+    );
+    return response.data.docs || [];
+  } catch {
+    return [];
+  }
+}
+
 async function fetchLearningContext(embedding?: number[]): Promise<{ lessons: any[]; feedback: any[] }> {
   try {
     if (embedding && embedding.length > 0) {
@@ -215,6 +228,7 @@ function buildUserPrompt(
   prTitle: string, prDiff: string, changedFiles: string[],
   similarReviews: any[], similarCode: any[],
   learningContext?: { lessons: any[]; feedback: any[] },
+  similarDocs?: any[],
 ): string {
   const parts: string[] = [];
 
@@ -225,6 +239,15 @@ function buildUserPrompt(
     parts.push('\nPast team review comments on similar code:');
     for (const review of similarReviews.slice(0, 5)) {
       parts.push(`- ${review.file_path || 'general'}: "${(review.comment_body || '').substring(0, 300)}"`);
+    }
+  }
+
+  // Include relevant team design docs / requirements
+  if (similarDocs && similarDocs.length > 0) {
+    parts.push('\nTEAM DESIGN DOCS (apply these requirements during review):');
+    for (const doc of similarDocs.slice(0, 3)) {
+      const excerpt = doc.content_chunk.substring(0, 1500);
+      parts.push(`- [${doc.title}]: "${excerpt}"`);
     }
   }
 
@@ -372,7 +395,7 @@ For EACH peer comment above, determine: did the AI catch this issue? If not, add
         { role: 'user', content: userPrompt },
       ],
       format: 'json',
-      options: { temperature: 0.3, num_predict: 4096 },
+      options: { temperature: 0.3, num_predict: 4096, num_ctx: 32768 },
     });
 
     const parsed = JSON.parse(response.message.content.trim());
@@ -422,7 +445,8 @@ async function processPR(pr: any): Promise<boolean> {
 
     // 2. Generate embedding
     log('  [4/9] Generating embedding...');
-    const diffSummary = `PR: ${prTitle}\nAuthor: ${prAuthor}\nFiles: ${changedFiles.join(', ')}\n\n${prDiff.substring(0, 4000)}`;
+    const fileList = changedFiles.slice(0, 15).join(', ') + (changedFiles.length > 15 ? ` (+${changedFiles.length - 15} more)` : '');
+    const diffSummary = `PR: ${prTitle}\nAuthor: ${prAuthor}\nFiles: ${fileList}\n\n${prDiff.substring(0, 1500)}`;
     const diffEmbedding = await generateEmbedding(diffSummary);
 
     // 3. Vector search
@@ -438,14 +462,15 @@ async function processPR(pr: any): Promise<boolean> {
     } catch { /* no results */ }
     log(`         ${similarReviews.length} similar reviews, ${similarCode.length} code chunks`);
 
-    // 4. Fetch learning context (using embedding for relevance)
+    // 4. Fetch learning context + team docs (using embedding for relevance)
     const learningContext = await fetchLearningContext(diffEmbedding);
+    const similarDocs = await fetchSimilarDocs(diffEmbedding, 3);
 
     // 5. Generate AI review via LLM
     log('  [6/9] Generating AI review via Ollama...');
     const client = getOllama();
     const systemPrompt = buildSystemPrompt(changedFiles.length);
-    const userPrompt = buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext);
+    const userPrompt = buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext, similarDocs);
 
     let review: any;
     try {
@@ -456,7 +481,7 @@ async function processPR(pr: any): Promise<boolean> {
           { role: 'user', content: userPrompt },
         ],
         format: 'json',
-        options: { temperature: 0.3, num_predict: 8192 },
+        options: { temperature: 0.3, num_predict: 8192, num_ctx: 32768 },
       });
       review = parseReviewResponse(response.message.content.trim());
       log(`         Generated ${review.comments?.length || 0} review comments`);
