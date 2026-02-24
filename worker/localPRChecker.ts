@@ -19,6 +19,8 @@
 import 'dotenv/config';
 import axios from 'axios';
 import { Ollama } from 'ollama';
+import { spawn } from 'child_process';
+import * as path from 'path';
 import { requireTokenForHost } from '../src/utils/gheTokenResolver';
 
 function log(message: string): void {
@@ -367,6 +369,32 @@ async function triggerLessonExtraction(): Promise<void> {
 }
 
 /**
+ * Trigger AI analysis by spawning prAnalyzer as a child process
+ */
+async function triggerAnalysis(): Promise<void> {
+  return new Promise((resolve) => {
+    const analyzerPath = path.join(__dirname, 'prAnalyzer.js');
+    log(`Spawning PR analyzer: ${analyzerPath}`);
+    const child = spawn('node', [analyzerPath], {
+      stdio: 'inherit',
+      env: process.env,
+    });
+    child.on('close', (code) => {
+      if (code === 0) {
+        log('AI analysis completed successfully');
+      } else {
+        logError(`AI analysis exited with code ${code}`);
+      }
+      resolve();
+    });
+    child.on('error', (err) => {
+      logError(`Failed to spawn analyzer: ${err.message}`);
+      resolve();
+    });
+  });
+}
+
+/**
  * Main worker function
  */
 async function runWorker(): Promise<void> {
@@ -425,6 +453,10 @@ async function runWorker(): Promise<void> {
     log('Reporting status to Heroku...');
     const updated = await reportStatus(results);
     log(`Updated ${updated} PRs`);
+
+    // Trigger AI analysis for newly tracked PRs
+    log('\nTriggering AI analysis for new PRs...');
+    await triggerAnalysis();
 
     // Trigger lesson extraction for newly closed PRs
     const closedPRs = results.filter(r => !r.error && !r.is_open);
