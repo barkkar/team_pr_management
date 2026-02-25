@@ -176,10 +176,12 @@ Rules for comments:
 - Reference past team review patterns and LEARNING CONTEXT when provided — apply those lessons to THIS PR
 - If TEAM DOCUMENTATION is provided, you MUST check the PR against those guidelines and produce at least one comment referencing a team doc guideline when the PR relates to the documented topic
 - NEVER write vague comments like "ensure this is correct" or "ensure this doesn't break". Every comment MUST identify a SPECIFIC potential issue, bug, or violation with a concrete explanation of what could go wrong
+- Maximum 3 comments per file — pick the most important issues per file
+- For test files: comment on missing test coverage or test quality, NOT on individual test cases. Do NOT say tests are "unnecessary" or "redundant" unless you can prove they duplicate another specific test
 - Be concise and actionable
 - Skip trivial style/formatting issues
 - Each comment must reference a specific file_path from the PR
-- Prioritize NEW files (brand new components/classes) — they are most likely to have bugs
+- Prioritize reviewing implementation files (.js, .ts, .java, .html) over test files
 - You MUST return at least 1 comment`;
 }
 function buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext, similarDocs) {
@@ -271,6 +273,33 @@ function parseReviewResponse(content) {
         };
     }
 }
+function deduplicateComments(review) {
+    if (!review?.comments || !Array.isArray(review.comments))
+        return review;
+    const byFile = {};
+    for (const c of review.comments) {
+        const key = c.file_path || '__unknown__';
+        if (!byFile[key])
+            byFile[key] = [];
+        byFile[key].push(c);
+    }
+    const dedupedComments = [];
+    for (const [, fileComments] of Object.entries(byFile)) {
+        const kept = [];
+        for (const c of fileComments) {
+            const commentText = (c.comment || '').toLowerCase();
+            const isDuplicate = kept.some(k => {
+                const kText = (k.comment || '').toLowerCase();
+                return commentText.length > 40 && kText.length > 40 &&
+                    commentText.substring(0, 40) === kText.substring(0, 40);
+            });
+            if (!isDuplicate)
+                kept.push(c);
+        }
+        dedupedComments.push(...kept.slice(0, 3));
+    }
+    return { ...review, comments: dedupedComments };
+}
 // ---------------------------------------------------------------------------
 // Main analysis
 // ---------------------------------------------------------------------------
@@ -348,7 +377,7 @@ async function analyzePR(prUrl, channelId, messageTs) {
             format: 'json',
             options: { temperature: 0.3, num_predict: 8192, num_ctx: 32768 },
         });
-        review = parseReviewResponse(response.message.content.trim());
+        review = deduplicateComments(parseReviewResponse(response.message.content.trim()));
         log(`  Generated ${review.comments?.length || 0} review comments`);
     }
     catch (error) {
