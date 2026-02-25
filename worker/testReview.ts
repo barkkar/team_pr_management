@@ -187,6 +187,26 @@ async function fetchLearningContext(embedding?: number[]): Promise<{ lessons: an
 // LLM Prompts
 // ---------------------------------------------------------------------------
 
+/**
+ * Reorder diff so new files (only additions) appear before modified files.
+ * This ensures the LLM sees the main feature code first when the diff is truncated.
+ */
+function reorderDiff(diff: string): string {
+  const fileDiffs = diff.split(/^(?=diff --git )/m);
+  const newFiles: string[] = [];
+  const modifiedFiles: string[] = [];
+  for (const fd of fileDiffs) {
+    if (!fd.trim()) continue;
+    // New files have "new file mode" or only +++ lines (no deletions except --- /dev/null)
+    if (fd.includes('new file mode') || fd.includes('--- /dev/null')) {
+      newFiles.push(fd);
+    } else {
+      modifiedFiles.push(fd);
+    }
+  }
+  return [...newFiles, ...modifiedFiles].join('');
+}
+
 function buildSystemPrompt(fileCount: number): string {
   const minComments = Math.max(3, Math.min(fileCount, 10));
   return `You are an expert code reviewer. You MUST respond with valid JSON only. No markdown, no explanations, just JSON.
@@ -200,11 +220,13 @@ Rules for comments:
 - Focus on: bugs, security issues, performance, logic errors, edge cases, error handling, naming conventions, missing null checks, accessibility (for UI code), test coverage gaps
 - Reference past team review patterns and LEARNING CONTEXT when provided — apply those lessons to THIS PR
 - If TEAM DOCUMENTATION is provided, you MUST check the PR against those guidelines and produce at least one comment referencing a team doc guideline when the PR relates to the documented topic
+- NEVER write vague comments like "ensure this is correct" or "ensure this doesn't break". Every comment MUST identify a SPECIFIC potential issue, bug, or violation with a concrete explanation of what could go wrong
 - Be concise and actionable
 - Skip trivial style/formatting issues
 - Each comment must reference a specific file_path from the PR
 - You MUST return at least ${minComments} comments — review EVERY changed file, not just the first few
 - Spread comments across different files — do not focus on just one file
+- Prioritize NEW files (brand new components/classes) — they are most likely to have bugs
 - For each file, look for: missing error handling, potential null/undefined, security issues, logic bugs, naming issues, missing tests`;
 }
 
@@ -274,8 +296,9 @@ function buildUserPrompt(
     }
   }
 
-  // Limit diff to 16000 chars — larger context model allows more
-  parts.push(`\nDiff:\n${prDiff.substring(0, 16000)}`);
+  // Reorder diff (new files first) and limit to 28000 chars
+  const orderedDiff = reorderDiff(prDiff);
+  parts.push(`\nDiff (new files listed first):\n${orderedDiff.substring(0, 28000)}`);
 
   parts.push('\nRespond with JSON: {"summary": "...", "comments": [{"file_path": "...", "line_hint": "...", "comment": "...", "type": "comment|question|suggestion"}]}');
 

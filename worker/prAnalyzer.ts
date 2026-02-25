@@ -201,6 +201,21 @@ async function reportAnalysisResults(data: {
 // LLM Review Generation
 // ---------------------------------------------------------------------------
 
+function reorderDiff(diff: string): string {
+  const fileDiffs = diff.split(/^(?=diff --git )/m);
+  const newFiles: string[] = [];
+  const modifiedFiles: string[] = [];
+  for (const fd of fileDiffs) {
+    if (!fd.trim()) continue;
+    if (fd.includes('new file mode') || fd.includes('--- /dev/null')) {
+      newFiles.push(fd);
+    } else {
+      modifiedFiles.push(fd);
+    }
+  }
+  return [...newFiles, ...modifiedFiles].join('');
+}
+
 function buildSystemPrompt(): string {
   return `You are an expert code reviewer. You MUST respond with valid JSON only. No markdown, no explanations, just JSON.
 
@@ -213,9 +228,11 @@ Rules for comments:
 - Focus on: bugs, security issues, performance, logic errors, edge cases, error handling, naming conventions, missing null checks, accessibility (for UI code), test coverage gaps
 - Reference past team review patterns and LEARNING CONTEXT when provided — apply those lessons to THIS PR
 - If TEAM DOCUMENTATION is provided, you MUST check the PR against those guidelines and produce at least one comment referencing a team doc guideline when the PR relates to the documented topic
+- NEVER write vague comments like "ensure this is correct" or "ensure this doesn't break". Every comment MUST identify a SPECIFIC potential issue, bug, or violation with a concrete explanation of what could go wrong
 - Be concise and actionable
 - Skip trivial style/formatting issues
 - Each comment must reference a specific file_path from the PR
+- Prioritize NEW files (brand new components/classes) — they are most likely to have bugs
 - You MUST return at least 1 comment`;
 }
 
@@ -285,8 +302,9 @@ function buildUserPrompt(
     }
   }
 
-  // Limit diff to 16000 chars — larger context model allows more
-  parts.push(`\nDiff:\n${prDiff.substring(0, 16000)}`);
+  // Reorder diff (new files first) and limit to 28000 chars
+  const orderedDiff = reorderDiff(prDiff);
+  parts.push(`\nDiff (new files listed first):\n${orderedDiff.substring(0, 28000)}`);
 
   parts.push('\nRespond with JSON: {"summary": "...", "comments": [{"file_path": "...", "line_hint": "...", "comment": "...", "type": "comment|question|suggestion"}]}');
 
