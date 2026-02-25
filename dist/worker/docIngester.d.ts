@@ -6,6 +6,7 @@
  * generates embeddings, and stores them for AI review context.
  *
  * Usage:
+ *   npm run ingest-doc -- --dir ./path/to/skills [--type codebase-knowledge]
  *   npm run ingest-doc -- --file ./path/to/doc.txt --title "Doc Name" [--type design|requirements|runbook]
  *   npm run ingest-doc -- <google-drive-shared-url> --title "Doc Name" [--type design|requirements|runbook]
  *   npm run ingest-doc -- --list
