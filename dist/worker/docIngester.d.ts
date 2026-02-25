@@ -6,9 +6,10 @@
  * generates embeddings, and stores them for AI review context.
  *
  * Usage:
+ *   npm run ingest-doc -- --file ./path/to/doc.txt --title "Doc Name" [--type design|requirements|runbook]
  *   npm run ingest-doc -- <google-drive-shared-url> --title "Doc Name" [--type design|requirements|runbook]
  *   npm run ingest-doc -- --list
- *   npm run ingest-doc -- --delete <google-drive-shared-url>
+ *   npm run ingest-doc -- --delete <source-identifier>
  */
 import 'dotenv/config';
 //# sourceMappingURL=docIngester.d.ts.map
