@@ -212,6 +212,7 @@ Rules for comments:
 - type must be one of: "comment", "question", "suggestion"
 - Focus on bugs, logic errors, security, performance, missing tests
 - Reference past team review patterns when provided
+- If TEAM DOCUMENTATION is provided, you MUST check the PR against those guidelines and produce at least one comment referencing a team doc guideline when the PR relates to the documented topic
 - Be concise and actionable
 - Skip trivial style/formatting issues
 - Each comment must reference a specific file_path from the PR
@@ -241,10 +242,10 @@ function buildUserPrompt(
 
   // Include relevant team design docs / requirements
   if (similarDocs && similarDocs.length > 0) {
-    parts.push('\nTEAM DESIGN DOCS (apply these requirements during review):');
+    parts.push('\nTEAM DOCUMENTATION — You MUST check this PR against these team guidelines. If the PR violates or misses any guideline below, produce a comment citing the guideline:');
     for (const doc of similarDocs.slice(0, 3)) {
       const excerpt = doc.content_chunk.substring(0, 1500);
-      parts.push(`- [${doc.title}]: "${excerpt}"`);
+      parts.push(`--- [${doc.title}] ---\n${excerpt}\n---`);
     }
   }
 
