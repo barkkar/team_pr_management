@@ -6,6 +6,7 @@
  * generates embeddings, and stores them for AI review context.
  *
  * Usage:
+ *   npm run ingest-doc -- --dir ./path/to/skills [--type codebase-knowledge]
  *   npm run ingest-doc -- --file ./path/to/doc.txt --title "Doc Name" [--type design|requirements|runbook]
  *   npm run ingest-doc -- <google-drive-shared-url> --title "Doc Name" [--type design|requirements|runbook]
  *   npm run ingest-doc -- --list
@@ -232,6 +233,80 @@ async function ingestFromFile(filePath: string, title: string, docType: string):
   log(`  ✅ Stored ${response.data.chunks_stored} chunks for "${title}"`);
 }
 
+function findMdFiles(dir: string): string[] {
+  const results: string[] = [];
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      // Skip hidden dirs like .git
+      if (!entry.name.startsWith('.')) {
+        results.push(...findMdFiles(fullPath));
+      }
+    } else if (entry.isFile() && entry.name.endsWith('.md')) {
+      results.push(fullPath);
+    }
+  }
+  return results;
+}
+
+async function ingestFromDir(dirPath: string, docType: string): Promise<void> {
+  const resolved = path.resolve(dirPath);
+  log(`Ingesting directory: ${resolved}`);
+
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+    logError(`Not a directory: ${resolved}`);
+    process.exit(1);
+  }
+
+  const mdFiles = findMdFiles(resolved);
+  log(`Found ${mdFiles.length} .md file(s)`);
+
+  if (mdFiles.length === 0) {
+    logError('No .md files found in directory.');
+    process.exit(1);
+  }
+
+  let ingested = 0;
+  let skipped = 0;
+
+  for (let i = 0; i < mdFiles.length; i++) {
+    const filePath = mdFiles[i];
+    const relativePath = path.relative(resolved, filePath);
+    const content = fs.readFileSync(filePath, 'utf-8');
+
+    if (content.length < 50) {
+      log(`  [${i + 1}/${mdFiles.length}] Skipping ${relativePath} (${content.length} chars — too short)`);
+      skipped++;
+      continue;
+    }
+
+    log(`  [${i + 1}/${mdFiles.length}] Ingesting ${relativePath} (${content.length} chars)...`);
+
+    const textChunks = chunkText(content);
+    const chunks: { content: string; embedding: number[] }[] = [];
+    for (const chunk of textChunks) {
+      const embedding = await generateEmbedding(chunk);
+      chunks.push({ content: chunk, embedding });
+    }
+
+    const sourceId = `file://${path.resolve(filePath)}`;
+    try {
+      const response = await axios.post(
+        `${HEROKU_API_URL}/api/team-documents`,
+        { source_url: sourceId, title: relativePath, doc_type: docType, chunks },
+        { headers: herokuHeaders(), timeout: 60000 },
+      );
+      log(`    ✅ ${chunks.length} chunks stored`);
+      ingested++;
+    } catch (error: any) {
+      logError(`    ❌ Failed to store: ${error.message}`);
+    }
+  }
+
+  log(`Done! Ingested: ${ingested}, Skipped: ${skipped}, Total: ${mdFiles.length}`);
+}
+
 async function listDocs(): Promise<void> {
   const response = await axios.get(
     `${HEROKU_API_URL}/api/team-documents`,
@@ -305,8 +380,11 @@ async function run(): Promise<void> {
   const fileIdx = args.indexOf('--file');
   const url = args.find(a => a.startsWith('https://'));
 
-  if (fileIdx < 0 && !url) {
+  const dirIdx = args.indexOf('--dir');
+
+  if (fileIdx < 0 && dirIdx < 0 && !url) {
     logError('Usage:');
+    logError('  npm run ingest-doc -- --dir ./skills-repo/skills [--type codebase-knowledge]');
     logError('  npm run ingest-doc -- --file ./doc.txt --title "Doc Name" [--type design|requirements|runbook]');
     logError('  npm run ingest-doc -- <google-drive-url> --title "Doc Name" [--type design|requirements|runbook]');
     logError('  npm run ingest-doc -- --list');
@@ -322,6 +400,17 @@ async function run(): Promise<void> {
     logError(`Ollama not ready: ${error.message}`);
     logError(`Run: ollama pull ${OLLAMA_EMBED_MODEL}`);
     process.exit(1);
+  }
+
+  // --dir recursive .md ingestion
+  if (dirIdx >= 0) {
+    const dirPath = args[dirIdx + 1];
+    if (!dirPath) {
+      logError('Usage: npm run ingest-doc -- --dir ./path/to/skills [--type codebase-knowledge]');
+      process.exit(1);
+    }
+    await ingestFromDir(dirPath, docType);
+    return;
   }
 
   // --file local ingestion
