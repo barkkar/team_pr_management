@@ -7,15 +7,18 @@
  * generates embeddings, and stores them for AI review context.
  *
  * Usage:
+ *   npm run ingest-doc -- --file ./path/to/doc.txt --title "Doc Name" [--type design|requirements|runbook]
  *   npm run ingest-doc -- <google-drive-shared-url> --title "Doc Name" [--type design|requirements|runbook]
  *   npm run ingest-doc -- --list
- *   npm run ingest-doc -- --delete <google-drive-shared-url>
+ *   npm run ingest-doc -- --delete <source-identifier>
  */
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
 const axios_1 = __importDefault(require("axios"));
 const ollama_1 = require("ollama");
 const HEROKU_API_URL = process.env.HEROKU_API_URL;
@@ -160,6 +163,42 @@ async function ingestDoc(url, title, docType) {
     const response = await axios_1.default.post(`${HEROKU_API_URL}/api/team-documents`, { source_url: url, title, doc_type: docType, chunks }, { headers: herokuHeaders(), timeout: 60000 });
     log(`  ✅ Stored ${response.data.chunks_stored} chunks for "${title}"`);
 }
+async function ingestFromFile(filePath, title, docType) {
+    const resolved = path_1.default.resolve(filePath);
+    log(`Ingesting from file: "${title}" (${docType})`);
+    log(`  File: ${resolved}`);
+    if (!fs_1.default.existsSync(resolved)) {
+        logError(`File not found: ${resolved}`);
+        process.exit(1);
+    }
+    const content = fs_1.default.readFileSync(resolved, 'utf-8');
+    log(`  Read ${content.length} characters`);
+    if (content.length < 50) {
+        logError('File content is too short (< 50 chars).');
+        process.exit(1);
+    }
+    // Chunk
+    log('  Chunking content...');
+    const textChunks = chunkText(content);
+    log(`  Created ${textChunks.length} chunks`);
+    // Embed each chunk
+    log('  Generating embeddings...');
+    const chunks = [];
+    for (let i = 0; i < textChunks.length; i++) {
+        const embedding = await generateEmbedding(textChunks[i]);
+        chunks.push({ content: textChunks[i], embedding });
+        if ((i + 1) % 5 === 0) {
+            log(`    Embedded ${i + 1}/${textChunks.length} chunks`);
+        }
+    }
+    log(`  All ${chunks.length} chunks embedded`);
+    // Use the file path as the source identifier
+    const sourceId = `file://${resolved}`;
+    // Store via Heroku API
+    log('  Storing in database...');
+    const response = await axios_1.default.post(`${HEROKU_API_URL}/api/team-documents`, { source_url: sourceId, title, doc_type: docType, chunks }, { headers: herokuHeaders(), timeout: 60000 });
+    log(`  ✅ Stored ${response.data.chunks_stored} chunks for "${title}"`);
+}
 async function listDocs() {
     const response = await axios_1.default.get(`${HEROKU_API_URL}/api/team-documents`, { headers: herokuHeaders(), timeout: 15000 });
     const docs = response.data.docs || [];
@@ -208,20 +247,22 @@ async function run() {
         await deleteDoc(url);
         return;
     }
-    // Ingest: <url> --title "name" [--type design]
-    const url = args.find(a => a.startsWith('https://'));
-    if (!url) {
-        logError('Usage:');
-        logError('  npm run ingest-doc -- <google-drive-url> --title "Doc Name" [--type design|requirements|runbook]');
-        logError('  npm run ingest-doc -- --list');
-        logError('  npm run ingest-doc -- --delete <url>');
-        process.exit(1);
-    }
+    // Common args
     const titleIdx = args.indexOf('--title');
     const title = titleIdx >= 0 ? args[titleIdx + 1] : 'Untitled Document';
     const typeIdx = args.indexOf('--type');
     const docType = typeIdx >= 0 ? args[typeIdx + 1] : 'design';
-    // Verify Ollama
+    // Verify Ollama before any ingest
+    const fileIdx = args.indexOf('--file');
+    const url = args.find(a => a.startsWith('https://'));
+    if (fileIdx < 0 && !url) {
+        logError('Usage:');
+        logError('  npm run ingest-doc -- --file ./doc.txt --title "Doc Name" [--type design|requirements|runbook]');
+        logError('  npm run ingest-doc -- <google-drive-url> --title "Doc Name" [--type design|requirements|runbook]');
+        logError('  npm run ingest-doc -- --list');
+        logError('  npm run ingest-doc -- --delete <source-identifier>');
+        process.exit(1);
+    }
     try {
         const client = getOllama();
         await client.embed({ model: OLLAMA_EMBED_MODEL, input: 'test' });
@@ -232,6 +273,17 @@ async function run() {
         logError(`Run: ollama pull ${OLLAMA_EMBED_MODEL}`);
         process.exit(1);
     }
+    // --file local ingestion
+    if (fileIdx >= 0) {
+        const filePath = args[fileIdx + 1];
+        if (!filePath) {
+            logError('Usage: npm run ingest-doc -- --file ./doc.txt --title "Doc Name"');
+            process.exit(1);
+        }
+        await ingestFromFile(filePath, title, docType);
+        return;
+    }
+    // URL-based ingestion (Google Docs)
     await ingestDoc(url, title, docType);
 }
 run().then(() => process.exit(0)).catch((error) => {
