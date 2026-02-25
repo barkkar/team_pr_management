@@ -139,7 +139,8 @@ async function fetchLearningContext(embedding) {
 // ---------------------------------------------------------------------------
 // LLM Prompts
 // ---------------------------------------------------------------------------
-function buildSystemPrompt() {
+function buildSystemPrompt(fileCount) {
+    const minComments = Math.max(3, Math.min(fileCount, 10));
     return `You are an expert code reviewer. You MUST respond with valid JSON only. No markdown, no explanations, just JSON.
 
 Review the pull request diff and return a JSON object with this exact structure:
@@ -148,13 +149,15 @@ Review the pull request diff and return a JSON object with this exact structure:
 
 Rules for comments:
 - type must be one of: "comment", "question", "suggestion"
-- Focus on bugs, logic errors, security, performance, missing tests
-- Reference past team review patterns when provided
+- Focus on: bugs, security issues, performance, logic errors, edge cases, error handling, naming conventions, missing null checks, accessibility (for UI code), test coverage gaps
+- Reference past team review patterns and LEARNING CONTEXT when provided — apply those lessons to THIS PR
 - If TEAM DOCUMENTATION is provided, you MUST check the PR against those guidelines and produce at least one comment referencing a team doc guideline when the PR relates to the documented topic
 - Be concise and actionable
 - Skip trivial style/formatting issues
 - Each comment must reference a specific file_path from the PR
-- You MUST return at least 1 comment`;
+- You MUST return at least ${minComments} comments — review EVERY changed file, not just the first few
+- Spread comments across different files — do not focus on just one file
+- For each file, look for: missing error handling, potential null/undefined, security issues, logic bugs, naming issues, missing tests`;
 }
 function buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext, similarDocs) {
     const parts = [];
@@ -166,10 +169,11 @@ function buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarC
             parts.push(`- ${review.file_path || 'general'}: "${(review.comment_body || '').substring(0, 300)}"`);
         }
     }
-    // Include relevant team design docs / requirements
-    if (similarDocs && similarDocs.length > 0) {
+    // Include relevant team design docs / requirements (only if similarity >= 0.75)
+    const relevantDocs = (similarDocs || []).filter((d) => (d.similarity || 0) >= 0.75);
+    if (relevantDocs.length > 0) {
         parts.push('\nTEAM DOCUMENTATION — You MUST check this PR against these team guidelines. If the PR violates or misses any guideline below, produce a comment citing the guideline:');
-        for (const doc of similarDocs.slice(0, 3)) {
+        for (const doc of relevantDocs.slice(0, 3)) {
             const excerpt = doc.content_chunk.substring(0, 1500);
             parts.push(`--- [${doc.title}] ---\n${excerpt}\n---`);
         }
@@ -457,7 +461,7 @@ async function run() {
     // 5. LLM review
     separator('6. AI REVIEW (via Ollama)');
     log(`Generating review with ${OLLAMA_MODEL}... (this may take a minute)`);
-    const systemPrompt = buildSystemPrompt();
+    const systemPrompt = buildSystemPrompt(changedFiles.length);
     const userPrompt = buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext, similarDocs);
     let review;
     try {

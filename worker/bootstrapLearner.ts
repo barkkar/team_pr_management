@@ -243,10 +243,11 @@ function buildUserPrompt(
     }
   }
 
-  // Include relevant team design docs / requirements
-  if (similarDocs && similarDocs.length > 0) {
+  // Include relevant team design docs / requirements (only if similarity >= 0.75)
+  const relevantDocs = (similarDocs || []).filter((d: any) => (d.similarity || 0) >= 0.75);
+  if (relevantDocs.length > 0) {
     parts.push('\nTEAM DOCUMENTATION — You MUST check this PR against these team guidelines. If the PR violates or misses any guideline below, produce a comment citing the guideline:');
-    for (const doc of similarDocs.slice(0, 3)) {
+    for (const doc of relevantDocs.slice(0, 3)) {
       const excerpt = doc.content_chunk.substring(0, 1500);
       parts.push(`--- [${doc.title}] ---\n${excerpt}\n---`);
     }
