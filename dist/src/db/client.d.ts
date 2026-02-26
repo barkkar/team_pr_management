@@ -188,6 +188,12 @@ export declare function getDistinctRepos(): Promise<{
 }[]>;
 export declare function insertOrUpdateFeedback(prUrl: string, userId: string, rating: string, feedbackText?: string): Promise<void>;
 export declare function getRecentFeedback(limit?: number): Promise<any[]>;
+export declare function insertOrUpdateCommentFeedback(prUrl: string, commentIndex: number, userId: string, rating: string, commentSnapshot?: any): Promise<void>;
+export declare function getCommentFeedbackStats(prUrl: string): Promise<{
+    comment_index: number;
+    helpful: number;
+    not_helpful: number;
+}[]>;
 export declare function insertReviewLessons(prUrl: string, aiReview: any, peerComments: any[], lessons: any, embedding?: number[]): Promise<void>;
 export declare function getRecentLessons(limit?: number): Promise<any[]>;
 export declare function getSimilarLessons(embedding: number[], limit?: number): Promise<any[]>;

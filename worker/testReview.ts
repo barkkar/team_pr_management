@@ -595,7 +595,7 @@ function pushChunkedSections(blocks: any[], header: string, lines: string[]): vo
   }
 }
 
-function formatSlackMessage(review: any, reviewers: any[], noMention = false): { text: string; blocks: any[] } {
+function formatSlackMessage(review: any, reviewers: any[], noMention = false, prUrl?: string): { text: string; blocks: any[] } {
   const blocks: any[] = [];
 
   blocks.push({
@@ -618,23 +618,83 @@ function formatSlackMessage(review: any, reviewers: any[], noMention = false): {
       bySeverity[sev].push(c);
     }
 
+    // Estimate overhead blocks (header, summary, reviewers, dividers, overall feedback)
+    const OVERHEAD_BLOCKS = 14;
+    const MAX_BLOCKS = 50;
+    const activeSeverities = SEVERITY_CONFIG.filter(s => bySeverity[s.key].length > 0).length;
+    const perCommentBudget = MAX_BLOCKS - OVERHEAD_BLOCKS - activeSeverities;
+    const usePerCommentFeedback = prUrl && (comments.length * 2 <= perCommentBudget);
+
+    // Build a global comment index so feedback buttons reference the original position
+    let globalIdx = 0;
+    const commentIndexMap = new Map<any, number>();
+    for (const { key } of SEVERITY_CONFIG) {
+      for (const c of bySeverity[key]) {
+        commentIndexMap.set(c, globalIdx++);
+      }
+    }
+
     for (const { key, emoji, label } of SEVERITY_CONFIG) {
       if (bySeverity[key].length === 0) continue;
-      const lines: string[] = [];
-      for (const c of bySeverity[key]) {
-        const prefix = c.file_path ? `\`${c.file_path}\`` : '';
-        const hint = c.line_hint ? ` (${c.line_hint})` : '';
-        const tag = c.type ? ` [${c.type}]` : '';
-        let line = `• ${prefix}${hint}${tag} ${c.comment}`;
-        if (c.reason) line += `\n  _${c.reason}_`;
-        if (c.suggested_fix) {
-          const fix = c.suggested_fix.length > 400 ? c.suggested_fix.substring(0, 397) + '...' : c.suggested_fix;
-          line += `\n\`\`\`\n${fix}\n\`\`\``;
+
+      // Severity header
+      blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `${emoji} *${label}*` }] });
+
+      if (usePerCommentFeedback) {
+        // Per-comment: one section + one actions block per comment
+        for (const c of bySeverity[key]) {
+          const prefix = c.file_path ? `\`${c.file_path}\`` : '';
+          const hint = c.line_hint ? ` (${c.line_hint})` : '';
+          const tag = c.type ? ` [${c.type}]` : '';
+          let text = `${prefix}${hint}${tag} ${c.comment}`;
+          if (c.reason) text += `\n_${c.reason}_`;
+          if (c.suggested_fix) {
+            const fix = c.suggested_fix.length > 400 ? c.suggested_fix.substring(0, 397) + '...' : c.suggested_fix;
+            text += `\n\`\`\`\n${fix}\n\`\`\``;
+          }
+          if (c.source) text += `\n:paperclip: ${c.source}`;
+          if (text.length > SLACK_SECTION_LIMIT) text = text.substring(0, SLACK_SECTION_LIMIT - 3) + '...';
+
+          blocks.push({ type: 'section', text: { type: 'mrkdwn', text } });
+
+          const idx = commentIndexMap.get(c) ?? 0;
+          const val = JSON.stringify({ pr_url: prUrl, idx });
+          blocks.push({
+            type: 'actions',
+            elements: [
+              {
+                type: 'button',
+                text: { type: 'plain_text', text: ':thumbsup:', emoji: true },
+                action_id: 'comment_helpful',
+                value: val,
+              },
+              {
+                type: 'button',
+                text: { type: 'plain_text', text: ':thumbsdown:', emoji: true },
+                action_id: 'comment_not_helpful',
+                value: val,
+              },
+            ],
+          });
         }
-        if (c.source) line += `\n  :paperclip: ${c.source}`;
-        lines.push(line);
+      } else {
+        // Fallback: grouped format (no per-comment buttons)
+        const lines: string[] = [];
+        for (const c of bySeverity[key]) {
+          const prefix = c.file_path ? `\`${c.file_path}\`` : '';
+          const hint = c.line_hint ? ` (${c.line_hint})` : '';
+          const tag = c.type ? ` [${c.type}]` : '';
+          let line = `• ${prefix}${hint}${tag} ${c.comment}`;
+          if (c.reason) line += `\n  _${c.reason}_`;
+          if (c.suggested_fix) {
+            const fix = c.suggested_fix.length > 400 ? c.suggested_fix.substring(0, 397) + '...' : c.suggested_fix;
+            line += `\n\`\`\`\n${fix}\n\`\`\``;
+          }
+          if (c.source) line += `\n  :paperclip: ${c.source}`;
+          lines.push(line);
+        }
+        pushChunkedSections(blocks, '', lines);
       }
-      pushChunkedSections(blocks, `${emoji} *${label}*`, lines);
     }
   } else {
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: '_No specific review comments generated._' } });
@@ -961,7 +1021,7 @@ async function run(): Promise<void> {
   // 6. Slack message preview
   const noMention = process.argv.includes('--no-mention');
   separator('8. SLACK MESSAGE PREVIEW');
-  const slackMessage = formatSlackMessage(review, reviewers, noMention);
+  const slackMessage = formatSlackMessage(review, reviewers, noMention, prUrl);
   if (noMention) log('Reviewer @mentions suppressed (--no-mention)');
   console.log('  Below is what would be posted as a Slack thread reply:\n');
   console.log('  ┌─────────────────────────────────────────────────────────┐');
