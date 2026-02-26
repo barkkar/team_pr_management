@@ -599,7 +599,9 @@ async function run() {
     log(`Generating review with ${OLLAMA_MODEL} (3-pass)...`);
     // Split diff into implementation and test files
     const { implDiff, testDiff, implFiles, testFiles } = splitDiff(prDiff);
-    console.log(`  Split: ${implFiles.length} implementation file(s), ${testFiles.length} test file(s)\n`);
+    console.log(`  Split: ${implFiles.length} implementation file(s), ${testFiles.length} test file(s)`);
+    console.log(`  Impl diff: ${implDiff.length} chars (sending first 24000)`);
+    console.log(`  Test diff: ${testDiff.length} chars (sending first 24000)\n`);
     const client = getOllama();
     let allComments = [];
     const summaries = [];

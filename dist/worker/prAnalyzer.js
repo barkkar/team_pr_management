@@ -147,102 +147,175 @@ async function reportAnalysisResults(data) {
 // ---------------------------------------------------------------------------
 // LLM Review Generation
 // ---------------------------------------------------------------------------
-function reorderDiff(diff) {
+// ---------------------------------------------------------------------------
+// Multi-pass review helpers
+// ---------------------------------------------------------------------------
+const TEST_FILE_PATTERN = /(__tests__|test\.js|test\.ts|\.test\.|Test\.java|\/test\/func\/)/i;
+function splitDiff(diff) {
     const fileDiffs = diff.split(/^(?=diff --git )/m);
-    const newFiles = [];
-    const modifiedFiles = [];
+    const implNew = [];
+    const implMod = [];
+    const testNew = [];
+    const testMod = [];
+    const implFiles = [];
+    const testFiles = [];
     for (const fd of fileDiffs) {
         if (!fd.trim())
             continue;
-        if (fd.includes('new file mode') || fd.includes('--- /dev/null')) {
-            newFiles.push(fd);
+        const pathMatch = fd.match(/diff --git a\/(\S+)/);
+        const filePath = pathMatch ? pathMatch[1] : '';
+        const isNew = fd.includes('new file mode') || fd.includes('--- /dev/null');
+        const isTest = TEST_FILE_PATTERN.test(filePath);
+        if (isTest) {
+            testFiles.push(filePath);
+            (isNew ? testNew : testMod).push(fd);
         }
         else {
-            modifiedFiles.push(fd);
+            implFiles.push(filePath);
+            (isNew ? implNew : implMod).push(fd);
         }
     }
-    return [...newFiles, ...modifiedFiles].join('');
+    return {
+        implDiff: [...implNew, ...implMod].join(''),
+        testDiff: [...testNew, ...testMod].join(''),
+        implFiles,
+        testFiles,
+    };
 }
-function buildSystemPrompt() {
-    return `You are an expert code reviewer. You MUST respond with valid JSON only. No markdown, no explanations, just JSON.
-
-Review the pull request diff and return a JSON object with this exact structure:
-
-{"summary": "1-2 sentence assessment", "comments": [{"file_path": "path/to/file", "line_hint": "location description", "comment": "your review comment", "type": "suggestion"}]}
-
-Rules for comments:
-- type must be one of: "comment", "question", "suggestion"
-- Focus on: bugs, security issues, performance, logic errors, edge cases, error handling, naming conventions, missing null checks, accessibility (for UI code), test coverage gaps
-- Reference past team review patterns and LEARNING CONTEXT when provided — apply those lessons to THIS PR
-- If TEAM DOCUMENTATION is provided, you MUST check the PR against those guidelines and produce at least one comment referencing a team doc guideline when the PR relates to the documented topic
-- NEVER write vague comments like "ensure this is correct" or "ensure this doesn't break". Every comment MUST identify a SPECIFIC potential issue, bug, or violation with a concrete explanation of what could go wrong
-- Maximum 3 comments per file — pick the most important issues per file
-- For test files: comment on missing test coverage or test quality, NOT on individual test cases. Do NOT say tests are "unnecessary" or "redundant" unless you can prove they duplicate another specific test
-- Be concise and actionable
-- Skip trivial style/formatting issues
-- Each comment must reference a specific file_path from the PR
-- Prioritize reviewing implementation files (.js, .ts, .java, .html) over test files
-- You MUST return at least 1 comment`;
+function buildLearningContextBlock(learningContext) {
+    if (!learningContext)
+        return '';
+    const { lessons, feedback } = learningContext;
+    if (lessons.length === 0 && feedback.length === 0)
+        return '';
+    const parts = ['\nLEARNING FROM PAST REVIEWS — You MUST apply these lessons to THIS PR:'];
+    for (const l of lessons.slice(0, 3)) {
+        const lj = typeof l.lessons_json === 'string' ? JSON.parse(l.lessons_json) : l.lessons_json;
+        for (const pattern of (lj.patterns || []).slice(0, 3))
+            parts.push(`- Review pattern: ${pattern}`);
+        for (const takeaway of (lj.key_takeaways || []).slice(0, 2))
+            parts.push(`- Lesson: ${takeaway}`);
+        for (const missed of (lj.missed_issues || []).slice(0, 2)) {
+            const cat = missed.category ? ` [${missed.category}]` : '';
+            const file = missed.file_path ? ` in ${missed.file_path}` : '';
+            parts.push(`- Previously missed${cat}${file}: ${missed.issue || missed}`);
+        }
+        for (const spot of (lj.review_blind_spots || []).slice(0, 3))
+            parts.push(`- Blind spot category: ${spot}`);
+        if (lj.key_takeaway && !lj.key_takeaways)
+            parts.push(`- Lesson: ${lj.key_takeaway}`);
+        for (const missed of (lj.ai_missed || []).slice(0, 2))
+            parts.push(`- Previously missed: ${missed}`);
+    }
+    for (const f of feedback.slice(0, 2)) {
+        const prefix = f.rating === 'helpful' ? 'Team found helpful' : 'Team found unhelpful';
+        parts.push(`- ${prefix}: "${(f.feedback_text || '').substring(0, 200)}"`);
+    }
+    return parts.join('\n');
 }
-function buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext, similarDocs) {
+const JSON_SCHEMA = '\nRespond with JSON: {"summary": "...", "comments": [{"file_path": "...", "line_hint": "...", "comment": "...", "type": "comment|question|suggestion"}]}';
+function pass1_systemPrompt(fileCount) {
+    const minComments = Math.max(2, Math.min(fileCount, 8));
+    return `You are an expert code reviewer reviewing IMPLEMENTATION files only (no test files). Respond with valid JSON only.
+
+{"summary": "1-2 sentence assessment", "comments": [{"file_path": "path/to/file", "line_hint": "location", "comment": "your comment", "type": "suggestion"}]}
+
+Rules:
+- type: "comment", "question", or "suggestion"
+- Focus on: bugs, security, performance, logic errors, edge cases, error handling, naming conventions, null checks, accessibility
+- NEVER write vague comments like "ensure this is correct". Identify SPECIFIC issues with concrete explanations
+- Maximum 3 comments per file
+- You MUST return at least ${minComments} comments spread across different files
+- For each file: check missing error handling, null/undefined, security issues, logic bugs, naming conventions`;
+}
+function pass1_userPrompt(prTitle, implDiff, implFiles, similarReviews, learningContext) {
     const parts = [];
-    parts.push(`Review this PR: "${prTitle}"`);
-    parts.push(`\nChanged files: ${changedFiles.join(', ')}`);
+    parts.push(`Review these IMPLEMENTATION files from PR: "${prTitle}"`);
+    parts.push(`\nFiles: ${implFiles.join(', ')}`);
     if (similarReviews.length > 0) {
         parts.push('\nPast team review comments on similar code:');
-        for (const review of similarReviews.slice(0, 5)) {
-            parts.push(`- ${review.file_path || 'general'}: "${(review.comment_body || '').substring(0, 300)}"`);
+        for (const r of similarReviews.slice(0, 5)) {
+            parts.push(`- ${r.file_path || 'general'}: "${(r.comment_body || '').substring(0, 300)}"`);
         }
     }
-    // Include relevant team design docs / requirements (only if similarity >= 0.75)
-    const relevantDocs = (similarDocs || []).filter((d) => (d.similarity || 0) >= 0.75);
-    if (relevantDocs.length > 0) {
-        parts.push('\nTEAM DOCUMENTATION — You MUST check this PR against these team guidelines. If the PR violates or misses any guideline below, produce a comment citing the guideline:');
-        for (const doc of relevantDocs.slice(0, 3)) {
-            const excerpt = doc.content_chunk.substring(0, 1500);
-            parts.push(`--- [${doc.title}] ---\n${excerpt}\n---`);
-        }
-    }
-    // Include learning context from past feedback and lessons
-    if (learningContext) {
-        const { lessons, feedback } = learningContext;
-        if (lessons.length > 0 || feedback.length > 0) {
-            parts.push('\nLEARNING FROM PAST REVIEWS (apply these patterns):');
-            for (const l of lessons.slice(0, 3)) {
-                const lj = typeof l.lessons_json === 'string' ? JSON.parse(l.lessons_json) : l.lessons_json;
-                // New structured format
-                for (const pattern of (lj.patterns || []).slice(0, 3)) {
-                    parts.push(`- Review pattern: ${pattern}`);
-                }
-                for (const takeaway of (lj.key_takeaways || []).slice(0, 2)) {
-                    parts.push(`- Lesson: ${takeaway}`);
-                }
-                for (const missed of (lj.missed_issues || []).slice(0, 2)) {
-                    const cat = missed.category ? ` [${missed.category}]` : '';
-                    const file = missed.file_path ? ` in ${missed.file_path}` : '';
-                    parts.push(`- Previously missed${cat}${file}: ${missed.issue || missed}`);
-                }
-                for (const spot of (lj.review_blind_spots || []).slice(0, 3)) {
-                    parts.push(`- Blind spot category: ${spot}`);
-                }
-                // Fallback for old format
-                if (lj.key_takeaway && !lj.key_takeaways)
-                    parts.push(`- Lesson: ${lj.key_takeaway}`);
-                for (const missed of (lj.ai_missed || []).slice(0, 2)) {
-                    parts.push(`- Previously missed: ${missed}`);
-                }
-            }
-            for (const f of feedback.slice(0, 2)) {
-                const prefix = f.rating === 'helpful' ? 'Team found helpful' : 'Team found unhelpful';
-                parts.push(`- ${prefix}: "${(f.feedback_text || '').substring(0, 200)}"`);
-            }
-        }
-    }
-    // Reorder diff (new files first) and limit to 28000 chars
-    const orderedDiff = reorderDiff(prDiff);
-    parts.push(`\nDiff (new files listed first):\n${orderedDiff.substring(0, 28000)}`);
-    parts.push('\nRespond with JSON: {"summary": "...", "comments": [{"file_path": "...", "line_hint": "...", "comment": "...", "type": "comment|question|suggestion"}]}');
+    parts.push(buildLearningContextBlock(learningContext));
+    parts.push(`\nDiff:\n${implDiff.substring(0, 24000)}`);
+    parts.push(JSON_SCHEMA);
     return parts.join('\n');
+}
+function pass2_systemPrompt() {
+    return `You are a compliance reviewer checking implementation code against team documentation and coding guidelines. Respond with valid JSON only.
+
+{"summary": "1-2 sentence compliance assessment", "comments": [{"file_path": "path/to/file", "line_hint": "location", "comment": "your comment", "type": "suggestion"}]}
+
+Rules:
+- For each team guideline provided, check if the implementation follows it
+- If the code VIOLATES a guideline, cite the guideline name and explain what's wrong
+- If the code MISSES a required pattern from the guidelines, call it out
+- NEVER write vague comments. Be specific: "Per [doc name], you should X but the code does Y"
+- Only comment on genuine violations — do not force-fit unrelated guidelines
+- If no guidelines are violated, return {"summary": "No guideline violations found", "comments": []}`;
+}
+function pass2_userPrompt(prTitle, implDiff, implFiles, similarDocs) {
+    const parts = [];
+    parts.push(`Check this PR against team guidelines: "${prTitle}"`);
+    parts.push(`\nFiles: ${implFiles.join(', ')}`);
+    parts.push('\nTEAM GUIDELINES — check the code against each of these:');
+    for (const doc of similarDocs.slice(0, 5)) {
+        const excerpt = doc.content_chunk.substring(0, 1500);
+        parts.push(`--- [${doc.title}] (${doc.doc_type || 'guide'}) ---\n${excerpt}\n---`);
+    }
+    parts.push(`\nDiff:\n${implDiff.substring(0, 20000)}`);
+    parts.push(JSON_SCHEMA);
+    return parts.join('\n');
+}
+function pass3_systemPrompt(testFileCount) {
+    const minComments = Math.max(1, Math.min(testFileCount, 5));
+    return `You are an expert test reviewer reviewing ONLY test files. Respond with valid JSON only.
+
+{"summary": "1-2 sentence test assessment", "comments": [{"file_path": "path/to/file", "line_hint": "location", "comment": "your comment", "type": "suggestion"}]}
+
+Rules:
+- Focus on: missing test coverage, edge cases not tested, assertion quality, mock correctness, test isolation
+- Do NOT comment on individual test cases being "unnecessary" or "redundant"
+- Instead: identify MISSING scenarios that SHOULD be tested but aren't
+- Check: are error/edge cases covered? are boundary conditions tested? are mocks realistic?
+- NEVER write vague comments. Be specific about what scenario is missing
+- Maximum 3 comments per test file
+- You MUST return at least ${minComments} comments
+- Reference the implementation files to identify untested code paths`;
+}
+function pass3_userPrompt(prTitle, testDiff, testFiles, implFiles) {
+    const parts = [];
+    parts.push(`Review test files for PR: "${prTitle}"`);
+    parts.push(`\nTest files: ${testFiles.join(', ')}`);
+    parts.push(`\nImplementation files being tested: ${implFiles.join(', ')}`);
+    parts.push(`\nTest diff:\n${testDiff.substring(0, 24000)}`);
+    parts.push(JSON_SCHEMA);
+    return parts.join('\n');
+}
+async function runReviewPass(client, passName, systemPrompt, userPrompt) {
+    try {
+        log(`  [${passName}] Running...`);
+        const response = await client.chat({
+            model: OLLAMA_MODEL,
+            messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt },
+            ],
+            format: 'json',
+            options: { temperature: 0.3, num_predict: 4096, num_ctx: 32768 },
+        });
+        const raw = response.message.content.trim();
+        const parsed = parseReviewResponse(raw);
+        const result = deduplicateComments(parsed);
+        log(`  [${passName}] ${result.comments?.length || 0} comments`);
+        return result;
+    }
+    catch (error) {
+        logError(`  [${passName}] Failed: ${error.message}`);
+        return { comments: [], summary: `${passName} failed: ${error.message}` };
+    }
 }
 function parseReviewResponse(content) {
     // Try direct JSON parse
@@ -355,35 +428,46 @@ async function analyzePR(prUrl, channelId, messageTs) {
     }
     // 3b. Fetch relevant team docs
     log('  Searching for relevant team docs...');
-    const similarDocs = await fetchSimilarDocs(diffEmbedding, 3);
+    const similarDocs = await fetchSimilarDocs(diffEmbedding, 5);
     log(`  Found ${similarDocs.length} relevant doc chunk(s)`);
     // 3c. Fetch learning context (lessons + feedback from similar past reviews)
     log('  Fetching relevant learning context...');
     const learningContext = await fetchLearningContext(diffEmbedding);
     log(`  Got ${learningContext.lessons.length} relevant lesson(s), ${learningContext.feedback.length} feedback item(s)`);
-    // 4. Generate review via LLM
-    log('  Generating AI review via Ollama...');
+    // 4. Multi-pass LLM review
+    log('  Generating AI review via Ollama (3-pass)...');
     const client = getOllama();
-    const systemPrompt = buildSystemPrompt();
-    const userPrompt = buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext, similarDocs);
-    let review;
-    try {
-        const response = await client.chat({
-            model: OLLAMA_MODEL,
-            messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: userPrompt },
-            ],
-            format: 'json',
-            options: { temperature: 0.3, num_predict: 8192, num_ctx: 32768 },
-        });
-        review = deduplicateComments(parseReviewResponse(response.message.content.trim()));
-        log(`  Generated ${review.comments?.length || 0} review comments`);
+    const { implDiff, testDiff, implFiles, testFiles } = splitDiff(prDiff);
+    log(`  Split: ${implFiles.length} impl file(s), ${testFiles.length} test file(s)`);
+    let allComments = [];
+    const summaries = [];
+    // Pass 1: Implementation code review
+    if (implFiles.length > 0) {
+        const p1 = await runReviewPass(client, 'Pass 1: Implementation', pass1_systemPrompt(implFiles.length), pass1_userPrompt(prTitle, implDiff, implFiles, similarReviews, learningContext));
+        allComments.push(...(p1.comments || []));
+        if (p1.summary)
+            summaries.push(p1.summary);
     }
-    catch (error) {
-        logError(`  LLM generation failed: ${error.message}`);
-        review = { comments: [], summary: `AI review failed: ${error.message}` };
+    // Pass 2: Team docs compliance
+    const relevantDocs = similarDocs.filter((d) => (d.similarity || 0) >= 0.65);
+    if (implFiles.length > 0 && relevantDocs.length > 0) {
+        const p2 = await runReviewPass(client, 'Pass 2: Docs Compliance', pass2_systemPrompt(), pass2_userPrompt(prTitle, implDiff, implFiles, relevantDocs));
+        allComments.push(...(p2.comments || []));
+        if (p2.summary && p2.summary !== 'No guideline violations found')
+            summaries.push(p2.summary);
     }
+    // Pass 3: Test review
+    if (testFiles.length > 0) {
+        const p3 = await runReviewPass(client, 'Pass 3: Tests', pass3_systemPrompt(testFiles.length), pass3_userPrompt(prTitle, testDiff, testFiles, implFiles));
+        allComments.push(...(p3.comments || []));
+        if (p3.summary)
+            summaries.push(p3.summary);
+    }
+    const review = deduplicateComments({
+        summary: summaries.join(' '),
+        comments: allComments,
+    });
+    log(`  Generated ${review.comments?.length || 0} review comments (merged from 3 passes)`);
     // 5. Get suggested reviewers
     log('  Finding suggested reviewers...');
     let reviewers = [];
