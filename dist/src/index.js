@@ -108,26 +108,85 @@ function formatSlackAnalysis(review, reviewers, prUrl) {
             const sev = bySeverity[c.severity] ? c.severity : 'medium';
             bySeverity[sev].push(c);
         }
+        // Estimate overhead blocks (header, summary, reviewers, dividers, overall feedback)
+        const OVERHEAD_BLOCKS = 14;
+        const MAX_BLOCKS = 50;
+        // Each comment with feedback = 2 blocks (section + actions); severity header = 1 context block
+        const activeSeverities = SEVERITY_CONFIG.filter(s => bySeverity[s.key].length > 0).length;
+        const perCommentBudget = MAX_BLOCKS - OVERHEAD_BLOCKS - activeSeverities;
+        const usePerCommentFeedback = prUrl && (comments.length * 2 <= perCommentBudget);
+        // Build a global comment index so feedback buttons reference the original position
+        let globalIdx = 0;
+        const commentIndexMap = new Map();
+        for (const { key } of SEVERITY_CONFIG) {
+            for (const c of bySeverity[key]) {
+                commentIndexMap.set(c, globalIdx++);
+            }
+        }
         for (const { key, emoji, label } of SEVERITY_CONFIG) {
             if (bySeverity[key].length === 0)
                 continue;
-            const lines = [];
-            for (const c of bySeverity[key]) {
-                const prefix = c.file_path ? `\`${c.file_path}\`` : '';
-                const hint = c.line_hint ? ` (${c.line_hint})` : '';
-                const tag = c.type ? ` [${c.type}]` : '';
-                let line = `• ${prefix}${hint}${tag} ${c.comment}`;
-                if (c.reason)
-                    line += `\n  _${c.reason}_`;
-                if (c.suggested_fix) {
-                    const fix = c.suggested_fix.length > 400 ? c.suggested_fix.substring(0, 397) + '...' : c.suggested_fix;
-                    line += `\n\`\`\`\n${fix}\n\`\`\``;
+            // Severity header
+            blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `${emoji} *${label}*` }] });
+            if (usePerCommentFeedback) {
+                // Per-comment: one section + one actions block per comment
+                for (const c of bySeverity[key]) {
+                    const prefix = c.file_path ? `\`${c.file_path}\`` : '';
+                    const hint = c.line_hint ? ` (${c.line_hint})` : '';
+                    const tag = c.type ? ` [${c.type}]` : '';
+                    let text = `${prefix}${hint}${tag} ${c.comment}`;
+                    if (c.reason)
+                        text += `\n_${c.reason}_`;
+                    if (c.suggested_fix) {
+                        const fix = c.suggested_fix.length > 400 ? c.suggested_fix.substring(0, 397) + '...' : c.suggested_fix;
+                        text += `\n\`\`\`\n${fix}\n\`\`\``;
+                    }
+                    if (c.source)
+                        text += `\n:paperclip: ${c.source}`;
+                    if (text.length > SLACK_SECTION_LIMIT)
+                        text = text.substring(0, SLACK_SECTION_LIMIT - 3) + '...';
+                    blocks.push({ type: 'section', text: { type: 'mrkdwn', text } });
+                    const idx = commentIndexMap.get(c) ?? 0;
+                    const val = JSON.stringify({ pr_url: prUrl, idx });
+                    blocks.push({
+                        type: 'actions',
+                        elements: [
+                            {
+                                type: 'button',
+                                text: { type: 'plain_text', text: ':thumbsup:', emoji: true },
+                                action_id: 'comment_helpful',
+                                value: val,
+                            },
+                            {
+                                type: 'button',
+                                text: { type: 'plain_text', text: ':thumbsdown:', emoji: true },
+                                action_id: 'comment_not_helpful',
+                                value: val,
+                            },
+                        ],
+                    });
                 }
-                if (c.source)
-                    line += `\n  :paperclip: ${c.source}`;
-                lines.push(line);
             }
-            pushChunkedSections(blocks, `${emoji} *${label}*`, lines);
+            else {
+                // Fallback: grouped format (no per-comment buttons)
+                const lines = [];
+                for (const c of bySeverity[key]) {
+                    const prefix = c.file_path ? `\`${c.file_path}\`` : '';
+                    const hint = c.line_hint ? ` (${c.line_hint})` : '';
+                    const tag = c.type ? ` [${c.type}]` : '';
+                    let line = `• ${prefix}${hint}${tag} ${c.comment}`;
+                    if (c.reason)
+                        line += `\n  _${c.reason}_`;
+                    if (c.suggested_fix) {
+                        const fix = c.suggested_fix.length > 400 ? c.suggested_fix.substring(0, 397) + '...' : c.suggested_fix;
+                        line += `\n\`\`\`\n${fix}\n\`\`\``;
+                    }
+                    if (c.source)
+                        line += `\n  :paperclip: ${c.source}`;
+                    lines.push(line);
+                }
+                pushChunkedSections(blocks, '', lines);
+            }
         }
     }
     else {

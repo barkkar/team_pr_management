@@ -446,6 +446,35 @@ function createApp() {
             }
         }
     });
+    // ---------------------------------------------------------------------------
+    // Per-Comment AI Feedback — lightweight 👍/👎 on individual suggestions
+    // ---------------------------------------------------------------------------
+    app.action('comment_helpful', async ({ action, ack, body, respond }) => {
+        await ack();
+        const userId = body.user.id;
+        try {
+            const { pr_url, idx } = JSON.parse(action.value || '{}');
+            console.log(`[Comment Feedback] 👍 from ${userId} on comment #${idx} for ${pr_url}`);
+            await (0, client_1.insertOrUpdateCommentFeedback)(pr_url, idx, userId, 'helpful');
+            await respond({ text: ':thumbsup: Thanks for the feedback!', response_type: 'ephemeral', replace_original: false });
+        }
+        catch (e) {
+            console.error(`[Comment Feedback] Error: ${e.message}`);
+        }
+    });
+    app.action('comment_not_helpful', async ({ action, ack, body, respond }) => {
+        await ack();
+        const userId = body.user.id;
+        try {
+            const { pr_url, idx } = JSON.parse(action.value || '{}');
+            console.log(`[Comment Feedback] 👎 from ${userId} on comment #${idx} for ${pr_url}`);
+            await (0, client_1.insertOrUpdateCommentFeedback)(pr_url, idx, userId, 'not_helpful');
+            await respond({ text: ':thumbsdown: Got it — we\'ll work on improving this.', response_type: 'ephemeral', replace_original: false });
+        }
+        catch (e) {
+            console.error(`[Comment Feedback] Error: ${e.message}`);
+        }
+    });
     return app;
 }
 //# sourceMappingURL=app.js.map

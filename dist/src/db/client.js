@@ -37,6 +37,8 @@ exports.findCodeTouchersByFiles = findCodeTouchersByFiles;
 exports.getDistinctRepos = getDistinctRepos;
 exports.insertOrUpdateFeedback = insertOrUpdateFeedback;
 exports.getRecentFeedback = getRecentFeedback;
+exports.insertOrUpdateCommentFeedback = insertOrUpdateCommentFeedback;
+exports.getCommentFeedbackStats = getCommentFeedbackStats;
 exports.insertReviewLessons = insertReviewLessons;
 exports.getRecentLessons = getRecentLessons;
 exports.getSimilarLessons = getSimilarLessons;
@@ -427,6 +429,29 @@ async function getRecentFeedback(limit = 5) {
     ORDER BY f.created_at DESC
     LIMIT $1
   `, [limit]);
+    return result.rows;
+}
+// ---------------------------------------------------------------------------
+// Per-Comment AI Feedback (👍/👎 on individual suggestions)
+// ---------------------------------------------------------------------------
+async function insertOrUpdateCommentFeedback(prUrl, commentIndex, userId, rating, commentSnapshot) {
+    await pool.query(`
+    INSERT INTO ai_comment_feedback (pr_url, comment_index, user_id, rating, comment_snapshot, created_at)
+    VALUES ($1, $2, $3, $4, $5, NOW())
+    ON CONFLICT (pr_url, comment_index, user_id) DO UPDATE SET
+      rating = $4, created_at = NOW()
+  `, [prUrl, commentIndex, userId, rating, commentSnapshot ? JSON.stringify(commentSnapshot) : null]);
+}
+async function getCommentFeedbackStats(prUrl) {
+    const result = await pool.query(`
+    SELECT comment_index,
+           COUNT(*) FILTER (WHERE rating = 'helpful') AS helpful,
+           COUNT(*) FILTER (WHERE rating = 'not_helpful') AS not_helpful
+    FROM ai_comment_feedback
+    WHERE pr_url = $1
+    GROUP BY comment_index
+    ORDER BY comment_index
+  `, [prUrl]);
     return result.rows;
 }
 // ---------------------------------------------------------------------------

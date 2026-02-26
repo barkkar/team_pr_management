@@ -590,6 +590,34 @@ export async function getRecentFeedback(limit: number = 5): Promise<any[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Per-Comment AI Feedback (👍/👎 on individual suggestions)
+// ---------------------------------------------------------------------------
+
+export async function insertOrUpdateCommentFeedback(
+  prUrl: string, commentIndex: number, userId: string, rating: string, commentSnapshot?: any,
+): Promise<void> {
+  await pool.query(`
+    INSERT INTO ai_comment_feedback (pr_url, comment_index, user_id, rating, comment_snapshot, created_at)
+    VALUES ($1, $2, $3, $4, $5, NOW())
+    ON CONFLICT (pr_url, comment_index, user_id) DO UPDATE SET
+      rating = $4, created_at = NOW()
+  `, [prUrl, commentIndex, userId, rating, commentSnapshot ? JSON.stringify(commentSnapshot) : null]);
+}
+
+export async function getCommentFeedbackStats(prUrl: string): Promise<{ comment_index: number; helpful: number; not_helpful: number }[]> {
+  const result = await pool.query(`
+    SELECT comment_index,
+           COUNT(*) FILTER (WHERE rating = 'helpful') AS helpful,
+           COUNT(*) FILTER (WHERE rating = 'not_helpful') AS not_helpful
+    FROM ai_comment_feedback
+    WHERE pr_url = $1
+    GROUP BY comment_index
+    ORDER BY comment_index
+  `, [prUrl]);
+  return result.rows;
+}
+
+// ---------------------------------------------------------------------------
 // AI Review Lessons (automated post-merge comparison)
 // ---------------------------------------------------------------------------
 

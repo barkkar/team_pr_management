@@ -1,7 +1,7 @@
 import { App, LogLevel } from '@slack/bolt';
 import { trackPRsFromMessage } from './services/prTracker';
 import { containsPRLink } from './utils/prParser';
-import { addMonitoredChannel, removeMonitoredChannel, getMonitoredChannels, isChannelMonitored, getPendingReminders, getOpenUnreviewedPRs, getReviewStats, insertOrUpdateFeedback, pool } from './db/client';
+import { addMonitoredChannel, removeMonitoredChannel, getMonitoredChannels, isChannelMonitored, getPendingReminders, getOpenUnreviewedPRs, getReviewStats, insertOrUpdateFeedback, insertOrUpdateCommentFeedback, pool } from './db/client';
 import { isChannelAllowed, getAllowedChannelIds } from './services/channelAccessControl';
 
 function formatWaitTime(postedAt: Date): string {
@@ -475,6 +475,36 @@ export function createApp(): App {
       } catch (e: any) {
         console.error(`[Feedback] DB error saving text: ${e.message}`);
       }
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Per-Comment AI Feedback — lightweight 👍/👎 on individual suggestions
+  // ---------------------------------------------------------------------------
+
+  app.action('comment_helpful', async ({ action, ack, body, respond }) => {
+    await ack();
+    const userId = body.user.id;
+    try {
+      const { pr_url, idx } = JSON.parse((action as any).value || '{}');
+      console.log(`[Comment Feedback] 👍 from ${userId} on comment #${idx} for ${pr_url}`);
+      await insertOrUpdateCommentFeedback(pr_url, idx, userId, 'helpful');
+      await respond({ text: ':thumbsup: Thanks for the feedback!', response_type: 'ephemeral', replace_original: false });
+    } catch (e: any) {
+      console.error(`[Comment Feedback] Error: ${e.message}`);
+    }
+  });
+
+  app.action('comment_not_helpful', async ({ action, ack, body, respond }) => {
+    await ack();
+    const userId = body.user.id;
+    try {
+      const { pr_url, idx } = JSON.parse((action as any).value || '{}');
+      console.log(`[Comment Feedback] 👎 from ${userId} on comment #${idx} for ${pr_url}`);
+      await insertOrUpdateCommentFeedback(pr_url, idx, userId, 'not_helpful');
+      await respond({ text: ':thumbsdown: Got it — we\'ll work on improving this.', response_type: 'ephemeral', replace_original: false });
+    } catch (e: any) {
+      console.error(`[Comment Feedback] Error: ${e.message}`);
     }
   });
 
