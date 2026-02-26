@@ -12,7 +12,7 @@ exports.generateReview = generateReview;
 exports.checkLLMHealth = checkLLMHealth;
 const ollama_1 = require("ollama");
 const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen3-coder';
 let ollamaClient = null;
 function getClient() {
     if (!ollamaClient) {

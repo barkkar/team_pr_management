@@ -22,7 +22,7 @@ const gheTokenResolver_1 = require("../src/utils/gheTokenResolver");
 const HEROKU_API_URL = process.env.HEROKU_API_URL;
 const WORKER_API_KEY = process.env.WORKER_API_KEY;
 const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen3-coder';
 const POLL_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 let ollama = null;
 function getOllama() {
