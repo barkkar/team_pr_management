@@ -46,6 +46,23 @@ function validateApiKey(req: http.IncomingMessage): boolean {
 }
 
 // Format AI analysis results into Slack message blocks
+const SLACK_SECTION_LIMIT = 2900; // Slack section text limit is 3000; leave margin
+
+function pushChunkedSections(blocks: any[], header: string, lines: string[]): void {
+  let current = header;
+  for (const line of lines) {
+    if (current.length + 1 + line.length > SLACK_SECTION_LIMIT) {
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: current } });
+      current = line;
+    } else {
+      current += '\n' + line;
+    }
+  }
+  if (current) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: current } });
+  }
+}
+
 function formatSlackAnalysis(
   review: any,
   reviewers: any[],
@@ -78,15 +95,8 @@ function formatSlackAnalysis(
         const prefix = c.file_path ? `\`${c.file_path}\`` : '';
         const hint = c.line_hint ? ` (${c.line_hint})` : '';
         return `• ${prefix}${hint} ${c.comment}`;
-      }).join('\n');
-
-      blocks.push({
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `:memo: *Review Comments:*\n${commentLines}`,
-        },
       });
+      pushChunkedSections(blocks, ':memo: *Review Comments:*', commentLines);
     }
 
     // Questions
@@ -94,15 +104,8 @@ function formatSlackAnalysis(
       const questionLines = commentsByType.question.map((c: any) => {
         const prefix = c.file_path ? `\`${c.file_path}\`` : '';
         return `• ${prefix} ${c.comment}`;
-      }).join('\n');
-
-      blocks.push({
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `:question: *Questions:*\n${questionLines}`,
-        },
       });
+      pushChunkedSections(blocks, ':question: *Questions:*', questionLines);
     }
 
     // Suggestions
@@ -110,15 +113,8 @@ function formatSlackAnalysis(
       const suggestionLines = commentsByType.suggestion.map((c: any) => {
         const prefix = c.file_path ? `\`${c.file_path}\`` : '';
         return `• ${prefix} ${c.comment}`;
-      }).join('\n');
-
-      blocks.push({
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `:bulb: *Suggestions:*\n${suggestionLines}`,
-        },
       });
+      pushChunkedSections(blocks, ':bulb: *Suggestions:*', suggestionLines);
     }
   } else {
     blocks.push({
@@ -132,11 +128,12 @@ function formatSlackAnalysis(
 
   // Summary
   if (review?.summary) {
+    const summaryText = `*Summary:* ${review.summary}`.substring(0, SLACK_SECTION_LIMIT);
     blocks.push({
       type: 'context',
       elements: [{
         type: 'mrkdwn',
-        text: `*Summary:* ${review.summary}`,
+        text: summaryText,
       }],
     });
   }
