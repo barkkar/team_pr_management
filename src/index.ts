@@ -79,42 +79,31 @@ function formatSlackAnalysis(
     },
   });
 
-  // Review comments
+  // Review comments grouped by severity
+  const SEVERITY_CONFIG: { key: string; emoji: string; label: string }[] = [
+    { key: 'critical', emoji: ':red_circle:', label: 'Critical' },
+    { key: 'high', emoji: ':large_orange_circle:', label: 'High' },
+    { key: 'medium', emoji: ':large_yellow_circle:', label: 'Medium' },
+    { key: 'low', emoji: ':large_blue_circle:', label: 'Low' },
+  ];
+
   const comments = review?.comments || [];
   if (comments.length > 0) {
-    const commentsByType: Record<string, any[]> = { comment: [], question: [], suggestion: [] };
+    const bySeverity: Record<string, any[]> = { critical: [], high: [], medium: [], low: [] };
     for (const c of comments) {
-      const t = c.type || 'comment';
-      if (!commentsByType[t]) commentsByType[t] = [];
-      commentsByType[t].push(c);
+      const sev = bySeverity[c.severity] ? c.severity : 'medium';
+      bySeverity[sev].push(c);
     }
 
-    // Regular comments
-    if (commentsByType.comment.length > 0) {
-      const commentLines = commentsByType.comment.map((c: any) => {
+    for (const { key, emoji, label } of SEVERITY_CONFIG) {
+      if (bySeverity[key].length === 0) continue;
+      const lines = bySeverity[key].map((c: any) => {
         const prefix = c.file_path ? `\`${c.file_path}\`` : '';
         const hint = c.line_hint ? ` (${c.line_hint})` : '';
-        return `• ${prefix}${hint} ${c.comment}`;
+        const tag = c.type ? ` [${c.type}]` : '';
+        return `• ${prefix}${hint}${tag} ${c.comment}`;
       });
-      pushChunkedSections(blocks, ':memo: *Review Comments:*', commentLines);
-    }
-
-    // Questions
-    if (commentsByType.question.length > 0) {
-      const questionLines = commentsByType.question.map((c: any) => {
-        const prefix = c.file_path ? `\`${c.file_path}\`` : '';
-        return `• ${prefix} ${c.comment}`;
-      });
-      pushChunkedSections(blocks, ':question: *Questions:*', questionLines);
-    }
-
-    // Suggestions
-    if (commentsByType.suggestion.length > 0) {
-      const suggestionLines = commentsByType.suggestion.map((c: any) => {
-        const prefix = c.file_path ? `\`${c.file_path}\`` : '';
-        return `• ${prefix} ${c.comment}`;
-      });
-      pushChunkedSections(blocks, ':bulb: *Suggestions:*', suggestionLines);
+      pushChunkedSections(blocks, `${emoji} *${label}*`, lines);
     }
   } else {
     blocks.push({

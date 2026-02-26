@@ -270,16 +270,23 @@ function buildLearningContextBlock(learningContext?: { lessons: any[]; feedback:
   return parts.join('\n');
 }
 
-const JSON_SCHEMA = '\nRespond with JSON: {"summary": "...", "comments": [{"file_path": "...", "line_hint": "...", "comment": "...", "type": "comment|question|suggestion"}]}';
+const JSON_SCHEMA = '\nRespond with JSON: {"summary": "...", "comments": [{"file_path": "...", "line_hint": "...", "comment": "...", "type": "comment|question|suggestion", "severity": "critical|high|medium|low"}]}';
 
 function pass1_systemPrompt(fileCount: number): string {
   const minComments = Math.max(2, Math.min(fileCount, 8));
   return `You are an expert code reviewer reviewing IMPLEMENTATION files only (no test files). Respond with valid JSON only.
 
-{"summary": "1-2 sentence assessment", "comments": [{"file_path": "path/to/file", "line_hint": "location", "comment": "your comment", "type": "suggestion"}]}
+{"summary": "1-2 sentence assessment", "comments": [{"file_path": "path/to/file", "line_hint": "location", "comment": "your comment", "type": "suggestion", "severity": "high"}]}
+
+Severity classification (REQUIRED for every comment):
+- "critical": security hole, crash risk, race condition, data loss
+- "high": bug, logic flaw, null dereference, performance pitfall
+- "medium": readability, maintainability, anti-pattern, missing docs
+- "low": style nit, minor optimization, trivial suggestion
 
 Rules:
 - type: "comment", "question", or "suggestion"
+- severity: MUST be one of "critical", "high", "medium", "low"
 - Focus on: bugs, security, performance, logic errors, edge cases, error handling, null checks, accessibility
 - NEVER write vague comments. These phrases are BANNED: "ensure this is correct", "consider using", "not properly handling", "add validation", "could be improved", "not properly scoped". Instead say EXACTLY what is wrong: what input causes what failure
 - Do NOT suggest renaming variables or elements for "readability" — skip trivial style/naming issues
@@ -313,7 +320,13 @@ function pass1_userPrompt(
 function pass2_systemPrompt(): string {
   return `You are a compliance reviewer checking implementation code against team documentation and coding guidelines. Respond with valid JSON only.
 
-{"summary": "1-2 sentence compliance assessment", "comments": [{"file_path": "path/to/file", "line_hint": "location", "comment": "your comment", "type": "suggestion"}]}
+{"summary": "1-2 sentence compliance assessment", "comments": [{"file_path": "path/to/file", "line_hint": "location", "comment": "your comment", "type": "suggestion", "severity": "high"}]}
+
+Severity classification (REQUIRED for every comment):
+- "critical": security violation, auth bypass, data exposure
+- "high": guideline violation that causes bugs or breaking changes
+- "medium": missing recommended pattern, incomplete compliance
+- "low": minor deviation, cosmetic guideline mismatch
 
 Rules:
 - For each team guideline provided, check if the implementation follows it
@@ -344,7 +357,13 @@ function pass3_systemPrompt(testFileCount: number): string {
   const minComments = Math.max(2, Math.min(testFileCount, 5));
   return `You are an expert test reviewer reviewing ONLY test files. Respond with valid JSON only.
 
-{"summary": "1-2 sentence test assessment", "comments": [{"file_path": "path/to/file", "line_hint": "location", "comment": "your comment", "type": "suggestion"}]}
+{"summary": "1-2 sentence test assessment", "comments": [{"file_path": "path/to/file", "line_hint": "location", "comment": "your comment", "type": "suggestion", "severity": "high"}]}
+
+Severity classification (REQUIRED for every comment):
+- "critical": missing test for security-critical or crash-prone code path
+- "high": missing test for core functionality, error handling, or null cases
+- "medium": missing edge-case test, weak assertions, incomplete mocks
+- "low": minor test quality issue, test naming, test organization
 
 Rules:
 - Focus on: missing test coverage for implementation code, edge cases not tested, assertion quality, mock correctness
@@ -466,12 +485,14 @@ function wordOverlap(a: string, b: string): number {
 function deduplicateComments(review: any): any {
   if (!review?.comments || !Array.isArray(review.comments)) return review;
 
-  // Phase 0: filter low-quality comments
+  // Phase 0: filter low-quality comments + normalize severity
+  const VALID_SEVERITIES = new Set(['critical', 'high', 'medium', 'low']);
   const quality: any[] = [];
   for (const c of review.comments) {
     const cleaned = filterLowQualityComment(c.comment || '');
     if (cleaned !== null) {
-      quality.push({ ...c, comment: cleaned });
+      const severity = VALID_SEVERITIES.has(c.severity) ? c.severity : 'medium';
+      quality.push({ ...c, comment: cleaned, severity });
     }
   }
 
