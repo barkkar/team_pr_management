@@ -8,6 +8,9 @@
  *
  * Usage:
  *   npm run test-review -- https://git.soma.salesforce.com/org/repo/pull/123
+ *   npm run test-review -- https://... --no-mention          # suppress reviewer @mentions
+ *   npm run test-review -- https://... --post --channel=C123  # post to Slack
+ *   npm run test-review -- https://... --post --channel=C123 --no-mention
  */
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
@@ -515,7 +518,7 @@ function pushChunkedSections(blocks, header, lines) {
         blocks.push({ type: 'section', text: { type: 'mrkdwn', text: current } });
     }
 }
-function formatSlackMessage(review, reviewers) {
+function formatSlackMessage(review, reviewers, noMention = false) {
     const blocks = [];
     blocks.push({
         type: 'section',
@@ -563,14 +566,20 @@ function formatSlackMessage(review, reviewers) {
     }
     blocks.push({ type: 'divider' });
     if (reviewers && reviewers.length > 0) {
-        const mentionList = reviewers.map((r) => r.slack_user_id ? `<@${r.slack_user_id}>` : `\`${r.ghe_login}\``);
-        const mentionStr = mentionList.length === 1
-            ? mentionList[0]
-            : mentionList.slice(0, -1).join(', ') + ' and ' + mentionList[mentionList.length - 1];
-        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `:eyes: Hey ${mentionStr}, could you take a look at this PR?` } });
+        if (noMention) {
+            const nameList = reviewers.map((r) => `\`${r.ghe_login}\``).join(', ');
+            blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `:eyes: *Suggested reviewers:* ${nameList}` } });
+        }
+        else {
+            const mentionList = reviewers.map((r) => r.slack_user_id ? `<@${r.slack_user_id}>` : `\`${r.ghe_login}\``);
+            const mentionStr = mentionList.length === 1
+                ? mentionList[0]
+                : mentionList.slice(0, -1).join(', ') + ' and ' + mentionList[mentionList.length - 1];
+            blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `:eyes: Hey ${mentionStr}, could you take a look at this PR?` } });
+        }
         const reasonLines = reviewers.map((r) => {
-            const mention = r.slack_user_id ? `<@${r.slack_user_id}>` : `\`${r.ghe_login}\``;
-            return `• ${mention} — ${r.reason}`;
+            const name = noMention ? `\`${r.ghe_login}\`` : (r.slack_user_id ? `<@${r.slack_user_id}>` : `\`${r.ghe_login}\``);
+            return `• ${name} — ${r.reason}`;
         }).join('\n');
         blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: reasonLines }] });
     }
@@ -848,8 +857,11 @@ async function run() {
         console.log(`  Could not fetch reviewer suggestions: ${error.message}`);
     }
     // 6. Slack message preview
+    const noMention = process.argv.includes('--no-mention');
     separator('8. SLACK MESSAGE PREVIEW');
-    const slackMessage = formatSlackMessage(review, reviewers);
+    const slackMessage = formatSlackMessage(review, reviewers, noMention);
+    if (noMention)
+        log('Reviewer @mentions suppressed (--no-mention)');
     console.log('  Below is what would be posted as a Slack thread reply:\n');
     console.log('  ┌─────────────────────────────────────────────────────────┐');
     for (const block of slackMessage.blocks) {
