@@ -269,7 +269,7 @@ function buildLearningContextBlock(learningContext?: { lessons: any[]; feedback:
   return parts.join('\n');
 }
 
-const JSON_SCHEMA = '\nRespond with JSON: {"summary": "...", "comments": [{"file_path": "...", "line_hint": "...", "comment": "...", "type": "comment|question|suggestion"}]}';
+const JSON_SCHEMA = '\nRespond with JSON: {"summary": "...", "comments": [{"file_path": "...", "line_hint": "...", "comment": "...", "type": "comment|question|suggestion", "severity": "critical|high|medium|low"}]}';
 
 // --- Pass 1: Implementation code review (bugs, logic, security, naming) ---
 
@@ -277,10 +277,17 @@ function pass1_systemPrompt(fileCount: number): string {
   const minComments = Math.max(2, Math.min(fileCount, 8));
   return `You are an expert code reviewer reviewing IMPLEMENTATION files only (no test files). Respond with valid JSON only.
 
-{"summary": "1-2 sentence assessment", "comments": [{"file_path": "path/to/file", "line_hint": "location", "comment": "your comment", "type": "suggestion"}]}
+{"summary": "1-2 sentence assessment", "comments": [{"file_path": "path/to/file", "line_hint": "location", "comment": "your comment", "type": "suggestion", "severity": "high"}]}
+
+Severity classification (REQUIRED for every comment):
+- "critical": security hole, crash risk, race condition, data loss
+- "high": bug, logic flaw, null dereference, performance pitfall
+- "medium": readability, maintainability, anti-pattern, missing docs
+- "low": style nit, minor optimization, trivial suggestion
 
 Rules:
 - type: "comment", "question", or "suggestion"
+- severity: MUST be one of "critical", "high", "medium", "low"
 - Focus on: bugs, security, performance, logic errors, edge cases, error handling, null checks, accessibility
 - NEVER write vague comments. These phrases are BANNED: "ensure this is correct", "consider using", "not properly handling", "add validation", "could be improved", "not properly scoped". Instead say EXACTLY what is wrong: what input causes what failure
 - Do NOT suggest renaming variables or elements for "readability" — skip trivial style/naming issues
@@ -318,7 +325,13 @@ function pass1_userPrompt(
 function pass2_systemPrompt(): string {
   return `You are a compliance reviewer checking implementation code against team documentation and coding guidelines. Respond with valid JSON only.
 
-{"summary": "1-2 sentence compliance assessment", "comments": [{"file_path": "path/to/file", "line_hint": "location", "comment": "your comment", "type": "suggestion"}]}
+{"summary": "1-2 sentence compliance assessment", "comments": [{"file_path": "path/to/file", "line_hint": "location", "comment": "your comment", "type": "suggestion", "severity": "high"}]}
+
+Severity classification (REQUIRED for every comment):
+- "critical": security violation, auth bypass, data exposure
+- "high": guideline violation that causes bugs or breaking changes
+- "medium": missing recommended pattern, incomplete compliance
+- "low": minor deviation, cosmetic guideline mismatch
 
 Rules:
 - For each team guideline provided, check if the implementation follows it
@@ -353,7 +366,13 @@ function pass3_systemPrompt(testFileCount: number): string {
   const minComments = Math.max(2, Math.min(testFileCount, 5));
   return `You are an expert test reviewer reviewing ONLY test files. Respond with valid JSON only.
 
-{"summary": "1-2 sentence test assessment", "comments": [{"file_path": "path/to/file", "line_hint": "location", "comment": "your comment", "type": "suggestion"}]}
+{"summary": "1-2 sentence test assessment", "comments": [{"file_path": "path/to/file", "line_hint": "location", "comment": "your comment", "type": "suggestion", "severity": "high"}]}
+
+Severity classification (REQUIRED for every comment):
+- "critical": missing test for security-critical or crash-prone code path
+- "high": missing test for core functionality, error handling, or null cases
+- "medium": missing edge-case test, weak assertions, incomplete mocks
+- "low": minor test quality issue, test naming, test organization
 
 Rules:
 - Focus on: missing test coverage for implementation code, edge cases not tested, assertion quality, mock correctness
@@ -488,12 +507,14 @@ function wordOverlap(a: string, b: string): number {
 function deduplicateComments(review: any): any {
   if (!review?.comments || !Array.isArray(review.comments)) return review;
 
-  // Phase 0: filter low-quality comments
+  // Phase 0: filter low-quality comments + normalize severity
+  const VALID_SEVERITIES = new Set(['critical', 'high', 'medium', 'low']);
   const quality: any[] = [];
   for (const c of review.comments) {
     const cleaned = filterLowQualityComment(c.comment || '');
     if (cleaned !== null) {
-      quality.push({ ...c, comment: cleaned });
+      const severity = VALID_SEVERITIES.has(c.severity) ? c.severity : 'medium';
+      quality.push({ ...c, comment: cleaned, severity });
     }
   }
 
@@ -559,38 +580,30 @@ function formatSlackMessage(review: any, reviewers: any[]): { text: string; bloc
     text: { type: 'mrkdwn', text: ':robot_face: *AI Review Intelligence*' },
   });
 
+  const SEVERITY_CONFIG: { key: string; emoji: string; label: string }[] = [
+    { key: 'critical', emoji: ':red_circle:', label: 'Critical' },
+    { key: 'high', emoji: ':large_orange_circle:', label: 'High' },
+    { key: 'medium', emoji: ':large_yellow_circle:', label: 'Medium' },
+    { key: 'low', emoji: ':large_blue_circle:', label: 'Low' },
+  ];
+
   const comments = review?.comments || [];
   if (comments.length > 0) {
-    const commentsByType: Record<string, any[]> = { comment: [], question: [], suggestion: [] };
+    const bySeverity: Record<string, any[]> = { critical: [], high: [], medium: [], low: [] };
     for (const c of comments) {
-      const t = c.type || 'comment';
-      if (!commentsByType[t]) commentsByType[t] = [];
-      commentsByType[t].push(c);
+      const sev = bySeverity[c.severity] ? c.severity : 'medium';
+      bySeverity[sev].push(c);
     }
 
-    if (commentsByType.comment.length > 0) {
-      const lines = commentsByType.comment.map((c: any) => {
+    for (const { key, emoji, label } of SEVERITY_CONFIG) {
+      if (bySeverity[key].length === 0) continue;
+      const lines = bySeverity[key].map((c: any) => {
         const prefix = c.file_path ? `\`${c.file_path}\`` : '';
         const hint = c.line_hint ? ` (${c.line_hint})` : '';
-        return `• ${prefix}${hint} ${c.comment}`;
+        const tag = c.type ? ` [${c.type}]` : '';
+        return `• ${prefix}${hint}${tag} ${c.comment}`;
       });
-      pushChunkedSections(blocks, ':memo: *Review Comments:*', lines);
-    }
-
-    if (commentsByType.question.length > 0) {
-      const lines = commentsByType.question.map((c: any) => {
-        const prefix = c.file_path ? `\`${c.file_path}\`` : '';
-        return `• ${prefix} ${c.comment}`;
-      });
-      pushChunkedSections(blocks, ':question: *Questions:*', lines);
-    }
-
-    if (commentsByType.suggestion.length > 0) {
-      const lines = commentsByType.suggestion.map((c: any) => {
-        const prefix = c.file_path ? `\`${c.file_path}\`` : '';
-        return `• ${prefix} ${c.comment}`;
-      });
-      pushChunkedSections(blocks, ':bulb: *Suggestions:*', lines);
+      pushChunkedSections(blocks, `${emoji} *${label}*`, lines);
     }
   } else {
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: '_No specific review comments generated._' } });
@@ -811,7 +824,7 @@ async function run(): Promise<void> {
     allComments.push(...(p1.comments || []));
     if (p1.summary) summaries.push(p1.summary);
     for (const c of (p1.comments || [])) {
-      console.log(`    [${c.type}] ${c.file_path}: ${c.comment.substring(0, 120)}...`);
+      console.log(`    [${c.severity || 'medium'}|${c.type}] ${c.file_path}: ${c.comment.substring(0, 120)}...`);
     }
   } else {
     console.log('  No implementation files to review.');
@@ -829,7 +842,7 @@ async function run(): Promise<void> {
     allComments.push(...(p2.comments || []));
     if (p2.summary && p2.summary !== 'No guideline violations found') summaries.push(p2.summary);
     for (const c of (p2.comments || [])) {
-      console.log(`    [${c.type}] ${c.file_path}: ${c.comment.substring(0, 120)}...`);
+      console.log(`    [${c.severity || 'medium'}|${c.type}] ${c.file_path}: ${c.comment.substring(0, 120)}...`);
     }
   } else {
     console.log(`  Skipped — ${relevantDocs.length === 0 ? 'no relevant team docs found (similarity < 65%)' : 'no implementation files'}`);
@@ -846,7 +859,7 @@ async function run(): Promise<void> {
     allComments.push(...(p3.comments || []));
     if (p3.summary) summaries.push(p3.summary);
     for (const c of (p3.comments || [])) {
-      console.log(`    [${c.type}] ${c.file_path}: ${c.comment.substring(0, 120)}...`);
+      console.log(`    [${c.severity || 'medium'}|${c.type}] ${c.file_path}: ${c.comment.substring(0, 120)}...`);
     }
   } else {
     console.log('  No test files to review.');
@@ -878,7 +891,8 @@ async function run(): Promise<void> {
   console.log(`  ${comments.length} review comment(s):\n`);
   for (let i = 0; i < comments.length; i++) {
     const c = comments[i];
-    console.log(`  --- Comment ${i + 1} [${c.type || 'comment'}] ---`);
+    const sevLabel = (c.severity || 'medium').toUpperCase();
+    console.log(`  --- Comment ${i + 1} [${sevLabel}] [${c.type || 'comment'}] ---`);
     if (c.file_path) console.log(`  File: ${c.file_path}`);
     if (c.line_hint) console.log(`  Location: ${c.line_hint}`);
     console.log(`  ${c.comment}`);
