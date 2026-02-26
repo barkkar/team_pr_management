@@ -270,19 +270,24 @@ function buildLearningContextBlock(learningContext?: { lessons: any[]; feedback:
   return parts.join('\n');
 }
 
-const JSON_SCHEMA = '\nRespond with JSON: {"summary": "...", "comments": [{"file_path": "...", "line_hint": "...", "comment": "...", "type": "comment|question|suggestion", "severity": "critical|high|medium|low"}]}';
+const JSON_SCHEMA = '\nRespond with JSON: {"summary": "...", "comments": [{"file_path": "...", "line_hint": "...", "comment": "...", "type": "comment|question|suggestion", "severity": "critical|high|medium|low", "reason": "1-sentence why this matters", "suggested_fix": "(optional) diff snippet", "source": "(optional) rule or context citation"}]}';
 
 function pass1_systemPrompt(fileCount: number): string {
   const minComments = Math.max(2, Math.min(fileCount, 8));
   return `You are an expert code reviewer reviewing IMPLEMENTATION files only (no test files). Respond with valid JSON only.
 
-{"summary": "1-2 sentence assessment", "comments": [{"file_path": "path/to/file", "line_hint": "location", "comment": "your comment", "type": "suggestion", "severity": "high"}]}
+{"summary": "1-2 sentence assessment", "comments": [{"file_path": "path/to/file", "line_hint": "line 42", "comment": "your comment", "type": "suggestion", "severity": "high", "reason": "1-sentence why this matters", "suggested_fix": "- if (val) {\n+ if (val != null) {", "source": "Past review on similar code"}]}
 
 Severity classification (REQUIRED for every comment):
 - "critical": security hole, crash risk, race condition, data loss
 - "high": bug, logic flaw, null dereference, performance pitfall
 - "medium": readability, maintainability, anti-pattern, missing docs
 - "low": style nit, minor optimization, trivial suggestion
+
+Context & evidence (REQUIRED):
+- "reason" (REQUIRED): One sentence explaining what breaks, what risk exists, or what improves. Be specific.
+- "suggested_fix" (optional): Include ONLY for small, self-contained fixes (null check, guard clause, missing import, rename). Format as unified diff: "-" for removed lines, "+" for added lines. Max 6 lines. Do NOT include for architectural concerns or complex refactors.
+- "source" (optional): Cite what informed the comment — e.g. "Past review on similar code" or a learning context takeaway.
 
 Rules:
 - type: "comment", "question", or "suggestion"
@@ -320,13 +325,18 @@ function pass1_userPrompt(
 function pass2_systemPrompt(): string {
   return `You are a compliance reviewer checking implementation code against team documentation and coding guidelines. Respond with valid JSON only.
 
-{"summary": "1-2 sentence compliance assessment", "comments": [{"file_path": "path/to/file", "line_hint": "location", "comment": "your comment", "type": "suggestion", "severity": "high"}]}
+{"summary": "1-2 sentence compliance assessment", "comments": [{"file_path": "path/to/file", "line_hint": "line 15", "comment": "your comment", "type": "suggestion", "severity": "high", "reason": "1-sentence why this matters", "suggested_fix": "- oldCode\n+ fixedCode", "source": "[Guideline Doc Name]"}]}
 
 Severity classification (REQUIRED for every comment):
 - "critical": security violation, auth bypass, data exposure
 - "high": guideline violation that causes bugs or breaking changes
 - "medium": missing recommended pattern, incomplete compliance
 - "low": minor deviation, cosmetic guideline mismatch
+
+Context & evidence (REQUIRED):
+- "reason" (REQUIRED): One sentence explaining what breaks or what risk exists if the guideline is not followed.
+- "suggested_fix" (optional): Include for simple compliance fixes (missing import, wrong pattern, missing guard). Unified diff format, max 6 lines.
+- "source" (REQUIRED): MUST cite the team guideline name in brackets, e.g. "[Error Handling Standards]" or "[LWC Best Practices]". This is mandatory for every compliance comment.
 
 Rules:
 - For each team guideline provided, check if the implementation follows it
@@ -357,13 +367,18 @@ function pass3_systemPrompt(testFileCount: number): string {
   const minComments = Math.max(2, Math.min(testFileCount, 5));
   return `You are an expert test reviewer reviewing ONLY test files. Respond with valid JSON only.
 
-{"summary": "1-2 sentence test assessment", "comments": [{"file_path": "path/to/file", "line_hint": "location", "comment": "your comment", "type": "suggestion", "severity": "high"}]}
+{"summary": "1-2 sentence test assessment", "comments": [{"file_path": "path/to/file", "line_hint": "line 30", "comment": "your comment", "type": "suggestion", "severity": "high", "reason": "1-sentence why this matters", "suggested_fix": "+ it('should handle null input', () => {\n+   expect(() => fn(null)).toThrow();\n+ });", "source": "src/utils/helper.ts"}]}
 
 Severity classification (REQUIRED for every comment):
 - "critical": missing test for security-critical or crash-prone code path
 - "high": missing test for core functionality, error handling, or null cases
 - "medium": missing edge-case test, weak assertions, incomplete mocks
 - "low": minor test quality issue, test naming, test organization
+
+Context & evidence (REQUIRED):
+- "reason" (REQUIRED): One sentence explaining what risk the missing or weak test leaves exposed.
+- "suggested_fix" (optional): Include for missing test scaffolding — show the test case skeleton. Use "+" prefix for added lines. Max 6 lines.
+- "source" (optional): Cite the implementation file that needs test coverage, e.g. "src/utils/helper.ts".
 
 Rules:
 - Focus on: missing test coverage for implementation code, edge cases not tested, assertion quality, mock correctness
@@ -402,7 +417,7 @@ async function runReviewPass(
         { role: 'user', content: userPrompt },
       ],
       format: 'json',
-      options: { temperature: 0.3, num_predict: 4096, num_ctx: 32768 },
+      options: { temperature: 0.3, num_predict: 6144, num_ctx: 32768 },
     });
     const raw = response.message.content.trim();
     const parsed = parseReviewResponse(raw);
@@ -492,7 +507,8 @@ function deduplicateComments(review: any): any {
     const cleaned = filterLowQualityComment(c.comment || '');
     if (cleaned !== null) {
       const severity = VALID_SEVERITIES.has(c.severity) ? c.severity : 'medium';
-      quality.push({ ...c, comment: cleaned, severity });
+      const reason = c.reason || cleaned.split(/[.!?]/)[0].trim() || '';
+      quality.push({ ...c, comment: cleaned, severity, reason });
     }
   }
 
