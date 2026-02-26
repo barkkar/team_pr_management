@@ -206,6 +206,7 @@ async function reportAnalysisResults(data: {
 // ---------------------------------------------------------------------------
 
 const TEST_FILE_PATTERN = /(__tests__|test\.js|test\.ts|\.test\.|Test\.java|\/test\/func\/)/i;
+const SKIP_FILE_PATTERN = /(\.utam\.json|\.stories\.js|-meta\.xml)$/i;
 
 function splitDiff(diff: string): { implDiff: string; testDiff: string; implFiles: string[]; testFiles: string[] } {
   const fileDiffs = diff.split(/^(?=diff --git )/m);
@@ -221,9 +222,12 @@ function splitDiff(diff: string): { implDiff: string; testDiff: string; implFile
     const pathMatch = fd.match(/diff --git a\/(\S+)/);
     const filePath = pathMatch ? pathMatch[1] : '';
     const isNew = fd.includes('new file mode') || fd.includes('--- /dev/null');
+    const isSkip = SKIP_FILE_PATTERN.test(filePath);
     const isTest = TEST_FILE_PATTERN.test(filePath);
 
-    if (isTest) {
+    if (isSkip) {
+      continue;
+    } else if (isTest) {
       testFiles.push(filePath);
       (isNew ? testNew : testMod).push(fd);
     } else {
@@ -276,11 +280,15 @@ function pass1_systemPrompt(fileCount: number): string {
 
 Rules:
 - type: "comment", "question", or "suggestion"
-- Focus on: bugs, security, performance, logic errors, edge cases, error handling, naming conventions, null checks, accessibility
-- NEVER write vague comments like "ensure this is correct". Identify SPECIFIC issues with concrete explanations
+- Focus on: bugs, security, performance, logic errors, edge cases, error handling, null checks, accessibility
+- NEVER write vague comments. These phrases are BANNED: "ensure this is correct", "consider using", "not properly handling", "add validation", "could be improved", "not properly scoped". Instead say EXACTLY what is wrong: what input causes what failure
+- Do NOT suggest renaming variables or elements for "readability" — skip trivial style/naming issues
+- Do NOT comment on CSS scoping — LWC components use shadow DOM which auto-scopes CSS
+- Do NOT repeat the same comment pattern across different files. Each comment must be unique
+- ONLY use file_path values from the provided file list. Do NOT invent or guess file paths
 - Maximum 3 comments per file
 - You MUST return at least ${minComments} comments spread across different files
-- For each file: check missing error handling, null/undefined, security issues, logic bugs, naming conventions`;
+- For each file: look for missing error handling, null/undefined access, security issues, logic bugs, race conditions, missing edge cases`;
 }
 
 function pass1_userPrompt(
@@ -297,7 +305,7 @@ function pass1_userPrompt(
     }
   }
   parts.push(buildLearningContextBlock(learningContext));
-  parts.push(`\nDiff:\n${implDiff.substring(0, 24000)}`);
+  parts.push(`\nDiff:\n${implDiff.substring(0, 28000)}`);
   parts.push(JSON_SCHEMA);
   return parts.join('\n');
 }
@@ -333,20 +341,22 @@ function pass2_userPrompt(
 }
 
 function pass3_systemPrompt(testFileCount: number): string {
-  const minComments = Math.max(1, Math.min(testFileCount, 5));
+  const minComments = Math.max(2, Math.min(testFileCount, 5));
   return `You are an expert test reviewer reviewing ONLY test files. Respond with valid JSON only.
 
 {"summary": "1-2 sentence test assessment", "comments": [{"file_path": "path/to/file", "line_hint": "location", "comment": "your comment", "type": "suggestion"}]}
 
 Rules:
-- Focus on: missing test coverage, edge cases not tested, assertion quality, mock correctness, test isolation
+- Focus on: missing test coverage for implementation code, edge cases not tested, assertion quality, mock correctness
 - Do NOT comment on individual test cases being "unnecessary" or "redundant"
-- Instead: identify MISSING scenarios that SHOULD be tested but aren't
-- Check: are error/edge cases covered? are boundary conditions tested? are mocks realistic?
-- NEVER write vague comments. Be specific about what scenario is missing
+- Identify MISSING scenarios: what error paths, boundary conditions, or edge cases SHOULD be tested but aren't?
+- NEVER write vague comments. Name the SPECIFIC scenario missing, e.g. "No test for when X is null/empty"
+- These phrases are BANNED: "consider adding", "could be improved", "ensure". State the missing test case directly
+- ONLY use file_path values from the provided test file list. Do NOT invent file paths
+- Do NOT comment on .utam.json or .stories.js files — only review actual test files (.test.js, .test.ts)
 - Maximum 3 comments per test file
-- You MUST return at least ${minComments} comments
-- Reference the implementation files to identify untested code paths`;
+- You MUST return at least ${minComments} comments across different test files
+- Cross-reference implementation files to find untested branches and error handling`;
 }
 
 function pass3_userPrompt(
@@ -356,7 +366,7 @@ function pass3_userPrompt(
   parts.push(`Review test files for PR: "${prTitle}"`);
   parts.push(`\nTest files: ${testFiles.join(', ')}`);
   parts.push(`\nImplementation files being tested: ${implFiles.join(', ')}`);
-  parts.push(`\nTest diff:\n${testDiff.substring(0, 24000)}`);
+  parts.push(`\nTest diff:\n${testDiff.substring(0, 28000)}`);
   parts.push(JSON_SCHEMA);
   return parts.join('\n');
 }
@@ -409,15 +419,70 @@ function parseReviewResponse(content: string): any {
   }
 }
 
+// Banned patterns — LLM outputs these despite prompt rules; filter programmatically
+const LOW_QUALITY_PATTERNS = [
+  /not properly scoped/i,
+  /not properly handling/i,
+  /could be improved/i,
+  /\bcss\b.*\bscop/i,          // "CSS ... scoping/scoped"
+  /\bwhen X is\b/i,            // Literal prompt example copied
+];
+
+const VAGUE_PHRASE_PATTERNS = [
+  /^consider (using|adding|fetching|implementing)/i,
+  /^add (a simple |proper )?validation/i,
+  /^ensure (this|that|the)/i,
+];
+
+function filterLowQualityComment(comment: string): string | null {
+  for (const p of LOW_QUALITY_PATTERNS) {
+    if (p.test(comment)) return null;
+  }
+  let result = comment;
+  for (const p of VAGUE_PHRASE_PATTERNS) {
+    if (p.test(result)) {
+      const stripped = result.replace(p, '').trim().replace(/^[.,;:\-\u2013\u2014]\s*/, '');
+      if (stripped.length > 30) {
+        result = stripped.charAt(0).toUpperCase() + stripped.slice(1);
+      } else {
+        return null;
+      }
+    }
+  }
+  // Remove mid-sentence "Consider [verb]ing ..." trailing sentences
+  result = result.replace(/\.\s*Consider \w+ing[^.]*\.?\s*$/i, '.').trim();
+  return result.length > 15 ? result : null;
+}
+
+function wordOverlap(a: string, b: string): number {
+  const wordsA = new Set(a.toLowerCase().replace(/[^a-z0-9 ]/g, '').split(/\s+/).filter(w => w.length > 3));
+  const wordsB = new Set(b.toLowerCase().replace(/[^a-z0-9 ]/g, '').split(/\s+/).filter(w => w.length > 3));
+  if (wordsA.size === 0 || wordsB.size === 0) return 0;
+  let intersection = 0;
+  for (const w of wordsA) { if (wordsB.has(w)) intersection++; }
+  return intersection / Math.min(wordsA.size, wordsB.size);
+}
+
 function deduplicateComments(review: any): any {
   if (!review?.comments || !Array.isArray(review.comments)) return review;
-  const byFile: Record<string, any[]> = {};
+
+  // Phase 0: filter low-quality comments
+  const quality: any[] = [];
   for (const c of review.comments) {
+    const cleaned = filterLowQualityComment(c.comment || '');
+    if (cleaned !== null) {
+      quality.push({ ...c, comment: cleaned });
+    }
+  }
+
+  // Phase 1: per-file dedup + cap at 3
+  const byFile: Record<string, any[]> = {};
+  for (const c of quality) {
     const key = c.file_path || '__unknown__';
     if (!byFile[key]) byFile[key] = [];
     byFile[key].push(c);
   }
-  const dedupedComments: any[] = [];
+  const perFileDeduped: any[] = [];
   for (const [, fileComments] of Object.entries(byFile)) {
     const kept: any[] = [];
     for (const c of fileComments) {
@@ -429,8 +494,16 @@ function deduplicateComments(review: any): any {
       });
       if (!isDuplicate) kept.push(c);
     }
-    dedupedComments.push(...kept.slice(0, 3));
+    perFileDeduped.push(...kept.slice(0, 3));
   }
+
+  // Phase 2: cross-file dedup using word overlap (Jaccard > 0.6 = duplicate pattern)
+  const dedupedComments: any[] = [];
+  for (const c of perFileDeduped) {
+    const isCrossFileDup = dedupedComments.some(k => wordOverlap(c.comment || '', k.comment || '') > 0.6);
+    if (!isCrossFileDup) dedupedComments.push(c);
+  }
+
   return { ...review, comments: dedupedComments };
 }
 
@@ -549,9 +622,21 @@ async function analyzePR(prUrl: string, channelId: string, messageTs: string): P
     if (p3.summary) summaries.push(p3.summary);
   }
 
+  // Filter out comments with hallucinated file paths
+  const validPaths = new Set([...implFiles, ...testFiles]);
+  const validComments = allComments.filter(c => {
+    if (!c.file_path) return true;
+    if (validPaths.has(c.file_path)) return true;
+    for (const vp of validPaths) {
+      if (vp.endsWith(c.file_path) || c.file_path.endsWith(vp.split('/').slice(-2).join('/'))) return true;
+    }
+    log(`  Filtered out comment with invalid path: ${c.file_path}`);
+    return false;
+  });
+
   const review = deduplicateComments({
     summary: summaries.join(' '),
-    comments: allComments,
+    comments: validComments,
   });
   log(`  Generated ${review.comments?.length || 0} review comments (merged from 3 passes)`);
 
