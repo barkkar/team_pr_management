@@ -50,7 +50,11 @@ const SLACK_SECTION_LIMIT = 2900; // Slack section text limit is 3000; leave mar
 
 function pushChunkedSections(blocks: any[], header: string, lines: string[]): void {
   let current = header;
-  for (const line of lines) {
+  for (let line of lines) {
+    // Truncate any single line that exceeds the limit on its own
+    if (line.length > SLACK_SECTION_LIMIT - 10) {
+      line = line.substring(0, SLACK_SECTION_LIMIT - 13) + '...';
+    }
     if (current.length + 1 + line.length > SLACK_SECTION_LIMIT) {
       blocks.push({ type: 'section', text: { type: 'mrkdwn', text: current } });
       current = line;
@@ -104,7 +108,10 @@ function formatSlackAnalysis(
         const tag = c.type ? ` [${c.type}]` : '';
         let line = `• ${prefix}${hint}${tag} ${c.comment}`;
         if (c.reason) line += `\n  _${c.reason}_`;
-        if (c.suggested_fix) line += `\n\`\`\`\n${c.suggested_fix}\n\`\`\``;
+        if (c.suggested_fix) {
+          const fix = c.suggested_fix.length > 400 ? c.suggested_fix.substring(0, 397) + '...' : c.suggested_fix;
+          line += `\n\`\`\`\n${fix}\n\`\`\``;
+        }
         if (c.source) line += `\n  :paperclip: ${c.source}`;
         lines.push(line);
       }
@@ -772,6 +779,65 @@ async function main(): Promise<void> {
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+
+      // Re-post a stored analysis to Slack (useful when original post failed)
+      if (url === '/api/repost-analysis' && method === 'POST') {
+        if (!validateApiKey(req)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+
+        const body = await parseJsonBody(req);
+        const { pr_url } = body;
+        if (!pr_url) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'pr_url is required' }));
+          return;
+        }
+
+        // Look up stored analysis + tracked PR info
+        const analysisRow = await pool.query(
+          `SELECT ar.review_json, ar.reviewers_json, ar.channel_id, ar.message_ts
+           FROM pr_analysis_results ar WHERE ar.pr_url = $1`, [pr_url],
+        );
+        if (analysisRow.rows.length === 0) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'No analysis found for this PR' }));
+          return;
+        }
+
+        const row = analysisRow.rows[0];
+        const review = typeof row.review_json === 'string' ? JSON.parse(row.review_json) : row.review_json;
+        const reviewers = typeof row.reviewers_json === 'string' ? JSON.parse(row.reviewers_json) : row.reviewers_json;
+        const channelId = body.channel_id || row.channel_id;
+        const messageTs = body.message_ts || row.message_ts;
+
+        if (!channelId || channelId === 'manual') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'No channel_id available. Pass channel_id in request body.' }));
+          return;
+        }
+
+        try {
+          const slackMessage = formatSlackAnalysis(review, reviewers, pr_url);
+          await app.client.chat.postMessage({
+            channel: channelId,
+            thread_ts: messageTs && messageTs !== '0' ? messageTs : undefined,
+            text: slackMessage.text,
+            blocks: slackMessage.blocks,
+            unfurl_links: false,
+          });
+          console.log(`[Repost API] Re-posted AI review for ${pr_url} to ${channelId}`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (slackError: any) {
+          console.error(`[Repost API] Failed: ${slackError.message}`);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `Slack post failed: ${slackError.message}` }));
+        }
         return;
       }
 
