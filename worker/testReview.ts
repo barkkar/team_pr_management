@@ -534,6 +534,23 @@ function deduplicateComments(review: any): any {
 // Slack message formatter (mirrors formatSlackAnalysis in src/index.ts)
 // ---------------------------------------------------------------------------
 
+const SLACK_SECTION_LIMIT = 2900; // Slack section text limit is 3000; leave margin
+
+function pushChunkedSections(blocks: any[], header: string, lines: string[]): void {
+  let current = header;
+  for (const line of lines) {
+    if (current.length + 1 + line.length > SLACK_SECTION_LIMIT) {
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: current } });
+      current = line;
+    } else {
+      current += '\n' + line;
+    }
+  }
+  if (current) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: current } });
+  }
+}
+
 function formatSlackMessage(review: any, reviewers: any[]): { text: string; blocks: any[] } {
   const blocks: any[] = [];
 
@@ -556,31 +573,32 @@ function formatSlackMessage(review: any, reviewers: any[]): { text: string; bloc
         const prefix = c.file_path ? `\`${c.file_path}\`` : '';
         const hint = c.line_hint ? ` (${c.line_hint})` : '';
         return `• ${prefix}${hint} ${c.comment}`;
-      }).join('\n');
-      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `:memo: *Review Comments:*\n${lines}` } });
+      });
+      pushChunkedSections(blocks, ':memo: *Review Comments:*', lines);
     }
 
     if (commentsByType.question.length > 0) {
       const lines = commentsByType.question.map((c: any) => {
         const prefix = c.file_path ? `\`${c.file_path}\`` : '';
         return `• ${prefix} ${c.comment}`;
-      }).join('\n');
-      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `:question: *Questions:*\n${lines}` } });
+      });
+      pushChunkedSections(blocks, ':question: *Questions:*', lines);
     }
 
     if (commentsByType.suggestion.length > 0) {
       const lines = commentsByType.suggestion.map((c: any) => {
         const prefix = c.file_path ? `\`${c.file_path}\`` : '';
         return `• ${prefix} ${c.comment}`;
-      }).join('\n');
-      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `:bulb: *Suggestions:*\n${lines}` } });
+      });
+      pushChunkedSections(blocks, ':bulb: *Suggestions:*', lines);
     }
   } else {
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: '_No specific review comments generated._' } });
   }
 
   if (review?.summary) {
-    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `*Summary:* ${review.summary}` }] });
+    const summaryText = `*Summary:* ${review.summary}`.substring(0, SLACK_SECTION_LIMIT);
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: summaryText }] });
   }
 
   blocks.push({ type: 'divider' });
