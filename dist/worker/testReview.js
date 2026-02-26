@@ -505,7 +505,11 @@ function deduplicateComments(review) {
 const SLACK_SECTION_LIMIT = 2900; // Slack section text limit is 3000; leave margin
 function pushChunkedSections(blocks, header, lines) {
     let current = header;
-    for (const line of lines) {
+    for (let line of lines) {
+        // Truncate any single line that exceeds the limit on its own
+        if (line.length > SLACK_SECTION_LIMIT - 10) {
+            line = line.substring(0, SLACK_SECTION_LIMIT - 13) + '...';
+        }
         if (current.length + 1 + line.length > SLACK_SECTION_LIMIT) {
             blocks.push({ type: 'section', text: { type: 'mrkdwn', text: current } });
             current = line;
@@ -548,8 +552,10 @@ function formatSlackMessage(review, reviewers, noMention = false) {
                 let line = `• ${prefix}${hint}${tag} ${c.comment}`;
                 if (c.reason)
                     line += `\n  _${c.reason}_`;
-                if (c.suggested_fix)
-                    line += `\n\`\`\`\n${c.suggested_fix}\n\`\`\``;
+                if (c.suggested_fix) {
+                    const fix = c.suggested_fix.length > 400 ? c.suggested_fix.substring(0, 397) + '...' : c.suggested_fix;
+                    line += `\n\`\`\`\n${fix}\n\`\`\``;
+                }
                 if (c.source)
                     line += `\n  :paperclip: ${c.source}`;
                 lines.push(line);
