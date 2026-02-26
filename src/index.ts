@@ -97,12 +97,17 @@ function formatSlackAnalysis(
 
     for (const { key, emoji, label } of SEVERITY_CONFIG) {
       if (bySeverity[key].length === 0) continue;
-      const lines = bySeverity[key].map((c: any) => {
+      const lines: string[] = [];
+      for (const c of bySeverity[key]) {
         const prefix = c.file_path ? `\`${c.file_path}\`` : '';
         const hint = c.line_hint ? ` (${c.line_hint})` : '';
         const tag = c.type ? ` [${c.type}]` : '';
-        return `• ${prefix}${hint}${tag} ${c.comment}`;
-      });
+        let line = `• ${prefix}${hint}${tag} ${c.comment}`;
+        if (c.reason) line += `\n  _${c.reason}_`;
+        if (c.suggested_fix) line += `\n\`\`\`\n${c.suggested_fix}\n\`\`\``;
+        if (c.source) line += `\n  :paperclip: ${c.source}`;
+        lines.push(line);
+      }
       pushChunkedSections(blocks, `${emoji} *${label}*`, lines);
     }
   } else {
