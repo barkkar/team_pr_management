@@ -11,7 +11,7 @@ import { Ollama } from 'ollama';
 import { SimilarReview, SimilarCode } from './vectorSearch';
 
 const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen3-coder';
 
 let ollamaClient: Ollama | null = null;
 
