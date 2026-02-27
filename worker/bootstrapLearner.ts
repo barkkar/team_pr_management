@@ -136,6 +136,100 @@ async function fetchPeerComments(hostname: string, org: string, repo: string, pr
 }
 
 // ---------------------------------------------------------------------------
+// Skill-based routing: keyword → doc title patterns (derived from skill.md)
+// ---------------------------------------------------------------------------
+
+const SKILL_ROUTING: { keywords: RegExp; docPattern: string; area: string }[] = [
+  { keywords: /\b(entity|UDD|EntityObject|EntityFunctions|SOQL|entity.?XML|object.?definition|field.?label|shared-labels)\b/i,
+    docPattern: 'core-engineer/entity-engineer/%', area: 'Entity/UDD' },
+  { keywords: /\b(SQL|SDB|SFSQL|PLSQL|database|psql|schema|procedure|query)\b/i,
+    docPattern: 'core-engineer/db-engineer/%', area: 'Database' },
+  { keywords: /\b(ftest|functional.?test|EntityEnabler|PublicEntityTest|AccessBasedEntityEnablerList|OldTestSuiteEntityAllowList|CRUD.?test)\b/i,
+    docPattern: 'core-engineer/test-engineer/%', area: 'Testing' },
+  { keywords: /\b(bazel|buildifier|db-schema-update|server.?start|server.?stop|app-server|graph-tool)\b/i,
+    docPattern: 'core-engineer/infra-engineer/%', area: 'Infrastructure' },
+  { keywords: /\b(message.?queue|MQ.?handler|async|background.?processing|cron.?job|scheduled.?task|scheduler)\b/i,
+    docPattern: 'core-engineer/async-engineer/%', area: 'Async/Scheduled' },
+  { keywords: /\b(permission|org.?permission|user.?permission|pilot|feature.?flag|license|SKU|access.?control|preferences|PLD)\b/i,
+    docPattern: 'core-engineer/permission-engineer/%', area: 'Permissions' },
+  { keywords: /\b(LogRecordType|structured.?logging|app-logging-format|Logger)\b/i,
+    docPattern: 'core-engineer/logrecord-engineer/%', area: 'Logging' },
+  { keywords: /\b(Spring|dependency.?injection|API.?Impl|new.?module)\b/i,
+    docPattern: 'core-engineer/module-engineer/%', area: 'Modules' },
+  { keywords: /\b(commit|create.?PR|push.?changes|check.?in.?code|submit.?for.?review|git.?status)\b/i,
+    docPattern: 'core-engineer/git-engineer/%', area: 'Git' },
+];
+
+function matchSkillRoutes(text: string): { patterns: string[]; areas: string[] } {
+  const patterns: string[] = [];
+  const areas: string[] = [];
+  for (const route of SKILL_ROUTING) {
+    if (route.keywords.test(text)) {
+      patterns.push(route.docPattern);
+      areas.push(route.area);
+    }
+  }
+  return { patterns, areas };
+}
+
+// ---------------------------------------------------------------------------
+// GHE: fetch full file content for context
+// ---------------------------------------------------------------------------
+
+async function fetchFileContent(
+  hostname: string, org: string, repo: string, filePath: string, ref: string,
+): Promise<string | null> {
+  try {
+    const token = requireTokenForHost(hostname);
+    const response = await axios.get(
+      `https://${hostname}/api/v3/repos/${org}/${repo}/contents/${filePath}`,
+      {
+        params: { ref },
+        headers: {
+          Authorization: `token ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+        },
+        timeout: 10000,
+      },
+    );
+    if (response.data.encoding === 'base64') {
+      return Buffer.from(response.data.content, 'base64').toString('utf-8');
+    }
+    return response.data.content || null;
+  } catch {
+    return null;
+  }
+}
+
+function buildFileContextSummary(files: { path: string; content: string }[]): string {
+  const parts: string[] = [];
+  for (const file of files) {
+    const lines = file.content.split('\n');
+    const fingerprint: string[] = [`File: ${file.path}`];
+
+    // Extract imports/requires (first 30 lines)
+    const importLines = lines.slice(0, 30).filter(l =>
+      /^\s*(import |from |require\(|#include|using |package |@import)/.test(l),
+    );
+    if (importLines.length > 0) {
+      fingerprint.push('Imports: ' + importLines.slice(0, 10).join('; '));
+    }
+
+    // Extract class/function/component declarations
+    const declLines = lines.filter(l =>
+      /^\s*(export\s+)?(public\s+|private\s+|protected\s+)?(class |interface |function |const \w+ = |def |type |enum |abstract |@api|@wire|@track|@AuraEnabled)/.test(l),
+    ).slice(0, 8);
+    if (declLines.length > 0) {
+      fingerprint.push('Declarations: ' + declLines.map(l => l.trim()).join('; '));
+    }
+
+    parts.push(fingerprint.join('\n'));
+  }
+  // Cap at 2000 chars for embedding model input
+  return parts.join('\n\n').substring(0, 2000);
+}
+
+// ---------------------------------------------------------------------------
 // Heroku API helpers (vector search, store results)
 // ---------------------------------------------------------------------------
 
@@ -162,6 +256,22 @@ async function fetchSimilarDocs(embedding: number[], topK: number = 3): Promise<
     const response = await axios.post(
       `${HEROKU_API_URL}/api/search-similar-docs`,
       { embedding, top_k: topK },
+      { headers: herokuHeaders(), timeout: 15000 },
+    );
+    return response.data.docs || [];
+  } catch {
+    return [];
+  }
+}
+
+async function fetchDocsByTitlePattern(
+  embedding: number[], patterns: string[], topK: number = 5,
+): Promise<any[]> {
+  try {
+    if (patterns.length === 0) return [];
+    const response = await axios.post(
+      `${HEROKU_API_URL}/api/search-docs-by-title`,
+      { embedding, patterns, top_k: topK },
       { headers: herokuHeaders(), timeout: 15000 },
     );
     return response.data.docs || [];
@@ -265,8 +375,8 @@ function buildUserPrompt(
     }
   }
 
-  // Include relevant team design docs / requirements (only if similarity >= 0.75)
-  const relevantDocs = (similarDocs || []).filter((d: any) => (d.similarity || 0) >= 0.75);
+  // Include relevant team design docs / requirements (only if similarity >= 0.50)
+  const relevantDocs = (similarDocs || []).filter((d: any) => (d.similarity || 0) >= 0.50);
   if (relevantDocs.length > 0) {
     parts.push('\nTEAM DOCUMENTATION — You MUST check this PR against these team guidelines. If the PR violates or misses any guideline below, produce a comment citing the guideline:');
     for (const doc of relevantDocs.slice(0, 3)) {
@@ -512,15 +622,60 @@ async function processPR(pr: any): Promise<boolean> {
     } catch { /* no results */ }
     log(`         ${similarReviews.length} similar reviews, ${similarCode.length} code chunks`);
 
-    // 4. Fetch learning context + team docs (using embedding for relevance)
+    // 4. Fetch full file content for context-aware doc matching
+    log('  [5b/9] Fetching full file content for doc matching...');
+    const headSha = prDetails.head?.sha || '';
+    const implPrFiles = prFiles
+      .filter((f: any) => !(/(__tests__|test\.js|test\.ts|\.test\.|Test\.java|\/test\/func\/)/i.test(f.filename))
+        && !(/(\.utam\.json|\.stories\.js|-meta\.xml)$/i.test(f.filename)))
+      .sort((a: any, b: any) => (b.additions || 0) - (a.additions || 0))
+      .slice(0, 8);
+
+    const fileContents: { path: string; content: string }[] = [];
+    for (const f of implPrFiles) {
+      const content = await fetchFileContent(hostname, org, repo, f.filename, headSha);
+      if (content) {
+        fileContents.push({ path: f.filename, content });
+      }
+    }
+    log(`         Fetched ${fileContents.length}/${implPrFiles.length} file(s) for context`);
+
+    let fileContextEmbedding = diffEmbedding;
+    if (fileContents.length > 0) {
+      const fileContextSummary = buildFileContextSummary(fileContents);
+      fileContextEmbedding = await generateEmbedding(fileContextSummary);
+    }
+
+    // 4b. Two-pronged team doc retrieval
+    const scanText = fileContents.map(f => f.content).join('\n') + '\n' + changedFiles.join('\n') + '\n' + prDiff.substring(0, 3000);
+    const { patterns: matchedPatterns, areas: matchedAreas } = matchSkillRoutes(scanText);
+    let routedDocs: any[] = [];
+    if (matchedPatterns.length > 0) {
+      log(`         Skill routing matched: ${matchedAreas.join(', ')}`);
+      routedDocs = await fetchDocsByTitlePattern(fileContextEmbedding, matchedPatterns, 5);
+    }
+    const semanticDocs = await fetchSimilarDocs(fileContextEmbedding, 3);
+
+    const seenKeys = new Set<string>();
+    const similarDocs: any[] = [];
+    for (const doc of [...routedDocs, ...semanticDocs]) {
+      const key = `${doc.title}:${doc.chunk_index}`;
+      if (!seenKeys.has(key)) {
+        seenKeys.add(key);
+        similarDocs.push(doc);
+      }
+    }
+    const cappedDocs = similarDocs.slice(0, 8);
+    log(`         ${routedDocs.length} routed + ${semanticDocs.length} semantic → ${cappedDocs.length} unique doc chunks`);
+
+    // 4c. Fetch learning context
     const learningContext = await fetchLearningContext(diffEmbedding);
-    const similarDocs = await fetchSimilarDocs(diffEmbedding, 3);
 
     // 5. Generate AI review via LLM
     log('  [6/9] Generating AI review via Ollama...');
     const client = getOllama();
     const systemPrompt = buildSystemPrompt(changedFiles.length);
-    const userPrompt = buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext, similarDocs);
+    const userPrompt = buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext, cappedDocs);
 
     let review: any;
     try {

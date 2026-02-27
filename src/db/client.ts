@@ -694,6 +694,23 @@ export async function searchSimilarDocs(embedding: number[], topK: number = 3): 
   return result.rows;
 }
 
+export async function searchDocsByTitlePattern(
+  embedding: number[], titlePatterns: string[], topK: number = 5,
+): Promise<any[]> {
+  if (titlePatterns.length === 0) return [];
+  const embeddingStr = `[${embedding.join(',')}]`;
+  const result = await pool.query(`
+    SELECT id, title, source_url, doc_type, content_chunk, chunk_index,
+           1 - (embedding <=> $1::vector) AS similarity
+    FROM team_documents
+    WHERE title LIKE ANY($2::text[])
+      AND embedding IS NOT NULL
+    ORDER BY embedding <=> $1::vector
+    LIMIT $3
+  `, [embeddingStr, titlePatterns, topK]);
+  return result.rows;
+}
+
 export async function upsertDocumentChunks(
   sourceUrl: string, title: string, docType: string,
   chunks: { content: string; embedding: number[] }[],
