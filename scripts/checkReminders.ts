@@ -10,6 +10,7 @@ import { App } from '@slack/bolt';
 import { pollChannelsForPRs } from '../src/services/channelPoller';
 import { processPendingReminders } from '../src/services/reminder';
 import { pool } from '../src/db/client';
+import { notifyError } from '../src/utils/errorNotifier';
 
 async function main(): Promise<void> {
   console.log('Starting scheduled job...');
@@ -50,6 +51,7 @@ async function main(): Promise<void> {
     console.log('\nScheduled job completed successfully');
   } catch (error) {
     console.error('Error during scheduled job:', error);
+    await notifyError('CheckReminders', `Scheduled job failed: ${(error as Error).message || error}`);
     process.exit(1);
   } finally {
     // Close database connection
@@ -57,7 +59,8 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
   console.error('Unexpected error:', error);
+  await notifyError('CheckReminders', `Fatal: ${(error as Error).message || error}`, 'fatal');
   process.exit(1);
 });

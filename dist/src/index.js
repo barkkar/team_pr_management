@@ -36,6 +36,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
 const http = __importStar(require("http"));
 const app_1 = require("./app");
+const errorNotifier_1 = require("./utils/errorNotifier");
 const client_1 = require("./db/client");
 // Simple body parser for JSON
 async function parseJsonBody(req) {
@@ -304,9 +305,11 @@ async function main() {
         });
         socketModeClient.on('error', (error) => {
             console.error('[Socket Mode] Error:', error.message);
+            (0, errorNotifier_1.notifyError)('SocketMode', error.message);
         });
         socketModeClient.on('unable_to_socket_mode_start', (error) => {
             console.error('[Socket Mode] Unable to start:', error.message);
+            (0, errorNotifier_1.notifyError)('SocketMode', `Unable to start: ${error.message}`, 'fatal');
         });
         console.log('[Socket Mode] Event listeners registered');
     }
@@ -747,6 +750,7 @@ async function main() {
                     }
                     catch (slackError) {
                         console.error(`[Worker API] Failed to post Slack message: ${slackError.message}`);
+                        (0, errorNotifier_1.notifyError)('WorkerAPI', `Failed to post Slack message: ${slackError.message}`);
                     }
                 }
                 res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -800,6 +804,7 @@ async function main() {
                 }
                 catch (slackError) {
                     console.error(`[Repost API] Failed: ${slackError.message}`);
+                    (0, errorNotifier_1.notifyError)('RepostAPI', `Failed to re-post analysis: ${slackError.message}`);
                     res.writeHead(500, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ error: `Slack post failed: ${slackError.message}` }));
                 }
@@ -984,6 +989,7 @@ async function main() {
         }
         catch (error) {
             console.error('API error:', error);
+            (0, errorNotifier_1.notifyError)('HTTPServer', error.message || 'Internal Server Error');
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: error.message || 'Internal Server Error' }));
         }
@@ -995,8 +1001,9 @@ async function main() {
         console.log(`  - AI API: /api/harvest-data, /api/repo-knowledge, /api/embeddings, /api/pr-analysis, ...`);
     });
 }
-main().catch((error) => {
+main().catch(async (error) => {
     console.error('Failed to start app:', error);
+    await (0, errorNotifier_1.notifyError)('Server', `Failed to start: ${error.message || error}`, 'fatal');
     process.exit(1);
 });
 //# sourceMappingURL=index.js.map

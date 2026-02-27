@@ -54,6 +54,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
+const errorNotifier_1 = require("../src/utils/errorNotifier");
 const axios_1 = __importDefault(require("axios"));
 const ollama_1 = require("ollama");
 const child_process_1 = require("child_process");
@@ -62,8 +63,9 @@ const gheTokenResolver_1 = require("../src/utils/gheTokenResolver");
 function log(message) {
     console.log(`[${new Date().toISOString()}] ${message}`);
 }
-function logError(message) {
+function logError(message, severity = 'error') {
     console.error(`[${new Date().toISOString()}] ${message}`);
+    (0, errorNotifier_1.notifyError)('LocalPRChecker', message, severity);
 }
 // Configuration
 const HEROKU_API_URL = process.env.HEROKU_API_URL;

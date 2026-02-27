@@ -12,6 +12,7 @@ const bolt_1 = require("@slack/bolt");
 const channelPoller_1 = require("../src/services/channelPoller");
 const reminder_1 = require("../src/services/reminder");
 const client_1 = require("../src/db/client");
+const errorNotifier_1 = require("../src/utils/errorNotifier");
 async function main() {
     console.log('Starting scheduled job...');
     console.log(`Time: ${new Date().toISOString()}`);
@@ -44,6 +45,7 @@ async function main() {
     }
     catch (error) {
         console.error('Error during scheduled job:', error);
+        await (0, errorNotifier_1.notifyError)('CheckReminders', `Scheduled job failed: ${error.message || error}`);
         process.exit(1);
     }
     finally {
@@ -51,8 +53,9 @@ async function main() {
         await client_1.pool.end();
     }
 }
-main().catch((error) => {
+main().catch(async (error) => {
     console.error('Unexpected error:', error);
+    await (0, errorNotifier_1.notifyError)('CheckReminders', `Fatal: ${error.message || error}`, 'fatal');
     process.exit(1);
 });
 //# sourceMappingURL=checkReminders.js.map

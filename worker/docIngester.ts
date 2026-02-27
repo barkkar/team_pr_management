@@ -14,6 +14,7 @@
  */
 
 import 'dotenv/config';
+import { notifyError } from '../src/utils/errorNotifier';
 import fs from 'fs';
 import path from 'path';
 import axios from 'axios';
@@ -28,8 +29,9 @@ function log(message: string): void {
   console.log(`[${new Date().toISOString()}] [DocIngester] ${message}`);
 }
 
-function logError(message: string): void {
+function logError(message: string, severity: 'warn' | 'error' | 'fatal' = 'error'): void {
   console.error(`[${new Date().toISOString()}] [DocIngester] ${message}`);
+  notifyError('DocIngester', message, severity);
 }
 
 function herokuHeaders(): Record<string, string> {

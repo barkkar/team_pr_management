@@ -14,6 +14,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
+const errorNotifier_1 = require("../src/utils/errorNotifier");
 const axios_1 = __importDefault(require("axios"));
 const ollama_1 = require("ollama");
 const HEROKU_API_URL = process.env.HEROKU_API_URL;
@@ -23,8 +24,9 @@ const OLLAMA_EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
 function log(message) {
     console.log(`[${new Date().toISOString()}] [EmbeddingPipeline] ${message}`);
 }
-function logError(message) {
+function logError(message, severity = 'error') {
     console.error(`[${new Date().toISOString()}] [EmbeddingPipeline] ${message}`);
+    (0, errorNotifier_1.notifyError)('EmbeddingPipeline', message, severity);
 }
 function herokuHeaders() {
     return {

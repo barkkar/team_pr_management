@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import * as http from 'http';
 import { createApp } from './app';
+import { notifyError } from './utils/errorNotifier';
 import {
   getPRsNeedingStatusCheck, updatePRStatus, PRStatusUpdate,
   getDistinctRepos, getHarvestState, upsertHarvestState, upsertRepoHarvestState,
@@ -309,9 +310,11 @@ async function main(): Promise<void> {
     });
     socketModeClient.on('error', (error: Error) => {
       console.error('[Socket Mode] Error:', error.message);
+      notifyError('SocketMode', error.message);
     });
     socketModeClient.on('unable_to_socket_mode_start', (error: Error) => {
       console.error('[Socket Mode] Unable to start:', error.message);
+      notifyError('SocketMode', `Unable to start: ${error.message}`, 'fatal');
     });
     console.log('[Socket Mode] Event listeners registered');
   } else {
@@ -835,6 +838,7 @@ async function main(): Promise<void> {
             console.log(`[Worker API] Posted AI review to thread in ${channel_id}`);
           } catch (slackError: any) {
             console.error(`[Worker API] Failed to post Slack message: ${slackError.message}`);
+            notifyError('WorkerAPI', `Failed to post Slack message: ${slackError.message}`);
           }
         }
 
@@ -896,6 +900,7 @@ async function main(): Promise<void> {
           res.end(JSON.stringify({ ok: true }));
         } catch (slackError: any) {
           console.error(`[Repost API] Failed: ${slackError.message}`);
+          notifyError('RepostAPI', `Failed to re-post analysis: ${slackError.message}`);
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: `Slack post failed: ${slackError.message}` }));
         }
@@ -1103,6 +1108,7 @@ async function main(): Promise<void> {
 
     } catch (error: any) {
       console.error('API error:', error);
+      notifyError('HTTPServer', error.message || 'Internal Server Error');
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: error.message || 'Internal Server Error' }));
     }
@@ -1116,7 +1122,8 @@ async function main(): Promise<void> {
   });
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
   console.error('Failed to start app:', error);
+  await notifyError('Server', `Failed to start: ${error.message || error}`, 'fatal');
   process.exit(1);
 });

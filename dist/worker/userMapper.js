@@ -18,6 +18,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
+const errorNotifier_1 = require("../src/utils/errorNotifier");
 const axios_1 = __importDefault(require("axios"));
 const gheTokenResolver_1 = require("../src/utils/gheTokenResolver");
 const HEROKU_API_URL = process.env.HEROKU_API_URL;
@@ -26,8 +27,9 @@ const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
 function log(message) {
     console.log(`[${new Date().toISOString()}] [UserMapper] ${message}`);
 }
-function logError(message) {
+function logError(message, severity = 'error') {
     console.error(`[${new Date().toISOString()}] [UserMapper] ${message}`);
+    (0, errorNotifier_1.notifyError)('UserMapper', message, severity);
 }
 // ---------------------------------------------------------------------------
 // Strategy 1: GHE email → Slack lookupByEmail

@@ -17,6 +17,7 @@
  */
 
 import 'dotenv/config';
+import { notifyError } from '../src/utils/errorNotifier';
 import axios from 'axios';
 import { Ollama } from 'ollama';
 import { spawn } from 'child_process';
@@ -27,8 +28,9 @@ function log(message: string): void {
   console.log(`[${new Date().toISOString()}] ${message}`);
 }
 
-function logError(message: string): void {
+function logError(message: string, severity: 'warn' | 'error' | 'fatal' = 'error'): void {
   console.error(`[${new Date().toISOString()}] ${message}`);
+  notifyError('LocalPRChecker', message, severity);
 }
 
 // Configuration

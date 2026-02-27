@@ -6,6 +6,7 @@ const bolt_1 = require("@slack/bolt");
 const prTracker_1 = require("./services/prTracker");
 const prParser_1 = require("./utils/prParser");
 const client_1 = require("./db/client");
+const errorNotifier_1 = require("./utils/errorNotifier");
 const channelAccessControl_1 = require("./services/channelAccessControl");
 function formatWaitTime(postedAt) {
     const waitMs = Date.now() - new Date(postedAt).getTime();
@@ -95,6 +96,7 @@ function createApp() {
         }
         catch (error) {
             console.error('[Socket Mode] Error tracking PRs:', error);
+            (0, errorNotifier_1.notifyError)('SocketMode', `Error tracking PRs: ${error.message || error}`);
         }
     });
     // Slash command: /pr-monitor
@@ -297,6 +299,7 @@ function createApp() {
         }
         catch (error) {
             console.error('Error handling /pr-monitor command:', error);
+            (0, errorNotifier_1.notifyError)('SlackCommand', `Error handling /pr-monitor: ${error.message || error}`);
             await respond({
                 text: `❌ An error occurred: ${error.message}`,
             });
@@ -340,6 +343,7 @@ function createApp() {
         }
         catch (error) {
             console.error('Error publishing home view:', error);
+            (0, errorNotifier_1.notifyError)('SlackApp', `Error publishing home view: ${error.message || error}`, 'warn');
         }
     });
     // ---------------------------------------------------------------------------
@@ -355,6 +359,7 @@ function createApp() {
         }
         catch (e) {
             console.error(`[Feedback] DB error: ${e.message}`);
+            (0, errorNotifier_1.notifyError)('Feedback', `DB error: ${e.message}`, 'warn');
         }
         try {
             await client.views.open({
@@ -397,6 +402,7 @@ function createApp() {
         }
         catch (e) {
             console.error(`[Feedback] DB error: ${e.message}`);
+            (0, errorNotifier_1.notifyError)('Feedback', `DB error: ${e.message}`, 'warn');
         }
         try {
             await client.views.open({
