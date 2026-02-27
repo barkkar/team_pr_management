@@ -14,6 +14,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
+const errorNotifier_1 = require("../src/utils/errorNotifier");
 const axios_1 = __importDefault(require("axios"));
 const gheTokenResolver_1 = require("../src/utils/gheTokenResolver");
 const HEROKU_API_URL = process.env.HEROKU_API_URL;
@@ -42,8 +43,9 @@ const SKIP_DIRS = new Set([
 function log(message) {
     console.log(`[${new Date().toISOString()}] [RepoHarvester] ${message}`);
 }
-function logError(message) {
+function logError(message, severity = 'error') {
     console.error(`[${new Date().toISOString()}] [RepoHarvester] ${message}`);
+    (0, errorNotifier_1.notifyError)('RepoHarvester', message, severity);
 }
 function herokuHeaders() {
     return {

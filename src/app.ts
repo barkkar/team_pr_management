@@ -2,6 +2,7 @@ import { App, LogLevel } from '@slack/bolt';
 import { trackPRsFromMessage } from './services/prTracker';
 import { containsPRLink } from './utils/prParser';
 import { addMonitoredChannel, removeMonitoredChannel, getMonitoredChannels, isChannelMonitored, getPendingReminders, getOpenUnreviewedPRs, getReviewStats, insertOrUpdateFeedback, insertOrUpdateCommentFeedback, pool } from './db/client';
+import { notifyError } from './utils/errorNotifier';
 import { isChannelAllowed, getAllowedChannelIds } from './services/channelAccessControl';
 
 function formatWaitTime(postedAt: Date): string {
@@ -102,6 +103,7 @@ export function createApp(): App {
       }
     } catch (error) {
       console.error('[Socket Mode] Error tracking PRs:', error);
+      notifyError('SocketMode', `Error tracking PRs: ${(error as Error).message || error}`);
     }
   });
 
@@ -324,6 +326,7 @@ export function createApp(): App {
       }
     } catch (error) {
       console.error('Error handling /pr-monitor command:', error);
+      notifyError('SlackCommand', `Error handling /pr-monitor: ${(error as Error).message || error}`);
       await respond({
         text: `❌ An error occurred: ${(error as Error).message}`,
       });
@@ -367,6 +370,7 @@ export function createApp(): App {
       });
     } catch (error) {
       console.error('Error publishing home view:', error);
+      notifyError('SlackApp', `Error publishing home view: ${(error as Error).message || error}`, 'warn');
     }
   });
 
@@ -384,6 +388,7 @@ export function createApp(): App {
       await insertOrUpdateFeedback(prUrl, userId, 'helpful');
     } catch (e: any) {
       console.error(`[Feedback] DB error: ${e.message}`);
+      notifyError('Feedback', `DB error: ${e.message}`, 'warn');
     }
 
     try {
@@ -427,6 +432,7 @@ export function createApp(): App {
       await insertOrUpdateFeedback(prUrl, userId, 'not_helpful');
     } catch (e: any) {
       console.error(`[Feedback] DB error: ${e.message}`);
+      notifyError('Feedback', `DB error: ${e.message}`, 'warn');
     }
 
     try {

@@ -12,6 +12,7 @@
  */
 
 import 'dotenv/config';
+import { notifyError } from '../src/utils/errorNotifier';
 import axios from 'axios';
 import { requireTokenForHost } from '../src/utils/gheTokenResolver';
 
@@ -23,8 +24,9 @@ function log(message: string): void {
   console.log(`[${new Date().toISOString()}] [PRHarvester] ${message}`);
 }
 
-function logError(message: string): void {
+function logError(message: string, severity: 'warn' | 'error' | 'fatal' = 'error'): void {
   console.error(`[${new Date().toISOString()}] [PRHarvester] ${message}`);
+  notifyError('PRHarvester', message, severity);
 }
 
 function herokuHeaders(): Record<string, string> {

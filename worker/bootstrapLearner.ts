@@ -19,6 +19,7 @@
  */
 
 import 'dotenv/config';
+import { notifyError } from '../src/utils/errorNotifier';
 import axios from 'axios';
 import { Ollama } from 'ollama';
 import { requireTokenForHost } from '../src/utils/gheTokenResolver';
@@ -33,8 +34,9 @@ function log(msg: string): void {
   console.log(`[${new Date().toISOString()}] [BootstrapLearner] ${msg}`);
 }
 
-function logError(msg: string): void {
+function logError(msg: string, severity: 'warn' | 'error' | 'fatal' = 'error'): void {
   console.error(`[${new Date().toISOString()}] [BootstrapLearner] ${msg}`);
+  notifyError('BootstrapLearner', msg, severity);
 }
 
 function herokuHeaders(): Record<string, string> {

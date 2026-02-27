@@ -16,6 +16,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
+const errorNotifier_1 = require("../src/utils/errorNotifier");
 const axios_1 = __importDefault(require("axios"));
 const ollama_1 = require("ollama");
 const gheTokenResolver_1 = require("../src/utils/gheTokenResolver");
@@ -33,8 +34,9 @@ function getOllama() {
 function log(msg) {
     console.log(`[${new Date().toISOString()}] [ReviewLearner] ${msg}`);
 }
-function logError(msg) {
+function logError(msg, severity = 'error') {
     console.error(`[${new Date().toISOString()}] [ReviewLearner] ${msg}`);
+    (0, errorNotifier_1.notifyError)('ReviewLearner', msg, severity);
 }
 function herokuHeaders() {
     return { 'Content-Type': 'application/json', 'X-Worker-API-Key': WORKER_API_KEY };
