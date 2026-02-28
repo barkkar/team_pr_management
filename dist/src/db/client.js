@@ -44,6 +44,7 @@ exports.getRecentLessons = getRecentLessons;
 exports.getSimilarLessons = getSimilarLessons;
 exports.getPRsNeedingLessonExtraction = getPRsNeedingLessonExtraction;
 exports.searchSimilarDocs = searchSimilarDocs;
+exports.searchDocsByTitlePattern = searchDocsByTitlePattern;
 exports.upsertDocumentChunks = upsertDocumentChunks;
 exports.listDocuments = listDocuments;
 exports.deleteDocument = deleteDocument;
@@ -521,6 +522,21 @@ async function searchSimilarDocs(embedding, topK = 3) {
     ORDER BY embedding <=> $1::vector
     LIMIT $2
   `, [embeddingStr, topK]);
+    return result.rows;
+}
+async function searchDocsByTitlePattern(embedding, titlePatterns, topK = 5) {
+    if (titlePatterns.length === 0)
+        return [];
+    const embeddingStr = `[${embedding.join(',')}]`;
+    const result = await pool.query(`
+    SELECT id, title, source_url, doc_type, content_chunk, chunk_index,
+           1 - (embedding <=> $1::vector) AS similarity
+    FROM team_documents
+    WHERE title LIKE ANY($2::text[])
+      AND embedding IS NOT NULL
+    ORDER BY embedding <=> $1::vector
+    LIMIT $3
+  `, [embeddingStr, titlePatterns, topK]);
     return result.rows;
 }
 async function upsertDocumentChunks(sourceUrl, title, docType, chunks) {

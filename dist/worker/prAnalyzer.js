@@ -104,6 +104,83 @@ async function fetchPRFiles(hostname, org, repo, prNumber) {
     return response.data || [];
 }
 // ---------------------------------------------------------------------------
+// Skill-based routing: keyword → doc title patterns (derived from skill.md)
+// ---------------------------------------------------------------------------
+const SKILL_ROUTING = [
+    { keywords: /\b(UDD|EntityObject|EntityFunctions|EntityDef|EntityRecord|SOQL|entity[.\-_]xml|object[.\-_]definition|field[.\-_]label|shared[.\-_]labels|CustomObject|CustomField|StandardEntity)\b/i,
+        docPattern: 'core-engineer/entity-engineer/%', area: 'Entity/UDD' },
+    { keywords: /\b(SDB|SFSQL|PLSQL|psql|db[.\-_]schema|stored[.\-_]procedure|database[.\-_]migration|\.sql)\b/i,
+        docPattern: 'core-engineer/db-engineer/%', area: 'Database' },
+    { keywords: /\b(ftest|functional[.\-_]test|EntityEnabler|PublicEntityTest|AccessBasedEntityEnablerList|OldTestSuiteEntityAllowList|CRUD[.\-_]test)\b/i,
+        docPattern: 'core-engineer/test-engineer/%', area: 'Testing' },
+    { keywords: /\b(bazel|buildifier|BUILD\.bazel|db[.\-_]schema[.\-_]update|app[.\-_]server|graph[.\-_]tool)\b/i,
+        docPattern: 'core-engineer/infra-engineer/%', area: 'Infrastructure' },
+    { keywords: /\b(message[.\-_]queue|MQ[.\-_]handler|async[.\-_]handler|background[.\-_]processing|cron[.\-_]job|scheduled[.\-_]task|QueueableJob|BatchableJob)\b/i,
+        docPattern: 'core-engineer/async-engineer/%', area: 'Async/Scheduled' },
+    { keywords: /\b(org[.\-_]permission|user[.\-_]permission|feature[.\-_]flag|pilot[.\-_]gate|license[.\-_]check|SKU|access[.\-_]control|PLD)\b/i,
+        docPattern: 'core-engineer/permission-engineer/%', area: 'Permissions' },
+    { keywords: /\b(LogRecordType|structured[.\-_]logging|app[.\-_]logging[.\-_]format)\b/i,
+        docPattern: 'core-engineer/logrecord-engineer/%', area: 'Logging' },
+    { keywords: /\b(SpringConfiguration|@Configuration|@Bean|@Import|dependency[.\-_]injection|API[.\-_]Impl|module[.\-_]descriptor)\b/i,
+        docPattern: 'core-engineer/module-engineer/%', area: 'Modules' },
+    { keywords: /\b(git[.\-_]commit|git[.\-_]push|create[.\-_]PR|p4[.\-_]submit|check[.\-_]in[.\-_]code|submit[.\-_]for[.\-_]review)\b/i,
+        docPattern: 'core-engineer/git-engineer/%', area: 'Git' },
+];
+function matchSkillRoutes(text) {
+    const patterns = [];
+    const areas = [];
+    for (const route of SKILL_ROUTING) {
+        if (route.keywords.test(text)) {
+            patterns.push(route.docPattern);
+            areas.push(route.area);
+        }
+    }
+    return { patterns, areas };
+}
+// ---------------------------------------------------------------------------
+// GHE: fetch full file content for context
+// ---------------------------------------------------------------------------
+async function fetchFileContent(hostname, org, repo, filePath, ref) {
+    try {
+        const token = (0, gheTokenResolver_1.requireTokenForHost)(hostname);
+        const response = await axios_1.default.get(`https://${hostname}/api/v3/repos/${org}/${repo}/contents/${filePath}`, {
+            params: { ref },
+            headers: {
+                Authorization: `token ${token}`,
+                Accept: 'application/vnd.github.v3+json',
+            },
+            timeout: 10000,
+        });
+        if (response.data.encoding === 'base64') {
+            return Buffer.from(response.data.content, 'base64').toString('utf-8');
+        }
+        return response.data.content || null;
+    }
+    catch {
+        return null;
+    }
+}
+function buildFileContextSummary(files) {
+    const parts = [];
+    for (const file of files) {
+        const lines = file.content.split('\n');
+        const fingerprint = [`File: ${file.path}`];
+        // Extract imports/requires (first 30 lines)
+        const importLines = lines.slice(0, 30).filter(l => /^\s*(import |from |require\(|#include|using |package |@import)/.test(l));
+        if (importLines.length > 0) {
+            fingerprint.push('Imports: ' + importLines.slice(0, 10).join('; '));
+        }
+        // Extract class/function/component declarations
+        const declLines = lines.filter(l => /^\s*(export\s+)?(public\s+|private\s+|protected\s+)?(class |interface |function |const \w+ = |def |type |enum |abstract |@api|@wire|@track|@AuraEnabled)/.test(l)).slice(0, 8);
+        if (declLines.length > 0) {
+            fingerprint.push('Declarations: ' + declLines.map(l => l.trim()).join('; '));
+        }
+        parts.push(fingerprint.join('\n'));
+    }
+    // Cap at 2000 chars for embedding model input
+    return parts.join('\n\n').substring(0, 2000);
+}
+// ---------------------------------------------------------------------------
 // Heroku API: fetch similar context + report results
 // ---------------------------------------------------------------------------
 async function fetchSimilarReviews(embedding, topK = 10) {
@@ -117,6 +194,17 @@ async function fetchSimilarCode(embedding, topK = 5) {
 async function fetchSimilarDocs(embedding, topK = 3) {
     try {
         const response = await axios_1.default.post(`${HEROKU_API_URL}/api/search-similar-docs`, { embedding, top_k: topK }, { headers: herokuHeaders(), timeout: 15000 });
+        return response.data.docs || [];
+    }
+    catch {
+        return [];
+    }
+}
+async function fetchDocsByTitlePattern(embedding, patterns, topK = 5) {
+    try {
+        if (patterns.length === 0)
+            return [];
+        const response = await axios_1.default.post(`${HEROKU_API_URL}/api/search-docs-by-title`, { embedding, patterns, top_k: topK }, { headers: herokuHeaders(), timeout: 15000 });
         return response.data.docs || [];
     }
     catch {
@@ -538,11 +626,57 @@ async function analyzePR(prUrl, channelId, messageTs) {
     catch (error) {
         log(`  No related code found: ${error.message}`);
     }
-    // 3b. Fetch relevant team docs
-    log('  Searching for relevant team docs...');
-    const similarDocs = await fetchSimilarDocs(diffEmbedding, 5);
-    log(`  Found ${similarDocs.length} relevant doc chunk(s)`);
-    // 3c. Fetch learning context (lessons + feedback from similar past reviews)
+    // 3b. Fetch full file content for context-aware doc matching
+    log('  Fetching full file content for doc matching...');
+    const headSha = prDetails.head?.sha || '';
+    const implPrFiles = prFiles
+        .filter((f) => !TEST_FILE_PATTERN.test(f.filename) && !SKIP_FILE_PATTERN.test(f.filename))
+        .sort((a, b) => (b.additions || 0) - (a.additions || 0))
+        .slice(0, 8);
+    const fileContents = [];
+    for (const f of implPrFiles) {
+        const content = await fetchFileContent(hostname, org, repo, f.filename, headSha);
+        if (content) {
+            fileContents.push({ path: f.filename, content });
+        }
+    }
+    log(`  Fetched ${fileContents.length}/${implPrFiles.length} file(s) for context`);
+    // 3c. Build file-context summary and generate embedding
+    let fileContextEmbedding = diffEmbedding; // fallback
+    let fileContextSummary = '';
+    if (fileContents.length > 0) {
+        fileContextSummary = buildFileContextSummary(fileContents);
+        log('  Generating file-context embedding...');
+        fileContextEmbedding = await generateEmbedding(fileContextSummary);
+    }
+    // 3d. Two-pronged team doc retrieval
+    log('  Searching for relevant team docs (two-pronged)...');
+    // Prong 1: Keyword routing via skill.md patterns
+    const scanText = fileContents.map(f => f.content).join('\n') + '\n' + changedFiles.join('\n') + '\n' + prDiff.substring(0, 3000);
+    const { patterns: matchedPatterns, areas: matchedAreas } = matchSkillRoutes(scanText);
+    let routedDocs = [];
+    if (matchedPatterns.length > 0) {
+        log(`  Skill routing matched: ${matchedAreas.join(', ')}`);
+        routedDocs = await fetchDocsByTitlePattern(fileContextEmbedding, matchedPatterns, 5);
+        log(`  Routed docs: ${routedDocs.length} chunk(s)`);
+    }
+    // Prong 2: Semantic vector search across all docs
+    const semanticDocs = await fetchSimilarDocs(fileContextEmbedding, 3);
+    log(`  Semantic docs: ${semanticDocs.length} chunk(s)`);
+    // Merge & deduplicate (routed docs first, then semantic)
+    const seenKeys = new Set();
+    const similarDocs = [];
+    for (const doc of [...routedDocs, ...semanticDocs]) {
+        const key = `${doc.title}:${doc.chunk_index}`;
+        if (!seenKeys.has(key)) {
+            seenKeys.add(key);
+            similarDocs.push(doc);
+        }
+    }
+    // Cap at 8 chunks for Pass 2
+    const cappedDocs = similarDocs.slice(0, 8);
+    log(`  Total unique doc chunks: ${cappedDocs.length}`);
+    // 3e. Fetch learning context (lessons + feedback from similar past reviews)
     log('  Fetching relevant learning context...');
     const learningContext = await fetchLearningContext(diffEmbedding);
     log(`  Got ${learningContext.lessons.length} relevant lesson(s), ${learningContext.feedback.length} feedback item(s)`);
@@ -561,7 +695,7 @@ async function analyzePR(prUrl, channelId, messageTs) {
             summaries.push(p1.summary);
     }
     // Pass 2: Team docs compliance
-    const relevantDocs = similarDocs.filter((d) => (d.similarity || 0) >= 0.65);
+    const relevantDocs = cappedDocs.filter((d) => (d.similarity || 0) >= 0.50);
     if (implFiles.length > 0 && relevantDocs.length > 0) {
         const p2 = await runReviewPass(client, 'Pass 2: Docs Compliance', pass2_systemPrompt(), pass2_userPrompt(prTitle, implDiff, implFiles, relevantDocs));
         allComments.push(...(p2.comments || []));

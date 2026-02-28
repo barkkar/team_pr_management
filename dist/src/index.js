@@ -956,6 +956,24 @@ async function main() {
                 res.end(JSON.stringify({ docs }));
                 return;
             }
+            // Scoped vector search: docs by title pattern
+            if (url === '/api/search-docs-by-title' && method === 'POST') {
+                if (!validateApiKey(req)) {
+                    res.writeHead(401, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Unauthorized' }));
+                    return;
+                }
+                const body = await parseJsonBody(req);
+                if (!body.embedding || !body.patterns || !Array.isArray(body.patterns)) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'embedding and patterns[] are required' }));
+                    return;
+                }
+                const docs = await (0, client_1.searchDocsByTitlePattern)(body.embedding, body.patterns, body.top_k || 5);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ docs }));
+                return;
+            }
             // Register / list / delete team documents
             if (url.startsWith('/api/team-documents')) {
                 if (!validateApiKey(req)) {
