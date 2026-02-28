@@ -123,6 +123,100 @@ async function fetchPRFiles(hostname: string, org: string, repo: string, prNumbe
 }
 
 // ---------------------------------------------------------------------------
+// Skill-based routing: keyword → doc title patterns (derived from skill.md)
+// ---------------------------------------------------------------------------
+
+const SKILL_ROUTING: { keywords: RegExp; docPattern: string; area: string }[] = [
+  { keywords: /\b(entity|UDD|EntityObject|EntityFunctions|SOQL|entity.?XML|object.?definition|field.?label|shared-labels)\b/i,
+    docPattern: 'core-engineer/entity-engineer/%', area: 'Entity/UDD' },
+  { keywords: /\b(SQL|SDB|SFSQL|PLSQL|database|psql|schema|procedure|query)\b/i,
+    docPattern: 'core-engineer/db-engineer/%', area: 'Database' },
+  { keywords: /\b(ftest|functional.?test|EntityEnabler|PublicEntityTest|AccessBasedEntityEnablerList|OldTestSuiteEntityAllowList|CRUD.?test)\b/i,
+    docPattern: 'core-engineer/test-engineer/%', area: 'Testing' },
+  { keywords: /\b(bazel|buildifier|db-schema-update|server.?start|server.?stop|app-server|graph-tool)\b/i,
+    docPattern: 'core-engineer/infra-engineer/%', area: 'Infrastructure' },
+  { keywords: /\b(message.?queue|MQ.?handler|async|background.?processing|cron.?job|scheduled.?task|scheduler)\b/i,
+    docPattern: 'core-engineer/async-engineer/%', area: 'Async/Scheduled' },
+  { keywords: /\b(permission|org.?permission|user.?permission|pilot|feature.?flag|license|SKU|access.?control|preferences|PLD)\b/i,
+    docPattern: 'core-engineer/permission-engineer/%', area: 'Permissions' },
+  { keywords: /\b(LogRecordType|structured.?logging|app-logging-format|Logger)\b/i,
+    docPattern: 'core-engineer/logrecord-engineer/%', area: 'Logging' },
+  { keywords: /\b(Spring|dependency.?injection|API.?Impl|new.?module)\b/i,
+    docPattern: 'core-engineer/module-engineer/%', area: 'Modules' },
+  { keywords: /\b(commit|create.?PR|push.?changes|check.?in.?code|submit.?for.?review|git.?status)\b/i,
+    docPattern: 'core-engineer/git-engineer/%', area: 'Git' },
+];
+
+function matchSkillRoutes(text: string): { patterns: string[]; areas: string[] } {
+  const patterns: string[] = [];
+  const areas: string[] = [];
+  for (const route of SKILL_ROUTING) {
+    if (route.keywords.test(text)) {
+      patterns.push(route.docPattern);
+      areas.push(route.area);
+    }
+  }
+  return { patterns, areas };
+}
+
+// ---------------------------------------------------------------------------
+// GHE: fetch full file content for context
+// ---------------------------------------------------------------------------
+
+async function fetchFileContent(
+  hostname: string, org: string, repo: string, filePath: string, ref: string,
+): Promise<string | null> {
+  try {
+    const token = requireTokenForHost(hostname);
+    const response = await axios.get(
+      `https://${hostname}/api/v3/repos/${org}/${repo}/contents/${filePath}`,
+      {
+        params: { ref },
+        headers: {
+          Authorization: `token ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+        },
+        timeout: 10000,
+      },
+    );
+    if (response.data.encoding === 'base64') {
+      return Buffer.from(response.data.content, 'base64').toString('utf-8');
+    }
+    return response.data.content || null;
+  } catch {
+    return null;
+  }
+}
+
+function buildFileContextSummary(files: { path: string; content: string }[]): string {
+  const parts: string[] = [];
+  for (const file of files) {
+    const lines = file.content.split('\n');
+    const fingerprint: string[] = [`File: ${file.path}`];
+
+    // Extract imports/requires (first 30 lines)
+    const importLines = lines.slice(0, 30).filter(l =>
+      /^\s*(import |from |require\(|#include|using |package |@import)/.test(l),
+    );
+    if (importLines.length > 0) {
+      fingerprint.push('Imports: ' + importLines.slice(0, 10).join('; '));
+    }
+
+    // Extract class/function/component declarations
+    const declLines = lines.filter(l =>
+      /^\s*(export\s+)?(public\s+|private\s+|protected\s+)?(class |interface |function |const \w+ = |def |type |enum |abstract |@api|@wire|@track|@AuraEnabled)/.test(l),
+    ).slice(0, 8);
+    if (declLines.length > 0) {
+      fingerprint.push('Declarations: ' + declLines.map(l => l.trim()).join('; '));
+    }
+
+    parts.push(fingerprint.join('\n'));
+  }
+  // Cap at 2000 chars for embedding model input
+  return parts.join('\n\n').substring(0, 2000);
+}
+
+// ---------------------------------------------------------------------------
 // Heroku API (read-only queries)
 // ---------------------------------------------------------------------------
 
@@ -149,6 +243,22 @@ async function fetchSimilarDocs(embedding: number[], topK: number = 3): Promise<
     const response = await axios.post(
       `${HEROKU_API_URL}/api/search-similar-docs`,
       { embedding, top_k: topK },
+      { headers: herokuHeaders(), timeout: 15000 },
+    );
+    return response.data.docs || [];
+  } catch {
+    return [];
+  }
+}
+
+async function fetchDocsByTitlePattern(
+  embedding: number[], patterns: string[], topK: number = 5,
+): Promise<any[]> {
+  try {
+    if (patterns.length === 0) return [];
+    const response = await axios.post(
+      `${HEROKU_API_URL}/api/search-docs-by-title`,
+      { embedding, patterns, top_k: topK },
       { headers: herokuHeaders(), timeout: 15000 },
     );
     return response.data.docs || [];
@@ -886,13 +996,78 @@ async function run(): Promise<void> {
     console.log(`  Could not fetch learning context: ${error.message}`);
   }
 
-  // 4b. Similar docs
-  separator('5b. TEAM DOCS');
-  const similarDocs = await fetchSimilarDocs(diffEmbedding, 5);
-  console.log(`  Found ${similarDocs.length} relevant doc chunk(s)`);
-  for (const d of similarDocs) {
-    console.log(`  - [${d.title}] (similarity: ${((d.similarity || 0) * 100).toFixed(1)}%) ${d.content_chunk.substring(0, 100)}...`);
+  // 4b. Fetch full file content for context-aware doc matching
+  separator('5b. FILE CONTEXT FOR DOC MATCHING');
+  const headSha = prDetails.head?.sha || '';
+  const implPrFiles = prFiles
+    .filter((f: any) => !TEST_FILE_PATTERN.test(f.filename) && !SKIP_FILE_PATTERN.test(f.filename))
+    .sort((a: any, b: any) => (b.additions || 0) - (a.additions || 0))
+    .slice(0, 8);
+
+  const fileContents: { path: string; content: string }[] = [];
+  for (const f of implPrFiles) {
+    const content = await fetchFileContent(hostname, org, repo, f.filename, headSha);
+    if (content) {
+      fileContents.push({ path: f.filename, content });
+      console.log(`  Fetched: ${f.filename} (${content.length} chars)`);
+    } else {
+      console.log(`  Failed:  ${f.filename}`);
+    }
   }
+  console.log(`  Fetched ${fileContents.length}/${implPrFiles.length} file(s)\n`);
+
+  let fileContextEmbedding = diffEmbedding;
+  let fileContextSummary = '';
+  if (fileContents.length > 0) {
+    fileContextSummary = buildFileContextSummary(fileContents);
+    console.log('  File-context summary:');
+    for (const line of fileContextSummary.split('\n')) {
+      console.log(`    ${line}`);
+    }
+    console.log('');
+    log('Generating file-context embedding...');
+    fileContextEmbedding = await generateEmbedding(fileContextSummary);
+    console.log(`  File-context embedding dimensions: ${fileContextEmbedding.length}`);
+  }
+
+  // 4c. Two-pronged team doc retrieval
+  separator('5c. TEAM DOCS (TWO-PRONGED)');
+  // Prong 1: Keyword routing
+  const scanText = fileContents.map(f => f.content).join('\n') + '\n' + changedFiles.join('\n') + '\n' + prDiff.substring(0, 3000);
+  const { patterns: matchedPatterns, areas: matchedAreas } = matchSkillRoutes(scanText);
+  console.log(`  Keyword routing: ${matchedAreas.length > 0 ? matchedAreas.join(', ') : '(no matches)'}`);
+  if (matchedPatterns.length > 0) {
+    console.log(`  Doc patterns: ${matchedPatterns.join(', ')}`);
+  }
+
+  let routedDocs: any[] = [];
+  if (matchedPatterns.length > 0) {
+    routedDocs = await fetchDocsByTitlePattern(fileContextEmbedding, matchedPatterns, 5);
+    console.log(`\n  Prong 1 — Routed docs: ${routedDocs.length} chunk(s)`);
+    for (const d of routedDocs) {
+      console.log(`    [${d.title}] (similarity: ${((d.similarity || 0) * 100).toFixed(1)}%) ${d.content_chunk.substring(0, 80)}...`);
+    }
+  }
+
+  // Prong 2: Semantic vector search
+  const semanticDocs = await fetchSimilarDocs(fileContextEmbedding, 3);
+  console.log(`\n  Prong 2 — Semantic docs: ${semanticDocs.length} chunk(s)`);
+  for (const d of semanticDocs) {
+    console.log(`    [${d.title}] (similarity: ${((d.similarity || 0) * 100).toFixed(1)}%) ${d.content_chunk.substring(0, 80)}...`);
+  }
+
+  // Merge & deduplicate
+  const seenKeys = new Set<string>();
+  const similarDocs: any[] = [];
+  for (const doc of [...routedDocs, ...semanticDocs]) {
+    const key = `${doc.title}:${doc.chunk_index}`;
+    if (!seenKeys.has(key)) {
+      seenKeys.add(key);
+      similarDocs.push(doc);
+    }
+  }
+  const cappedDocs = similarDocs.slice(0, 8);
+  console.log(`\n  Merged: ${cappedDocs.length} unique doc chunk(s)`);
 
   // 5. Multi-pass LLM review
   separator('6. AI REVIEW — MULTI-PASS (via Ollama)');
@@ -927,7 +1102,7 @@ async function run(): Promise<void> {
 
   // --- Pass 2: Team docs / code rules compliance ---
   separator('6b. PASS 2 — Team Docs Compliance');
-  const relevantDocs = similarDocs.filter((d: any) => (d.similarity || 0) >= 0.65);
+  const relevantDocs = cappedDocs.filter((d: any) => (d.similarity || 0) >= 0.50);
   if (implFiles.length > 0 && relevantDocs.length > 0) {
     const p2 = await runReviewPass(
       client, 'Pass 2: Docs Compliance',
@@ -940,7 +1115,7 @@ async function run(): Promise<void> {
       console.log(`    [${c.severity || 'medium'}|${c.type}] ${c.file_path}: ${c.comment.substring(0, 120)}...`);
     }
   } else {
-    console.log(`  Skipped — ${relevantDocs.length === 0 ? 'no relevant team docs found (similarity < 65%)' : 'no implementation files'}`);
+    console.log(`  Skipped — ${relevantDocs.length === 0 ? 'no relevant team docs found (similarity < 50%)' : 'no implementation files'}`);
   }
 
   // --- Pass 3: Test file review ---
