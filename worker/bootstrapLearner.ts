@@ -140,23 +140,23 @@ async function fetchPeerComments(hostname: string, org: string, repo: string, pr
 // ---------------------------------------------------------------------------
 
 const SKILL_ROUTING: { keywords: RegExp; docPattern: string; area: string }[] = [
-  { keywords: /\b(entity|UDD|EntityObject|EntityFunctions|SOQL|entity.?XML|object.?definition|field.?label|shared-labels)\b/i,
+  { keywords: /\b(UDD|EntityObject|EntityFunctions|EntityDef|EntityRecord|SOQL|entity[.\-_]xml|object[.\-_]definition|field[.\-_]label|shared[.\-_]labels|CustomObject|CustomField|StandardEntity)\b/i,
     docPattern: 'core-engineer/entity-engineer/%', area: 'Entity/UDD' },
-  { keywords: /\b(SQL|SDB|SFSQL|PLSQL|database|psql|schema|procedure|query)\b/i,
+  { keywords: /\b(SDB|SFSQL|PLSQL|psql|db[.\-_]schema|stored[.\-_]procedure|database[.\-_]migration|\.sql)\b/i,
     docPattern: 'core-engineer/db-engineer/%', area: 'Database' },
-  { keywords: /\b(ftest|functional.?test|EntityEnabler|PublicEntityTest|AccessBasedEntityEnablerList|OldTestSuiteEntityAllowList|CRUD.?test)\b/i,
+  { keywords: /\b(ftest|functional[.\-_]test|EntityEnabler|PublicEntityTest|AccessBasedEntityEnablerList|OldTestSuiteEntityAllowList|CRUD[.\-_]test)\b/i,
     docPattern: 'core-engineer/test-engineer/%', area: 'Testing' },
-  { keywords: /\b(bazel|buildifier|db-schema-update|server.?start|server.?stop|app-server|graph-tool)\b/i,
+  { keywords: /\b(bazel|buildifier|BUILD\.bazel|db[.\-_]schema[.\-_]update|app[.\-_]server|graph[.\-_]tool)\b/i,
     docPattern: 'core-engineer/infra-engineer/%', area: 'Infrastructure' },
-  { keywords: /\b(message.?queue|MQ.?handler|async|background.?processing|cron.?job|scheduled.?task|scheduler)\b/i,
+  { keywords: /\b(message[.\-_]queue|MQ[.\-_]handler|async[.\-_]handler|background[.\-_]processing|cron[.\-_]job|scheduled[.\-_]task|QueueableJob|BatchableJob)\b/i,
     docPattern: 'core-engineer/async-engineer/%', area: 'Async/Scheduled' },
-  { keywords: /\b(permission|org.?permission|user.?permission|pilot|feature.?flag|license|SKU|access.?control|preferences|PLD)\b/i,
+  { keywords: /\b(org[.\-_]permission|user[.\-_]permission|feature[.\-_]flag|pilot[.\-_]gate|license[.\-_]check|SKU|access[.\-_]control|PLD)\b/i,
     docPattern: 'core-engineer/permission-engineer/%', area: 'Permissions' },
-  { keywords: /\b(LogRecordType|structured.?logging|app-logging-format|Logger)\b/i,
+  { keywords: /\b(LogRecordType|structured[.\-_]logging|app[.\-_]logging[.\-_]format)\b/i,
     docPattern: 'core-engineer/logrecord-engineer/%', area: 'Logging' },
-  { keywords: /\b(Spring|dependency.?injection|API.?Impl|new.?module)\b/i,
+  { keywords: /\b(SpringConfiguration|@Configuration|@Bean|@Import|dependency[.\-_]injection|API[.\-_]Impl|module[.\-_]descriptor)\b/i,
     docPattern: 'core-engineer/module-engineer/%', area: 'Modules' },
-  { keywords: /\b(commit|create.?PR|push.?changes|check.?in.?code|submit.?for.?review|git.?status)\b/i,
+  { keywords: /\b(git[.\-_]commit|git[.\-_]push|create[.\-_]PR|p4[.\-_]submit|check[.\-_]in[.\-_]code|submit[.\-_]for[.\-_]review)\b/i,
     docPattern: 'core-engineer/git-engineer/%', area: 'Git' },
 ];
 
