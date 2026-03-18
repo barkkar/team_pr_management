@@ -4,7 +4,7 @@
   "description": "Slack app to monitor PR review status and send reminders",
   "main": "dist/src/index.js",
   "scripts": {
-    "compile": "npx tsc && cp -r src/db/migrations dist/src/db/",
+    "compile": "./node_modules/.bin/tsc && cp -r src/db/migrations dist/src/db/",
     "start": "node dist/src/index.js",
     "dev": "npx ts-node src/index.ts",
     "check-reminders": "node dist/scripts/checkReminders.js",
