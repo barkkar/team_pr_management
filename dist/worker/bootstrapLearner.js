@@ -224,6 +224,20 @@ async function fetchDocsByTitlePattern(embedding, patterns, topK = 5) {
         return [];
     }
 }
+async function fetchOntologyRules(changedFiles, diffText) {
+    try {
+        const response = await axios_1.default.post(`${HEROKU_API_URL}/api/resolve-rules`, { changed_files: changedFiles, diff_text: diffText.substring(0, 50000) }, { headers: herokuHeaders(), timeout: 30000 });
+        return {
+            rules: response.data.rules || [],
+            taxonomy: response.data.taxonomy || [],
+            unmatched_files: response.data.unmatched_files || [],
+        };
+    }
+    catch (error) {
+        log(`  Ontology rule resolution failed: ${error.message}`);
+        return { rules: [], taxonomy: [], unmatched_files: changedFiles };
+    }
+}
 async function fetchLearningContext(embedding) {
     try {
         if (embedding && embedding.length > 0) {
@@ -299,13 +313,20 @@ function buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarC
             parts.push(`- ${review.file_path || 'general'}: "${(review.comment_body || '').substring(0, 300)}"`);
         }
     }
-    // Include relevant team design docs / requirements (only if similarity >= 0.50)
-    const relevantDocs = (similarDocs || []).filter((d) => (d.similarity || 0) >= 0.50);
-    if (relevantDocs.length > 0) {
-        parts.push('\nTEAM DOCUMENTATION — You MUST check this PR against these team guidelines. If the PR violates or misses any guideline below, produce a comment citing the guideline:');
-        for (const doc of relevantDocs.slice(0, 3)) {
-            const excerpt = doc.content_chunk.substring(0, 1500);
-            parts.push(`--- [${doc.title}] ---\n${excerpt}\n---`);
+    // Include ontology rules (exact deterministic matches)
+    const relevantRules = (similarDocs || []);
+    if (relevantRules.length > 0) {
+        parts.push('\nCODING RULES — You MUST check this PR against these exact rules. If the PR violates or misses any rule below, produce a comment citing the rule:');
+        for (const rule of relevantRules.slice(0, 10)) {
+            if (rule.rule_key) {
+                // Ontology rule format
+                const severityTag = rule.severity ? `[${rule.severity.toUpperCase()}]` : '';
+                parts.push(`--- [${rule.title}] (${rule.rule_key}) ${severityTag} ---\n${(rule.description || '').substring(0, 1000)}\n---`);
+            }
+            else if (rule.content_chunk) {
+                // Legacy doc chunk format (fallback)
+                parts.push(`--- [${rule.title}] ---\n${rule.content_chunk.substring(0, 1500)}\n---`);
+            }
         }
     }
     if (learningContext) {
@@ -556,26 +577,10 @@ async function processPR(pr) {
             const fileContextSummary = buildFileContextSummary(fileContents);
             fileContextEmbedding = await generateEmbedding(fileContextSummary);
         }
-        // 4b. Two-pronged team doc retrieval
-        const scanText = fileContents.map(f => f.content).join('\n') + '\n' + changedFiles.join('\n') + '\n' + prDiff.substring(0, 3000);
-        const { patterns: matchedPatterns, areas: matchedAreas } = matchSkillRoutes(scanText);
-        let routedDocs = [];
-        if (matchedPatterns.length > 0) {
-            log(`         Skill routing matched: ${matchedAreas.join(', ')}`);
-            routedDocs = await fetchDocsByTitlePattern(fileContextEmbedding, matchedPatterns, 5);
-        }
-        const semanticDocs = await fetchSimilarDocs(fileContextEmbedding, 3);
-        const seenKeys = new Set();
-        const similarDocs = [];
-        for (const doc of [...routedDocs, ...semanticDocs]) {
-            const key = `${doc.title}:${doc.chunk_index}`;
-            if (!seenKeys.has(key)) {
-                seenKeys.add(key);
-                similarDocs.push(doc);
-            }
-        }
-        const cappedDocs = similarDocs.slice(0, 8);
-        log(`         ${routedDocs.length} routed + ${semanticDocs.length} semantic → ${cappedDocs.length} unique doc chunks`);
+        // 4b. Ontology-based rule resolution
+        const ontologyResult = await fetchOntologyRules(changedFiles, prDiff);
+        const cappedDocs = ontologyResult.rules;
+        log(`         Ontology resolved ${ontologyResult.rules.length} rules (${ontologyResult.unmatched_files.length} unmatched files)`);
         // 4c. Fetch learning context
         const learningContext = await fetchLearningContext(diffEmbedding);
         // 5. Generate AI review via LLM

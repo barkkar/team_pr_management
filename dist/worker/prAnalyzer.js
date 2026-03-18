@@ -211,6 +211,81 @@ async function fetchDocsByTitlePattern(embedding, patterns, topK = 5) {
         return [];
     }
 }
+async function fetchOntologyRules(changedFiles, diffText) {
+    try {
+        const response = await axios_1.default.post(`${HEROKU_API_URL}/api/resolve-rules`, { changed_files: changedFiles, diff_text: diffText.substring(0, 50000) }, { headers: herokuHeaders(), timeout: 30000 });
+        return {
+            rules: response.data.rules || [],
+            taxonomy: response.data.taxonomy || [],
+            unmatched_files: response.data.unmatched_files || [],
+        };
+    }
+    catch (error) {
+        log(`  Ontology rule resolution failed: ${error.message}`);
+        return { rules: [], taxonomy: [], unmatched_files: changedFiles };
+    }
+}
+async function classifyUnmatchedFilesViaLLM(unmatchedFiles, diffText, taxonomy) {
+    if (unmatchedFiles.length === 0 || taxonomy.length === 0)
+        return [];
+    const domainsWithRules = taxonomy.filter((d) => d.rule_count > 0);
+    if (domainsWithRules.length === 0)
+        return [];
+    const taxonomyText = domainsWithRules
+        .map((d) => `${'  '.repeat(d.depth)}${d.id}: ${d.display_name}${d.description ? ' — ' + d.description : ''} (${d.rule_count} rules)`)
+        .join('\n');
+    // Build a snippet of diff for the unmatched files
+    const fileDiffs = diffText.split(/^(?=diff --git )/m);
+    const unmatchedSet = new Set(unmatchedFiles);
+    const relevantDiff = fileDiffs
+        .filter(fd => {
+        const pathMatch = fd.match(/diff --git a\/(\S+)/);
+        return pathMatch && unmatchedSet.has(pathMatch[1]);
+    })
+        .join('')
+        .substring(0, 6000);
+    if (!relevantDiff.trim())
+        return [];
+    const prompt = `You are a code classifier. Given a code diff, determine which coding rule domains apply.
+
+DOMAINS (id: name — description):
+${taxonomyText}
+
+FILES: ${unmatchedFiles.join(', ')}
+DIFF:
+${relevantDiff}
+
+Respond with ONLY a JSON object: {"domain_ids": [1, 2, 3]}
+If no domains apply, respond with {"domain_ids": []}`;
+    try {
+        const client = getOllama();
+        const response = await client.chat({
+            model: OLLAMA_MODEL,
+            messages: [{ role: 'user', content: prompt }],
+            options: { num_predict: 100, temperature: 0.1 },
+            format: 'json',
+        });
+        const text = response.message?.content?.trim() || '{}';
+        const parsed = JSON.parse(text);
+        const ids = Array.isArray(parsed)
+            ? parsed
+            : Array.isArray(parsed.domain_ids)
+                ? parsed.domain_ids
+                : [];
+        const validIds = new Set(domainsWithRules.map((d) => d.id));
+        const classifiedIds = ids.filter((id) => typeof id === 'number' && validIds.has(id));
+        if (classifiedIds.length > 0) {
+            // Fetch the actual rules for these domains from the Heroku API
+            // Re-use resolve-rules with just the unmatched files and a hint
+            log(`  LLM classified unmatched files into domains: ${classifiedIds.join(', ')}`);
+        }
+        return classifiedIds;
+    }
+    catch (error) {
+        log(`  LLM classification failed: ${error.message}`);
+        return [];
+    }
+}
 async function fetchSuggestedReviewers(filePaths, prAuthor, similarReviews) {
     const response = await axios_1.default.post(`${HEROKU_API_URL}/api/suggested-reviewers`, { file_paths: filePaths, pr_author: prAuthor, similar_reviews: similarReviews || [] }, { headers: herokuHeaders(), timeout: 30000 });
     return response.data.reviewers || [];
@@ -355,37 +430,43 @@ function pass1_userPrompt(prTitle, implDiff, implFiles, similarReviews, learning
     return parts.join('\n');
 }
 function pass2_systemPrompt() {
-    return `You are a compliance reviewer checking implementation code against team documentation and coding guidelines. Respond with valid JSON only.
+    return `You are a compliance reviewer checking implementation code against exact coding rules from the team's ontology. Respond with valid JSON only.
 
-{"summary": "1-2 sentence compliance assessment", "comments": [{"file_path": "path/to/file", "line_hint": "line 15", "comment": "your comment", "type": "suggestion", "severity": "high", "reason": "1-sentence why this matters", "suggested_fix": "- oldCode\n+ fixedCode", "source": "[Guideline Doc Name]"}]}
+{"summary": "1-2 sentence compliance assessment", "comments": [{"file_path": "path/to/file", "line_hint": "line 15", "comment": "your comment", "type": "suggestion", "severity": "high", "reason": "1-sentence why this matters", "suggested_fix": "- oldCode\n+ fixedCode", "source": "[Rule Title] (rule_key)"}]}
 
 Severity classification (REQUIRED for every comment):
 - "critical": security violation, auth bypass, data exposure
-- "high": guideline violation that causes bugs or breaking changes
+- "high": rule violation that causes bugs or breaking changes
 - "medium": missing recommended pattern, incomplete compliance
-- "low": minor deviation, cosmetic guideline mismatch
+- "low": minor deviation from rule
 
 Context & evidence (REQUIRED):
-- "reason" (REQUIRED): One sentence explaining what breaks or what risk exists if the guideline is not followed.
+- "reason" (REQUIRED): One sentence explaining what breaks or what risk exists if the rule is not followed.
 - "suggested_fix" (optional): Include for simple compliance fixes (missing import, wrong pattern, missing guard). Unified diff format, max 6 lines.
-- "source" (REQUIRED): MUST cite the team guideline name in brackets, e.g. "[Error Handling Standards]" or "[LWC Best Practices]". This is mandatory for every compliance comment.
+- "source" (REQUIRED): MUST cite the rule title and key in brackets, e.g. "[Entity Field Validation] (entity.field.must_have_help_text)". This is mandatory for every compliance comment.
 
 Rules:
-- For each team guideline provided, check if the implementation follows it
-- If the code VIOLATES a guideline, cite the guideline name and explain what's wrong
-- If the code MISSES a required pattern from the guidelines, call it out
-- NEVER write vague comments. Be specific: "Per [doc name], you should X but the code does Y"
-- Only comment on genuine violations — do not force-fit unrelated guidelines
-- If no guidelines are violated, return {"summary": "No guideline violations found", "comments": []}`;
+- Each CODING RULE below is exact and deterministic — it was matched to this PR's files and code patterns
+- For each rule, check if the implementation code follows it
+- If the code VIOLATES a rule, cite the rule title and key and explain what's wrong
+- If the code MISSES a required pattern from a rule, call it out
+- Use the rule's severity as a baseline for your comment severity
+- NEVER write vague comments. Be specific: "Per [rule title], you must X but the code does Y"
+- Only comment on genuine violations — do not force-fit unrelated rules
+- If no rules are violated, return {"summary": "No rule violations found", "comments": []}`;
 }
-function pass2_userPrompt(prTitle, implDiff, implFiles, similarDocs) {
+function pass2_userPrompt(prTitle, implDiff, implFiles, rules) {
     const parts = [];
-    parts.push(`Check this PR against team guidelines: "${prTitle}"`);
+    parts.push(`Check this PR against coding rules: "${prTitle}"`);
     parts.push(`\nFiles: ${implFiles.join(', ')}`);
-    parts.push('\nTEAM GUIDELINES — check the code against each of these:');
-    for (const doc of similarDocs.slice(0, 5)) {
-        const excerpt = doc.content_chunk.substring(0, 1500);
-        parts.push(`--- [${doc.title}] (${doc.doc_type || 'guide'}) ---\n${excerpt}\n---`);
+    parts.push('\nCODING RULES — check the code against each of these exact rules:');
+    for (const rule of rules.slice(0, 15)) {
+        const severityTag = rule.severity ? `[${rule.severity.toUpperCase()}]` : '';
+        const domain = rule.domain_display_name || rule.domain_name || '';
+        const matchedVia = rule.matched_via ? ` (matched via: ${rule.matched_via})` : '';
+        parts.push(`--- [${rule.title}] (${rule.rule_key}) ${severityTag} domain:${domain}${matchedVia} ---`);
+        parts.push(rule.description.substring(0, 1000));
+        parts.push('---');
     }
     parts.push(`\nDiff:\n${implDiff.substring(0, 20000)}`);
     parts.push(JSON_SCHEMA);
@@ -649,33 +730,20 @@ async function analyzePR(prUrl, channelId, messageTs) {
         log('  Generating file-context embedding...');
         fileContextEmbedding = await generateEmbedding(fileContextSummary);
     }
-    // 3d. Two-pronged team doc retrieval
-    log('  Searching for relevant team docs (two-pronged)...');
-    // Prong 1: Keyword routing via skill.md patterns
-    const scanText = fileContents.map(f => f.content).join('\n') + '\n' + changedFiles.join('\n') + '\n' + prDiff.substring(0, 3000);
-    const { patterns: matchedPatterns, areas: matchedAreas } = matchSkillRoutes(scanText);
-    let routedDocs = [];
-    if (matchedPatterns.length > 0) {
-        log(`  Skill routing matched: ${matchedAreas.join(', ')}`);
-        routedDocs = await fetchDocsByTitlePattern(fileContextEmbedding, matchedPatterns, 5);
-        log(`  Routed docs: ${routedDocs.length} chunk(s)`);
+    // 3d. Ontology-based rule resolution (deterministic + LLM fallback)
+    log('  Resolving coding rules via ontology engine...');
+    const ontologyResult = await fetchOntologyRules(changedFiles, prDiff);
+    log(`  Deterministic rules: ${ontologyResult.rules.length}, unmatched files: ${ontologyResult.unmatched_files.length}`);
+    // LLM classifier fallback for files with no deterministic rule matches
+    let llmClassifiedDomainIds = [];
+    if (ontologyResult.unmatched_files.length > 0 && ontologyResult.taxonomy.length > 0) {
+        log('  Running LLM classifier for unmatched files...');
+        llmClassifiedDomainIds = await classifyUnmatchedFilesViaLLM(ontologyResult.unmatched_files, prDiff, ontologyResult.taxonomy);
+        log(`  LLM classified into ${llmClassifiedDomainIds.length} domain(s)`);
     }
-    // Prong 2: Semantic vector search across all docs
-    const semanticDocs = await fetchSimilarDocs(fileContextEmbedding, 3);
-    log(`  Semantic docs: ${semanticDocs.length} chunk(s)`);
-    // Merge & deduplicate (routed docs first, then semantic)
-    const seenKeys = new Set();
-    const similarDocs = [];
-    for (const doc of [...routedDocs, ...semanticDocs]) {
-        const key = `${doc.title}:${doc.chunk_index}`;
-        if (!seenKeys.has(key)) {
-            seenKeys.add(key);
-            similarDocs.push(doc);
-        }
-    }
-    // Cap at 8 chunks for Pass 2
-    const cappedDocs = similarDocs.slice(0, 8);
-    log(`  Total unique doc chunks: ${cappedDocs.length}`);
+    // Combine all resolved rules
+    const allRules = [...ontologyResult.rules];
+    log(`  Total applicable rules: ${allRules.length}`);
     // 3e. Fetch learning context (lessons + feedback from similar past reviews)
     log('  Fetching relevant learning context...');
     const learningContext = await fetchLearningContext(diffEmbedding);
@@ -694,12 +762,11 @@ async function analyzePR(prUrl, channelId, messageTs) {
         if (p1.summary)
             summaries.push(p1.summary);
     }
-    // Pass 2: Team docs compliance
-    const relevantDocs = cappedDocs.filter((d) => (d.similarity || 0) >= 0.50);
-    if (implFiles.length > 0 && relevantDocs.length > 0) {
-        const p2 = await runReviewPass(client, 'Pass 2: Docs Compliance', pass2_systemPrompt(), pass2_userPrompt(prTitle, implDiff, implFiles, relevantDocs));
+    // Pass 2: Ontology rules compliance (replaces vector-based doc retrieval)
+    if (implFiles.length > 0 && allRules.length > 0) {
+        const p2 = await runReviewPass(client, 'Pass 2: Rules Compliance', pass2_systemPrompt(), pass2_userPrompt(prTitle, implDiff, implFiles, allRules));
         allComments.push(...(p2.comments || []));
-        if (p2.summary && p2.summary !== 'No guideline violations found')
+        if (p2.summary && p2.summary !== 'No rule violations found')
             summaries.push(p2.summary);
     }
     // Pass 3: Test review
