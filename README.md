@@ -249,11 +249,15 @@ launchctl list | grep pr-worker
 │   │   ├── prTracker.ts          # PR tracking logic
 │   │   ├── reminder.ts           # Reminder processing
 │   │   ├── channelPoller.ts      # Channel polling for PRs
-│   │   └── channelAccessControl.ts # Channel allowlist enforcement
+│   │   ├── channelAccessControl.ts # Channel allowlist enforcement
+│   │   ├── ontologyEngine.ts     # Deterministic rule resolver (file paths + code patterns → exact rules)
+│   │   ├── ruleClassifier.ts     # LLM-as-classifier fallback for edge cases
+│   │   ├── embeddingService.ts   # Ollama embedding generation
+│   │   └── vectorSearch.ts       # Vector similarity search (legacy, retained for review search)
 │   ├── db/
 │   │   ├── client.ts             # PostgreSQL client + queries
 │   │   ├── migrate.ts            # Migration runner
-│   │   └── migrations/           # SQL migrations
+│   │   └── migrations/           # SQL migrations (includes 015/016 for ontology tables + seed data)
 │   └── utils/
 │       ├── timezone.ts           # Business hours logic
 │       ├── prParser.ts           # PR URL parser
@@ -276,9 +280,35 @@ The Heroku app exposes these endpoints for the local worker:
 |----------|--------|-------------|
 | `/api/pending-prs` | GET | Get PRs needing status check |
 | `/api/pr-status` | POST | Report PR status from worker |
+| `/api/resolve-rules` | POST | Resolve ontology rules for a PR (changed files + diff) |
+| `/api/ontology/taxonomy` | GET | Get full domain taxonomy with rule counts |
+| `/api/ontology/domains` | GET/POST | List or create code domains |
+| `/api/ontology/rules` | GET/POST | List or create coding rules (with matchers) |
+| `/api/ontology/rules/:id` | PUT/DELETE | Update or delete a coding rule |
+| `/api/ontology/rule-feedback` | POST | Record human override/dismissal of a rule |
 | `/health` | GET | Health check |
 
 All `/api/*` endpoints require the `X-Worker-API-Key` header.
+
+### Ontology Rule Engine
+
+The bot uses a **hybrid ontology + LLM classifier** for deterministic code rule enforcement during Pass 2 (compliance review):
+
+1. **Deterministic matching** — File paths are matched against `domain_file_mappings` (glob patterns) to find applicable domains, then rules are fetched for those domains (with ancestor inheritance via recursive CTE). Code patterns in the diff are also matched against `rule_matchers`.
+2. **LLM classifier fallback** — For files with no deterministic matches, the local Ollama LLM classifies the diff into domain categories using the full taxonomy as context, then fetches exact rules for those domains.
+
+To seed initial rules, run the migrations:
+```bash
+npm run migrate
+```
+
+To add new rules via the API:
+```bash
+curl -X POST "$HEROKU_API_URL/api/ontology/rules" \
+  -H "X-Worker-API-Key: $WORKER_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"domain_id": 1, "rule_key": "entity.field.must_have_help_text", "title": "Entity Fields Must Have Help Text", "description": "All custom entity fields must include a help text description.", "severity": "high", "matchers": [{"matcher_type": "code_pattern", "pattern": "CustomField", "is_regex": false}]}'
+```
 
 ## Scripts
 

@@ -16,6 +16,11 @@ import {
   searchSimilarDocs, searchDocsByTitlePattern, upsertDocumentChunks, listDocuments, deleteDocument,
   pool,
 } from './db/client';
+import {
+  resolveRulesForPR, getDomainTaxonomy, getAllDomains,
+  listRules, createDomain, createRule, createRuleMatcher, createDomainFileMapping,
+  updateRule, deleteRule,
+} from './services/ontologyEngine';
 
 // Simple body parser for JSON
 async function parseJsonBody(req: http.IncomingMessage): Promise<any> {
@@ -1133,6 +1138,230 @@ async function main(): Promise<void> {
           res.end(JSON.stringify({ ok: true, chunks_deleted: deleted }));
           return;
         }
+      }
+
+      // ========== Ontology Rule Engine Endpoints ==========
+
+      // Resolve rules for a PR (deterministic ontology lookup)
+      if (url === '/api/resolve-rules' && method === 'POST') {
+        if (!validateApiKey(req)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+
+        const body = await parseJsonBody(req);
+        const { changed_files, diff_text } = body;
+        if (!changed_files || !Array.isArray(changed_files)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'changed_files[] is required' }));
+          return;
+        }
+
+        const rules = await resolveRulesForPR(changed_files, diff_text || '');
+        const taxonomy = await getDomainTaxonomy();
+
+        // Identify files that had no deterministic rule matches
+        const matchedFiles = new Set<string>();
+        for (const rule of rules) {
+          const fileParts = rule.match_detail.match(/([^\s;]+)\s+matched/g) || [];
+          for (const part of fileParts) {
+            const file = part.replace(/\s+matched$/, '');
+            matchedFiles.add(file);
+          }
+        }
+        const unmatchedFiles = changed_files.filter((f: string) => !matchedFiles.has(f));
+
+        console.log(`[Ontology] Resolved ${rules.length} rules for ${changed_files.length} files (${unmatchedFiles.length} unmatched)`);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ rules, taxonomy, unmatched_files: unmatchedFiles }));
+        return;
+      }
+
+      // Get domain taxonomy (for LLM classifier context)
+      if (url === '/api/ontology/taxonomy' && method === 'GET') {
+        if (!validateApiKey(req)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+
+        const taxonomy = await getDomainTaxonomy();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ taxonomy }));
+        return;
+      }
+
+      // CRUD: List domains
+      if (url === '/api/ontology/domains' && method === 'GET') {
+        if (!validateApiKey(req)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+
+        const domains = await getAllDomains();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ domains }));
+        return;
+      }
+
+      // CRUD: Create domain
+      if (url === '/api/ontology/domains' && method === 'POST') {
+        if (!validateApiKey(req)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+
+        const body = await parseJsonBody(req);
+        const { name, display_name, parent_id, description } = body;
+        if (!name || !display_name) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'name and display_name are required' }));
+          return;
+        }
+
+        const domain = await createDomain(name, display_name, parent_id || null, description);
+        console.log(`[Ontology] Created domain: ${name}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ domain }));
+        return;
+      }
+
+      // CRUD: List rules (with optional filters)
+      if (url.startsWith('/api/ontology/rules') && method === 'GET') {
+        if (!validateApiKey(req)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+
+        const params = new URL(url, `http://${req.headers.host}`).searchParams;
+        const domainId = params.get('domain_id') ? parseInt(params.get('domain_id')!, 10) : undefined;
+        const teamOwner = params.get('team_owner') || undefined;
+
+        const rules = await listRules({ domainId, teamOwner, enabledOnly: false });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ rules }));
+        return;
+      }
+
+      // CRUD: Create rule with matchers
+      if (url === '/api/ontology/rules' && method === 'POST') {
+        if (!validateApiKey(req)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+
+        const body = await parseJsonBody(req);
+        const { domain_id, rule_key, title, description, severity, team_owner, matchers, file_mappings } = body;
+        if (!domain_id || !rule_key || !title || !description) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'domain_id, rule_key, title, and description are required' }));
+          return;
+        }
+
+        const rule = await createRule(domain_id, rule_key, title, description, severity || 'high', team_owner);
+
+        // Create associated matchers
+        if (matchers && Array.isArray(matchers)) {
+          for (const m of matchers) {
+            await createRuleMatcher(rule.id, m.matcher_type, m.pattern, m.is_regex || false, m.priority || 0);
+          }
+        }
+
+        // Create associated domain file mappings
+        if (file_mappings && Array.isArray(file_mappings)) {
+          for (const fm of file_mappings) {
+            await createDomainFileMapping(domain_id, fm.file_pattern, fm.priority || 0);
+          }
+        }
+
+        console.log(`[Ontology] Created rule: ${rule_key} (${matchers?.length || 0} matchers)`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ rule }));
+        return;
+      }
+
+      // CRUD: Update rule
+      if (url.startsWith('/api/ontology/rules/') && method === 'PUT') {
+        if (!validateApiKey(req)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+
+        const ruleId = parseInt(url.split('/').pop() || '0', 10);
+        if (!ruleId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid rule ID' }));
+          return;
+        }
+
+        const body = await parseJsonBody(req);
+        const updated = await updateRule(ruleId, body);
+        if (!updated) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Rule not found or no changes' }));
+          return;
+        }
+
+        console.log(`[Ontology] Updated rule ${ruleId}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ rule: updated }));
+        return;
+      }
+
+      // CRUD: Delete rule
+      if (url.startsWith('/api/ontology/rules/') && method === 'DELETE') {
+        if (!validateApiKey(req)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+
+        const ruleId = parseInt(url.split('/').pop() || '0', 10);
+        if (!ruleId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid rule ID' }));
+          return;
+        }
+
+        const deleted = await deleteRule(ruleId);
+        console.log(`[Ontology] Deleted rule ${ruleId}: ${deleted}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: deleted }));
+        return;
+      }
+
+      // Record rule feedback (human override/dismissal)
+      if (url === '/api/ontology/rule-feedback' && method === 'POST') {
+        if (!validateApiKey(req)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+
+        const body = await parseJsonBody(req);
+        const { rule_id, pr_url: feedbackPrUrl, user_id: feedbackUserId, action: feedbackAction, feedback_text: feedbackNote } = body;
+        if (!rule_id || !feedbackPrUrl || !feedbackUserId || !feedbackAction) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'rule_id, pr_url, user_id, and action are required' }));
+          return;
+        }
+
+        await pool.query(`
+          INSERT INTO rule_feedback (rule_id, pr_url, user_id, action, feedback_text)
+          VALUES ($1, $2, $3, $4, $5)
+        `, [rule_id, feedbackPrUrl, feedbackUserId, feedbackAction, feedbackNote || null]);
+
+        console.log(`[Ontology] Rule feedback: ${feedbackAction} on rule ${rule_id} for ${feedbackPrUrl}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+        return;
       }
 
       // Not found
