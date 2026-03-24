@@ -2,7 +2,7 @@
  * Rule Classifier (LLM Fallback)
  *
  * When the deterministic ontology engine finds zero rules for a file,
- * this classifier uses the existing Ollama LLM to classify the code diff
+ * this classifier uses Claude AI to classify the code diff
  * into domain categories, then fetches exact rules for those domains.
  *
  * This is structured classification with a fixed taxonomy — NOT vector similarity.

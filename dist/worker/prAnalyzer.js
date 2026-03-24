@@ -25,10 +25,10 @@ const errorNotifier_1 = require("../src/utils/errorNotifier");
 const axios_1 = __importDefault(require("axios"));
 const ollama_1 = require("ollama");
 const gheTokenResolver_1 = require("../src/utils/gheTokenResolver");
+const claudeClient_1 = require("../src/services/claudeClient");
 const HEROKU_API_URL = process.env.HEROKU_API_URL;
 const WORKER_API_KEY = process.env.WORKER_API_KEY;
 const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen3-coder';
 const OLLAMA_EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
 function log(message) {
     console.log(`[${new Date().toISOString()}] [PRAnalyzer] ${message}`);
@@ -258,14 +258,11 @@ ${relevantDiff}
 Respond with ONLY a JSON object: {"domain_ids": [1, 2, 3]}
 If no domains apply, respond with {"domain_ids": []}`;
     try {
-        const client = getOllama();
-        const response = await client.chat({
-            model: OLLAMA_MODEL,
-            messages: [{ role: 'user', content: prompt }],
-            options: { num_predict: 100, temperature: 0.1 },
-            format: 'json',
+        const text = await (0, claudeClient_1.claudeChat)(undefined, prompt, {
+            maxTokens: 100,
+            temperature: 0.1,
+            jsonMode: true,
         });
-        const text = response.message?.content?.trim() || '{}';
         const parsed = JSON.parse(text);
         const ids = Array.isArray(parsed)
             ? parsed
@@ -510,19 +507,14 @@ function pass3_userPrompt(prTitle, testDiff, testFiles, implFiles) {
     parts.push(JSON_SCHEMA);
     return parts.join('\n');
 }
-async function runReviewPass(client, passName, systemPrompt, userPrompt) {
+async function runReviewPass(passName, systemPrompt, userPrompt) {
     try {
         log(`  [${passName}] Running...`);
-        const response = await client.chat({
-            model: OLLAMA_MODEL,
-            messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: userPrompt },
-            ],
-            format: 'json',
-            options: { temperature: 0.3, num_predict: 6144, num_ctx: 32768 },
+        const raw = await (0, claudeClient_1.claudeChat)(systemPrompt, userPrompt, {
+            temperature: 0.3,
+            maxTokens: 6144,
+            jsonMode: true,
         });
-        const raw = response.message.content.trim();
         const parsed = parseReviewResponse(raw);
         const result = deduplicateComments(parsed);
         log(`  [${passName}] ${result.comments?.length || 0} comments`);
@@ -749,29 +741,28 @@ async function analyzePR(prUrl, channelId, messageTs) {
     const learningContext = await fetchLearningContext(diffEmbedding);
     log(`  Got ${learningContext.lessons.length} relevant lesson(s), ${learningContext.feedback.length} feedback item(s)`);
     // 4. Multi-pass LLM review
-    log('  Generating AI review via Ollama (3-pass)...');
-    const client = getOllama();
+    log('  Generating AI review via Claude (3-pass)...');
     const { implDiff, testDiff, implFiles, testFiles } = splitDiff(prDiff);
     log(`  Split: ${implFiles.length} impl file(s), ${testFiles.length} test file(s)`);
     let allComments = [];
     const summaries = [];
     // Pass 1: Implementation code review
     if (implFiles.length > 0) {
-        const p1 = await runReviewPass(client, 'Pass 1: Implementation', pass1_systemPrompt(implFiles.length), pass1_userPrompt(prTitle, implDiff, implFiles, similarReviews, learningContext));
+        const p1 = await runReviewPass('Pass 1: Implementation', pass1_systemPrompt(implFiles.length), pass1_userPrompt(prTitle, implDiff, implFiles, similarReviews, learningContext));
         allComments.push(...(p1.comments || []));
         if (p1.summary)
             summaries.push(p1.summary);
     }
     // Pass 2: Ontology rules compliance (replaces vector-based doc retrieval)
     if (implFiles.length > 0 && allRules.length > 0) {
-        const p2 = await runReviewPass(client, 'Pass 2: Rules Compliance', pass2_systemPrompt(), pass2_userPrompt(prTitle, implDiff, implFiles, allRules));
+        const p2 = await runReviewPass('Pass 2: Rules Compliance', pass2_systemPrompt(), pass2_userPrompt(prTitle, implDiff, implFiles, allRules));
         allComments.push(...(p2.comments || []));
         if (p2.summary && p2.summary !== 'No rule violations found')
             summaries.push(p2.summary);
     }
     // Pass 3: Test review
     if (testFiles.length > 0) {
-        const p3 = await runReviewPass(client, 'Pass 3: Tests', pass3_systemPrompt(testFiles.length), pass3_userPrompt(prTitle, testDiff, testFiles, implFiles));
+        const p3 = await runReviewPass('Pass 3: Tests', pass3_systemPrompt(testFiles.length), pass3_userPrompt(prTitle, testDiff, testFiles, implFiles));
         allComments.push(...(p3.comments || []));
         if (p3.summary)
             summaries.push(p3.summary);
@@ -863,21 +854,27 @@ async function run() {
         logError('GHE_TOKEN or GHE_TOKENS is required');
         process.exit(1);
     }
-    // Verify Ollama
+    // Verify Ollama (embeddings only)
     try {
         const client = getOllama();
         await client.embed({ model: OLLAMA_EMBED_MODEL, input: 'test' });
         log(`Ollama embedding model ready: ${OLLAMA_EMBED_MODEL}`);
-        await client.chat({
-            model: OLLAMA_MODEL,
-            messages: [{ role: 'user', content: 'respond with: ok' }],
-            options: { num_predict: 10 },
-        });
-        log(`Ollama LLM model ready: ${OLLAMA_MODEL}`);
     }
     catch (error) {
         logError(`Ollama not ready: ${error.message}`);
-        logError(`Run: ollama pull ${OLLAMA_EMBED_MODEL} && ollama pull ${OLLAMA_MODEL}`);
+        logError(`Run: ollama pull ${OLLAMA_EMBED_MODEL}`);
+        process.exit(1);
+    }
+    // Verify Claude AI
+    try {
+        const health = await (0, claudeClient_1.checkClaudeHealth)();
+        if (!health.ok)
+            throw new Error(health.error || 'Claude health check failed');
+        log(`Claude AI model ready: ${(0, claudeClient_1.getClaudeModel)()}`);
+    }
+    catch (error) {
+        logError(`Claude AI not ready: ${error.message}`);
+        logError('Check ANTHROPIC_API_KEY in .env');
         process.exit(1);
     }
     // Check if a specific PR URL was passed via CLI

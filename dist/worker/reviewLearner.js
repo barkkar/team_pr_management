@@ -18,19 +18,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
 const errorNotifier_1 = require("../src/utils/errorNotifier");
 const axios_1 = __importDefault(require("axios"));
-const ollama_1 = require("ollama");
 const gheTokenResolver_1 = require("../src/utils/gheTokenResolver");
+const claudeClient_1 = require("../src/services/claudeClient");
 const HEROKU_API_URL = process.env.HEROKU_API_URL;
 const WORKER_API_KEY = process.env.WORKER_API_KEY;
-const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen3-coder';
 const POLL_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
-let ollama = null;
-function getOllama() {
-    if (!ollama)
-        ollama = new ollama_1.Ollama({ host: OLLAMA_HOST });
-    return ollama;
-}
 function log(msg) {
     console.log(`[${new Date().toISOString()}] [ReviewLearner] ${msg}`);
 }
@@ -92,7 +84,6 @@ async function fetchPeerComments(hostname, org, repo, prNumber) {
     return comments;
 }
 async function generateLessons(aiReview, peerComments) {
-    const client = getOllama();
     const peerCount = peerComments.length;
     const aiCount = (aiReview.comments || []).length;
     const systemPrompt = `You are an expert code review analyst. You MUST compare an AI code review against actual human peer review comments on the same PR. Respond with valid JSON ONLY.
@@ -157,16 +148,12 @@ ${peerLines || '(no peer comments)'}
 
 For EACH peer comment above, determine: did the AI catch this issue? If not, add it to missed_issues with the exact file_path and a direct quote. Then check each AI comment: was it actually useful or too generic? Finally, derive specific reusable patterns. Respond with JSON.`;
     try {
-        const response = await client.chat({
-            model: OLLAMA_MODEL,
-            messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: userPrompt },
-            ],
-            format: 'json',
-            options: { temperature: 0.3, num_predict: 4096, num_ctx: 32768 },
+        const raw = await (0, claudeClient_1.claudeChat)(systemPrompt, userPrompt, {
+            temperature: 0.3,
+            maxTokens: 4096,
+            jsonMode: true,
         });
-        const parsed = JSON.parse(response.message.content.trim());
+        const parsed = JSON.parse(raw);
         return {
             missed_issues: Array.isArray(parsed.missed_issues) ? parsed.missed_issues : [],
             wrong_calls: Array.isArray(parsed.wrong_calls) ? parsed.wrong_calls : [],

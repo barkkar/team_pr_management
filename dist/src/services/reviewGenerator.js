@@ -2,7 +2,7 @@
 /**
  * LLM Review Generator
  *
- * Uses Ollama to generate AI-powered code review comments based on:
+ * Uses Claude AI to generate AI-powered code review comments based on:
  * - PR diff content
  * - Similar past review comments (RAG)
  * - Codebase knowledge (RAG)
@@ -10,16 +10,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.generateReview = generateReview;
 exports.checkLLMHealth = checkLLMHealth;
-const ollama_1 = require("ollama");
-const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen3-coder';
-let ollamaClient = null;
-function getClient() {
-    if (!ollamaClient) {
-        ollamaClient = new ollama_1.Ollama({ host: OLLAMA_HOST });
-    }
-    return ollamaClient;
-}
+const claudeClient_1 = require("./claudeClient");
 /**
  * Build the system prompt for the review generator.
  */
@@ -83,26 +74,17 @@ function buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarC
     return parts.join('\n');
 }
 /**
- * Generate review comments for a PR using Ollama LLM.
+ * Generate review comments for a PR using Claude AI.
  */
 async function generateReview(prTitle, prDiff, changedFiles, similarReviews, similarCode) {
-    const client = getClient();
     const systemPrompt = buildSystemPrompt();
     const userPrompt = buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode);
     try {
-        const response = await client.chat({
-            model: OLLAMA_MODEL,
-            messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: userPrompt },
-            ],
-            options: {
-                temperature: 0.3,
-                num_predict: 4096,
-                num_ctx: 32768,
-            },
+        const content = await (0, claudeClient_1.claudeChat)(systemPrompt, userPrompt, {
+            temperature: 0.3,
+            maxTokens: 4096,
+            jsonMode: true,
         });
-        const content = response.message.content.trim();
         // Try to parse JSON from the response
         const parsed = parseReviewResponse(content);
         return parsed;
@@ -177,20 +159,9 @@ function validateReview(parsed) {
     };
 }
 /**
- * Check if Ollama LLM model is available.
+ * Check if Claude AI is available.
  */
 async function checkLLMHealth() {
-    try {
-        const client = getClient();
-        await client.chat({
-            model: OLLAMA_MODEL,
-            messages: [{ role: 'user', content: 'respond with: ok' }],
-            options: { num_predict: 10 },
-        });
-        return { ok: true };
-    }
-    catch (error) {
-        return { ok: false, error: error.message };
-    }
+    return (0, claudeClient_1.checkClaudeHealth)();
 }
 //# sourceMappingURL=reviewGenerator.js.map

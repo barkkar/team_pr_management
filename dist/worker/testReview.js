@@ -20,10 +20,10 @@ require("dotenv/config");
 const axios_1 = __importDefault(require("axios"));
 const ollama_1 = require("ollama");
 const gheTokenResolver_1 = require("../src/utils/gheTokenResolver");
+const claudeClient_1 = require("../src/services/claudeClient");
 const HEROKU_API_URL = process.env.HEROKU_API_URL;
 const WORKER_API_KEY = process.env.WORKER_API_KEY;
 const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen3-coder';
 const OLLAMA_EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
 function log(message) {
     console.log(`[TestReview] ${message}`);
@@ -256,14 +256,11 @@ ${relevantDiff}
 Respond with ONLY a JSON object: {"domain_ids": [1, 2, 3]}
 If no domains apply, respond with {"domain_ids": []}`;
     try {
-        const client = getOllama();
-        const response = await client.chat({
-            model: OLLAMA_MODEL,
-            messages: [{ role: 'user', content: prompt }],
-            options: { num_predict: 100, temperature: 0.1 },
-            format: 'json',
+        const text = await (0, claudeClient_1.claudeChat)(undefined, prompt, {
+            maxTokens: 100,
+            temperature: 0.1,
+            jsonMode: true,
         });
-        const text = response.message?.content?.trim() || '{}';
         const parsed = JSON.parse(text);
         const ids = Array.isArray(parsed)
             ? parsed
@@ -513,19 +510,14 @@ function pass3_userPrompt(prTitle, testDiff, testFiles, implFiles) {
     return parts.join('\n');
 }
 // --- LLM call helper ---
-async function runReviewPass(client, passName, systemPrompt, userPrompt) {
+async function runReviewPass(passName, systemPrompt, userPrompt) {
     try {
         log(`  [${passName}] Running...`);
-        const response = await client.chat({
-            model: OLLAMA_MODEL,
-            messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: userPrompt },
-            ],
-            format: 'json',
-            options: { temperature: 0.3, num_predict: 6144, num_ctx: 32768 },
+        const raw = await (0, claudeClient_1.claudeChat)(systemPrompt, userPrompt, {
+            temperature: 0.3,
+            maxTokens: 6144,
+            jsonMode: true,
         });
-        const raw = response.message.content.trim();
         const parsed = parseReviewResponse(raw);
         const result = deduplicateComments(parsed);
         log(`  [${passName}] ${result.comments?.length || 0} comments`);
@@ -854,22 +846,29 @@ async function run() {
     }
     const [, org, repo, prNumberStr] = urlMatch;
     const prNumber = parseInt(prNumberStr, 10);
-    // Verify Ollama
-    log('Checking Ollama...');
+    // Verify Ollama (embeddings only)
+    log('Checking Ollama embeddings...');
     try {
         const client = getOllama();
         await client.embed({ model: OLLAMA_EMBED_MODEL, input: 'test' });
         log(`Embedding model ready: ${OLLAMA_EMBED_MODEL}`);
-        await client.chat({
-            model: OLLAMA_MODEL,
-            messages: [{ role: 'user', content: 'respond with: ok' }],
-            options: { num_predict: 10 },
-        });
-        log(`LLM model ready: ${OLLAMA_MODEL}`);
     }
     catch (error) {
         logError(`Ollama not ready: ${error.message}`);
-        logError(`Run: ollama pull ${OLLAMA_EMBED_MODEL} && ollama pull ${OLLAMA_MODEL}`);
+        logError(`Run: ollama pull ${OLLAMA_EMBED_MODEL}`);
+        process.exit(1);
+    }
+    // Verify Claude AI
+    log('Checking Claude AI...');
+    try {
+        const health = await (0, claudeClient_1.checkClaudeHealth)();
+        if (!health.ok)
+            throw new Error(health.error || 'Claude health check failed');
+        log(`Claude AI model ready: ${(0, claudeClient_1.getClaudeModel)()}`);
+    }
+    catch (error) {
+        logError(`Claude AI not ready: ${error.message}`);
+        logError('Check ANTHROPIC_API_KEY in .env');
         process.exit(1);
     }
     // 1. Fetch PR info
@@ -1012,20 +1011,19 @@ async function run() {
     const allRules = [...ontologyResult.rules];
     console.log(`\n  Total applicable rules: ${allRules.length}`);
     // 5. Multi-pass LLM review
-    separator('6. AI REVIEW — MULTI-PASS (via Ollama)');
-    log(`Generating review with ${OLLAMA_MODEL} (3-pass)...`);
+    separator('6. AI REVIEW — MULTI-PASS (via Claude)');
+    log(`Generating review with ${(0, claudeClient_1.getClaudeModel)()} (3-pass)...`);
     // Split diff into implementation and test files
     const { implDiff, testDiff, implFiles, testFiles } = splitDiff(prDiff);
     console.log(`  Split: ${implFiles.length} implementation file(s), ${testFiles.length} test file(s)`);
     console.log(`  Impl diff: ${implDiff.length} chars (sending first 24000)`);
     console.log(`  Test diff: ${testDiff.length} chars (sending first 24000)\n`);
-    const client = getOllama();
     let allComments = [];
     const summaries = [];
     // --- Pass 1: Implementation code review ---
     separator('6a. PASS 1 — Implementation Review');
     if (implFiles.length > 0) {
-        const p1 = await runReviewPass(client, 'Pass 1: Implementation', pass1_systemPrompt(implFiles.length), pass1_userPrompt(prTitle, implDiff, implFiles, similarReviews, learningContext));
+        const p1 = await runReviewPass('Pass 1: Implementation', pass1_systemPrompt(implFiles.length), pass1_userPrompt(prTitle, implDiff, implFiles, similarReviews, learningContext));
         allComments.push(...(p1.comments || []));
         if (p1.summary)
             summaries.push(p1.summary);
@@ -1039,7 +1037,7 @@ async function run() {
     // --- Pass 2: Ontology rules compliance ---
     separator('6b. PASS 2 — Rules Compliance');
     if (implFiles.length > 0 && allRules.length > 0) {
-        const p2 = await runReviewPass(client, 'Pass 2: Rules Compliance', pass2_systemPrompt(), pass2_userPrompt(prTitle, implDiff, implFiles, allRules));
+        const p2 = await runReviewPass('Pass 2: Rules Compliance', pass2_systemPrompt(), pass2_userPrompt(prTitle, implDiff, implFiles, allRules));
         allComments.push(...(p2.comments || []));
         if (p2.summary && p2.summary !== 'No rule violations found')
             summaries.push(p2.summary);
@@ -1053,7 +1051,7 @@ async function run() {
     // --- Pass 3: Test file review ---
     separator('6c. PASS 3 — Test Review');
     if (testFiles.length > 0) {
-        const p3 = await runReviewPass(client, 'Pass 3: Tests', pass3_systemPrompt(testFiles.length), pass3_userPrompt(prTitle, testDiff, testFiles, implFiles));
+        const p3 = await runReviewPass('Pass 3: Tests', pass3_systemPrompt(testFiles.length), pass3_userPrompt(prTitle, testDiff, testFiles, implFiles));
         allComments.push(...(p3.comments || []));
         if (p3.summary)
             summaries.push(p3.summary);

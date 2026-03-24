@@ -3,7 +3,7 @@
  * Rule Classifier (LLM Fallback)
  *
  * When the deterministic ontology engine finds zero rules for a file,
- * this classifier uses the existing Ollama LLM to classify the code diff
+ * this classifier uses Claude AI to classify the code diff
  * into domain categories, then fetches exact rules for those domains.
  *
  * This is structured classification with a fixed taxonomy — NOT vector similarity.
@@ -12,20 +12,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.classifyDiffIntoDomains = classifyDiffIntoDomains;
 exports.classifyAndResolveRules = classifyAndResolveRules;
 exports.classifyUnmatchedFiles = classifyUnmatchedFiles;
-const ollama_1 = require("ollama");
+const claudeClient_1 = require("./claudeClient");
 const ontologyEngine_1 = require("./ontologyEngine");
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5:14b';
-let ollamaClient = null;
-function getClient() {
-    if (!ollamaClient) {
-        ollamaClient = new ollama_1.Ollama({ host: OLLAMA_HOST });
-    }
-    return ollamaClient;
-}
 // ---------------------------------------------------------------------------
 // Taxonomy formatting
 // ---------------------------------------------------------------------------
@@ -69,14 +57,11 @@ Respond with ONLY a JSON array of domain IDs that apply to this code change.
 If no domains apply, respond with [].
 Example: [3, 7, 12]`;
     try {
-        const client = getClient();
-        const response = await client.chat({
-            model: OLLAMA_MODEL,
-            messages: [{ role: 'user', content: prompt }],
-            options: { num_predict: 100, temperature: 0.1 },
-            format: 'json',
+        const text = await (0, claudeClient_1.claudeChat)(undefined, prompt, {
+            maxTokens: 100,
+            temperature: 0.1,
+            jsonMode: true,
         });
-        const text = response.message?.content?.trim() || '[]';
         // Parse the JSON array from the response
         const parsed = JSON.parse(text);
         // Handle both { "domains": [...] } and plain [...] formats

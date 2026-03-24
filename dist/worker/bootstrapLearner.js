@@ -27,10 +27,10 @@ const errorNotifier_1 = require("../src/utils/errorNotifier");
 const axios_1 = __importDefault(require("axios"));
 const ollama_1 = require("ollama");
 const gheTokenResolver_1 = require("../src/utils/gheTokenResolver");
+const claudeClient_1 = require("../src/services/claudeClient");
 const HEROKU_API_URL = process.env.HEROKU_API_URL;
 const WORKER_API_KEY = process.env.WORKER_API_KEY;
 const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen3-coder';
 const OLLAMA_EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
 function log(msg) {
     console.log(`[${new Date().toISOString()}] [BootstrapLearner] ${msg}`);
@@ -421,7 +421,6 @@ function deduplicateComments(review) {
 // Lesson generation LLM prompt
 // ---------------------------------------------------------------------------
 async function generateLessonsViaLLM(aiReview, peerComments, prDiff) {
-    const client = getOllama();
     const peerCount = peerComments.length;
     const aiCount = (aiReview.comments || []).length;
     const systemPrompt = `You are an expert code review analyst. You MUST compare an AI code review against actual human peer review comments on the same PR. You have the PR diff for reference. Respond with valid JSON ONLY.
@@ -490,16 +489,12 @@ ${peerLines || '(no peer comments)'}
 
 For EACH peer comment above, determine: did the AI catch this issue? If not, add it to missed_issues with the exact file_path and a direct quote. Then check each AI comment: was it actually useful or too generic? Finally, derive specific reusable patterns (mentioning actual technologies like LWC, Java, Apex, etc). Respond with JSON.`;
     try {
-        const response = await client.chat({
-            model: OLLAMA_MODEL,
-            messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: userPrompt },
-            ],
-            format: 'json',
-            options: { temperature: 0.3, num_predict: 4096, num_ctx: 32768 },
+        const raw = await (0, claudeClient_1.claudeChat)(systemPrompt, userPrompt, {
+            temperature: 0.3,
+            maxTokens: 4096,
+            jsonMode: true,
         });
-        const parsed = JSON.parse(response.message.content.trim());
+        const parsed = JSON.parse(raw);
         return {
             missed_issues: Array.isArray(parsed.missed_issues) ? parsed.missed_issues : [],
             wrong_calls: Array.isArray(parsed.wrong_calls) ? parsed.wrong_calls : [],
@@ -584,22 +579,17 @@ async function processPR(pr) {
         // 4c. Fetch learning context
         const learningContext = await fetchLearningContext(diffEmbedding);
         // 5. Generate AI review via LLM
-        log('  [6/9] Generating AI review via Ollama...');
-        const client = getOllama();
+        log('  [6/9] Generating AI review via Claude...');
         const systemPrompt = buildSystemPrompt(changedFiles.length);
         const userPrompt = buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext, cappedDocs);
         let review;
         try {
-            const response = await client.chat({
-                model: OLLAMA_MODEL,
-                messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: userPrompt },
-                ],
-                format: 'json',
-                options: { temperature: 0.3, num_predict: 8192, num_ctx: 32768 },
+            const raw = await (0, claudeClient_1.claudeChat)(systemPrompt, userPrompt, {
+                temperature: 0.3,
+                maxTokens: 8192,
+                jsonMode: true,
             });
-            review = deduplicateComments(parseReviewResponse(response.message.content.trim()));
+            review = deduplicateComments(parseReviewResponse(raw));
             log(`         Generated ${review.comments?.length || 0} review comments`);
         }
         catch (error) {
@@ -675,22 +665,29 @@ async function run() {
     if (force) {
         log('⚠️  Force mode: re-processing PRs that already have lessons');
     }
-    // Verify Ollama
-    log('Verifying Ollama models...');
+    // Verify Ollama (embeddings only)
+    log('Verifying Ollama embedding model...');
     try {
         const client = getOllama();
         await client.embed({ model: OLLAMA_EMBED_MODEL, input: 'test' });
         log(`  ✓ Embedding model ready: ${OLLAMA_EMBED_MODEL}`);
-        await client.chat({
-            model: OLLAMA_MODEL,
-            messages: [{ role: 'user', content: 'respond with: ok' }],
-            options: { num_predict: 10 },
-        });
-        log(`  ✓ LLM model ready: ${OLLAMA_MODEL}`);
     }
     catch (error) {
         logError(`Ollama not ready: ${error.message}`);
-        logError(`Run: ollama pull ${OLLAMA_EMBED_MODEL} && ollama pull ${OLLAMA_MODEL}`);
+        logError(`Run: ollama pull ${OLLAMA_EMBED_MODEL}`);
+        process.exit(1);
+    }
+    // Verify Claude AI
+    log('Verifying Claude AI...');
+    try {
+        const health = await (0, claudeClient_1.checkClaudeHealth)();
+        if (!health.ok)
+            throw new Error(health.error || 'Claude health check failed');
+        log(`  ✓ Claude AI model ready: ${(0, claudeClient_1.getClaudeModel)()}`);
+    }
+    catch (error) {
+        logError(`Claude AI not ready: ${error.message}`);
+        logError('Check ANTHROPIC_API_KEY in .env');
         process.exit(1);
     }
     // Fetch closed PRs to process

@@ -27,9 +27,16 @@ A Slack bot that monitors team channels for GitHub Enterprise PR links and sends
                         │  Local Worker    │────▶│ GitHub Enterprise│
                         │  (Your Laptop)   │     │ (VPN Required)   │
                         └──────────────────┘     └─────────────────┘
+                                 │
+                          ┌──────┴──────┐
+                          ▼             ▼
+                  ┌──────────────┐ ┌──────────────┐
+                  │  Claude AI   │ │  Ollama      │
+                  │  (Chat/LLM)  │ │  (Embeddings)│
+                  └──────────────┘ └──────────────┘
 ```
 
-The local worker runs on your VPN-connected laptop to check PR status from internal GitHub Enterprise servers, then reports the status back to Heroku.
+The local worker runs on your VPN-connected laptop to check PR status from internal GitHub Enterprise servers, then reports the status back to Heroku. AI reviews are generated via **Claude AI API** (Anthropic), while embeddings are generated locally via **Ollama** (nomic-embed-text).
 
 ## Prerequisites
 
@@ -38,6 +45,8 @@ The local worker runs on your VPN-connected laptop to check PR status from inter
 - Slack workspace with admin access
 - GitHub Enterprise Personal Access Token
 - VPN access to GitHub Enterprise (for local worker)
+- **Anthropic API Key** — for Claude AI chat/LLM (get one at [console.anthropic.com](https://console.anthropic.com))
+- **Ollama** — running locally for embeddings (`ollama pull nomic-embed-text`)
 
 ## Setup
 
@@ -167,6 +176,14 @@ The local worker runs on your laptop (behind VPN) to check PR status from intern
    GHE_TOKENS={"gitcore.soma.salesforce.com":"token-for-gitcore","git.soma.salesforce.com":"token-for-git"}
    HEROKU_API_URL=https://your-app-name.herokuapp.com
    WORKER_API_KEY=<same-key-as-heroku>
+
+   # Claude AI (required for LLM chat/review generation)
+   ANTHROPIC_API_KEY=sk-ant-...
+   CLAUDE_MODEL=claude-sonnet-4-20250514
+
+   # Ollama (required for embeddings only)
+   OLLAMA_HOST=http://localhost:11434
+   OLLAMA_EMBED_MODEL=nomic-embed-text
    ```
 
 4. Get the worker API key from Heroku:
@@ -250,9 +267,11 @@ launchctl list | grep pr-worker
 │   │   ├── reminder.ts           # Reminder processing
 │   │   ├── channelPoller.ts      # Channel polling for PRs
 │   │   ├── channelAccessControl.ts # Channel allowlist enforcement
+│   │   ├── claudeClient.ts       # Claude AI (Anthropic) shared client for all LLM chat calls
+│   │   ├── reviewGenerator.ts    # AI review generation via Claude
 │   │   ├── ontologyEngine.ts     # Deterministic rule resolver (file paths + code patterns → exact rules)
-│   │   ├── ruleClassifier.ts     # LLM-as-classifier fallback for edge cases
-│   │   ├── embeddingService.ts   # Ollama embedding generation
+│   │   ├── ruleClassifier.ts     # LLM-as-classifier fallback (via Claude) for edge cases
+│   │   ├── embeddingService.ts   # Ollama embedding generation (nomic-embed-text)
 │   │   └── vectorSearch.ts       # Vector similarity search (legacy, retained for review search)
 │   ├── db/
 │   │   ├── client.ts             # PostgreSQL client + queries
@@ -265,7 +284,13 @@ launchctl list | grep pr-worker
 ├── scripts/
 │   └── checkReminders.ts         # Scheduled job (Heroku Scheduler)
 ├── worker/
-│   └── localPRChecker.ts         # Local VPN worker script
+│   ├── localPRChecker.ts         # Local VPN worker (status checks + lesson extraction)
+│   ├── prAnalyzer.ts             # AI PR analysis worker (multi-pass review via Claude)
+│   ├── testReview.ts             # Dry-run AI review for a single PR (no Slack posting)
+│   ├── bootstrapLearner.ts       # Batch lesson extraction for closed PRs
+│   ├── reviewLearner.ts          # Continuous lesson extraction worker
+│   ├── embeddingPipeline.ts      # Embedding generation pipeline (Ollama)
+│   └── docIngester.ts            # Documentation ingestion + embedding
 ├── package.json
 ├── tsconfig.json
 ├── Procfile
@@ -295,7 +320,7 @@ All `/api/*` endpoints require the `X-Worker-API-Key` header.
 The bot uses a **hybrid ontology + LLM classifier** for deterministic code rule enforcement during Pass 2 (compliance review):
 
 1. **Deterministic matching** — File paths are matched against `domain_file_mappings` (glob patterns) to find applicable domains, then rules are fetched for those domains (with ancestor inheritance via recursive CTE). Code patterns in the diff are also matched against `rule_matchers`.
-2. **LLM classifier fallback** — For files with no deterministic matches, the local Ollama LLM classifies the diff into domain categories using the full taxonomy as context, then fetches exact rules for those domains.
+2. **LLM classifier fallback** — For files with no deterministic matches, **Claude AI** classifies the diff into domain categories using the full taxonomy as context, then fetches exact rules for those domains.
 
 To seed initial rules, run the migrations:
 ```bash
@@ -321,6 +346,14 @@ curl -X POST "$HEROKU_API_URL/api/ontology/rules" \
 | `npm run check-reminders` | Run reminder check (for scheduler) |
 | `npm run worker` | Run local VPN worker once |
 | `npm run worker:watch` | Run local VPN worker continuously |
+| `npm run test-review -- <PR_URL>` | Dry-run AI review for a single PR (prints to console, no Slack posting) |
+| `npm run test-review -- <PR_URL> --no-mention` | Same as above but suppresses reviewer @mentions |
+| `npm run test-review -- <PR_URL> --post --channel=CHANNEL_ID` | Run AI review and post result to Slack |
+| `npm run bootstrap-learn` | Batch process closed PRs through the full RAG + lesson pipeline (default limit: 50) |
+| `npm run bootstrap-learn -- --limit 10` | Same as above with custom limit |
+| `npm run bootstrap-learn -- --force` | Re-process PRs that already have lessons |
+| `npm run review-learn` | Run lesson extraction once for PRs needing lessons |
+| `npm run review-learn -- --watch` | Run lesson extraction continuously (every 10 minutes) |
 
 ## Environment Variables
 
@@ -352,6 +385,10 @@ heroku config:set GHE_TOKENS='{"gitcore.soma.salesforce.com":"ghp_abc","git.soma
 | `GHE_TOKEN` | Single GHE token (fallback for hosts not in `GHE_TOKENS`) |
 | `HEROKU_API_URL` | URL of your Heroku app |
 | `WORKER_API_KEY` | Same API key as configured on Heroku |
+| `ANTHROPIC_API_KEY` | Anthropic API key for Claude AI chat/LLM |
+| `CLAUDE_MODEL` | Claude model to use (default: `claude-sonnet-4-20250514`) |
+| `OLLAMA_HOST` | Ollama server URL for embeddings (default: `http://localhost:11434`) |
+| `OLLAMA_EMBED_MODEL` | Ollama embedding model (default: `nomic-embed-text`) |
 
 ## Channel Access Control
 
