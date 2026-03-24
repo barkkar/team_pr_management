@@ -43,6 +43,7 @@
   },
   "homepage": "https://github.com/barkkar/team_pr_management#readme",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.80.0",
     "@slack/bolt": "^4.6.0",
     "axios": "^1.13.4",
     "dotenv": "^17.2.3",

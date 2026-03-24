@@ -2,35 +2,19 @@
  * Rule Classifier (LLM Fallback)
  *
  * When the deterministic ontology engine finds zero rules for a file,
- * this classifier uses the existing Ollama LLM to classify the code diff
+ * this classifier uses Claude AI to classify the code diff
  * into domain categories, then fetches exact rules for those domains.
  *
  * This is structured classification with a fixed taxonomy — NOT vector similarity.
  */
 
-import { Ollama } from 'ollama';
+import { claudeChat } from './claudeClient';
 import {
   getDomainTaxonomy,
   getRulesForDomains,
   DomainTaxonomy,
   ResolvedRule,
 } from './ontologyEngine';
-
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-
-const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5:14b';
-
-let ollamaClient: Ollama | null = null;
-
-function getClient(): Ollama {
-  if (!ollamaClient) {
-    ollamaClient = new Ollama({ host: OLLAMA_HOST });
-  }
-  return ollamaClient;
-}
 
 // ---------------------------------------------------------------------------
 // Taxonomy formatting
@@ -83,15 +67,11 @@ If no domains apply, respond with [].
 Example: [3, 7, 12]`;
 
   try {
-    const client = getClient();
-    const response = await client.chat({
-      model: OLLAMA_MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      options: { num_predict: 100, temperature: 0.1 },
-      format: 'json',
+    const text = await claudeChat(undefined, prompt, {
+      maxTokens: 100,
+      temperature: 0.1,
+      jsonMode: true,
     });
-
-    const text = response.message?.content?.trim() || '[]';
     // Parse the JSON array from the response
     const parsed = JSON.parse(text);
 

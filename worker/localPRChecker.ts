@@ -19,10 +19,10 @@
 import 'dotenv/config';
 import { notifyError } from '../src/utils/errorNotifier';
 import axios from 'axios';
-import { Ollama } from 'ollama';
 import { spawn } from 'child_process';
 import * as path from 'path';
 import { requireTokenForHost } from '../src/utils/gheTokenResolver';
+import { claudeChat } from '../src/services/claudeClient';
 
 function log(message: string): void {
   console.log(`[${new Date().toISOString()}] ${message}`);
@@ -36,15 +36,7 @@ function logError(message: string, severity: 'warn' | 'error' | 'fatal' = 'error
 // Configuration
 const HEROKU_API_URL = process.env.HEROKU_API_URL;
 const WORKER_API_KEY = process.env.WORKER_API_KEY;
-const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen3-coder';
 const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
-
-let ollama: Ollama | null = null;
-function getOllama(): Ollama {
-  if (!ollama) ollama = new Ollama({ host: OLLAMA_HOST });
-  return ollama;
-}
 
 interface PendingPR {
   id: number;
@@ -223,8 +215,6 @@ async function fetchPeerComments(
 }
 
 async function generateLessons(aiReview: any, peerComments: any[]): Promise<any> {
-  const client = getOllama();
-
   const peerCount = peerComments.length;
   const aiCount = (aiReview.comments || []).length;
 
@@ -294,17 +284,13 @@ ${peerLines || '(no peer comments)'}
 For EACH peer comment above, determine: did the AI catch this issue? If not, add it to missed_issues with the exact file_path and a direct quote. Then check each AI comment: was it actually useful or too generic? Finally, derive specific reusable patterns. Respond with JSON.`;
 
   try {
-    const response = await client.chat({
-      model: OLLAMA_MODEL,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      format: 'json',
-      options: { temperature: 0.3, num_predict: 4096, num_ctx: 32768 },
+    const raw = await claudeChat(systemPrompt, userPrompt, {
+      temperature: 0.3,
+      maxTokens: 4096,
+      jsonMode: true,
     });
 
-    const parsed = JSON.parse(response.message.content.trim());
+    const parsed = JSON.parse(raw);
     return {
       missed_issues: Array.isArray(parsed.missed_issues) ? parsed.missed_issues : [],
       wrong_calls: Array.isArray(parsed.wrong_calls) ? parsed.wrong_calls : [],

@@ -1,26 +1,14 @@
 /**
  * LLM Review Generator
  *
- * Uses Ollama to generate AI-powered code review comments based on:
+ * Uses Claude AI to generate AI-powered code review comments based on:
  * - PR diff content
  * - Similar past review comments (RAG)
  * - Codebase knowledge (RAG)
  */
 
-import { Ollama } from 'ollama';
+import { claudeChat, checkClaudeHealth } from './claudeClient';
 import { SimilarReview, SimilarCode } from './vectorSearch';
-
-const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen3-coder';
-
-let ollamaClient: Ollama | null = null;
-
-function getClient(): Ollama {
-  if (!ollamaClient) {
-    ollamaClient = new Ollama({ host: OLLAMA_HOST });
-  }
-  return ollamaClient;
-}
 
 export interface ReviewComment {
   file_path: string | null;
@@ -110,7 +98,7 @@ function buildUserPrompt(
 }
 
 /**
- * Generate review comments for a PR using Ollama LLM.
+ * Generate review comments for a PR using Claude AI.
  */
 export async function generateReview(
   prTitle: string,
@@ -119,26 +107,15 @@ export async function generateReview(
   similarReviews: SimilarReview[],
   similarCode: SimilarCode[],
 ): Promise<GeneratedReview> {
-  const client = getClient();
-
   const systemPrompt = buildSystemPrompt();
   const userPrompt = buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode);
 
   try {
-    const response = await client.chat({
-      model: OLLAMA_MODEL,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      options: {
-        temperature: 0.3,
-        num_predict: 4096,
-        num_ctx: 32768,
-      },
+    const content = await claudeChat(systemPrompt, userPrompt, {
+      temperature: 0.3,
+      maxTokens: 4096,
+      jsonMode: true,
     });
-
-    const content = response.message.content.trim();
 
     // Try to parse JSON from the response
     const parsed = parseReviewResponse(content);
@@ -217,18 +194,8 @@ function validateReview(parsed: any): GeneratedReview {
 }
 
 /**
- * Check if Ollama LLM model is available.
+ * Check if Claude AI is available.
  */
 export async function checkLLMHealth(): Promise<{ ok: boolean; error?: string }> {
-  try {
-    const client = getClient();
-    await client.chat({
-      model: OLLAMA_MODEL,
-      messages: [{ role: 'user', content: 'respond with: ok' }],
-      options: { num_predict: 10 },
-    });
-    return { ok: true };
-  } catch (error: any) {
-    return { ok: false, error: error.message };
-  }
+  return checkClaudeHealth();
 }
