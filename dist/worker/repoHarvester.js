@@ -17,6 +17,7 @@ require("dotenv/config");
 const errorNotifier_1 = require("../src/utils/errorNotifier");
 const axios_1 = __importDefault(require("axios"));
 const gheTokenResolver_1 = require("../src/utils/gheTokenResolver");
+const minimatch_1 = require("minimatch");
 const HEROKU_API_URL = process.env.HEROKU_API_URL;
 const WORKER_API_KEY = process.env.WORKER_API_KEY;
 const MAX_FILE_SIZE = 50000; // Skip files larger than 50KB
@@ -112,6 +113,63 @@ async function fetchFileContent(hostname, org, repo, sha) {
     catch {
         return null;
     }
+}
+let domainMappingsCache = null;
+async function fetchDomainMappings() {
+    if (domainMappingsCache) {
+        return domainMappingsCache;
+    }
+    try {
+        const response = await axios_1.default.get(`${HEROKU_API_URL}/api/domain-file-mappings`, {
+            headers: { 'X-Worker-API-Key': WORKER_API_KEY },
+            timeout: 30000,
+        });
+        const mappings = response.data.mappings || [];
+        domainMappingsCache = mappings;
+        return mappings;
+    }
+    catch (error) {
+        logError(`Failed to fetch domain mappings: ${error.message}`, 'warn');
+        return [];
+    }
+}
+async function computeDomainForFile(filePath) {
+    const mappings = await fetchDomainMappings();
+    // Try each mapping in priority order (highest priority first)
+    for (const mapping of mappings) {
+        if ((0, minimatch_1.minimatch)(filePath, mapping.file_pattern)) {
+            return mapping.domain_id;
+        }
+    }
+    return null; // No domain match
+}
+function extractCodeElementInfo(content, filePath) {
+    // Simple heuristics to extract element type and name
+    // Test files
+    if (/Test\.(java|ts|js|py)$/.test(filePath) || /\.test\.(ts|js)$/.test(filePath) || /\.spec\.(ts|js)$/.test(filePath)) {
+        const match = content.match(/(?:class|function|def)\s+(\w+Test)/);
+        return { type: 'test', name: match?.[1] || null };
+    }
+    // Java/TypeScript classes
+    const classMatch = content.match(/(?:public|export)?\s*class\s+(\w+)/);
+    if (classMatch) {
+        return { type: 'class', name: classMatch[1] };
+    }
+    // Java/TypeScript interfaces
+    const interfaceMatch = content.match(/(?:export)?\s*interface\s+(\w+)/);
+    if (interfaceMatch) {
+        return { type: 'interface', name: interfaceMatch[1] };
+    }
+    // Functions (JavaScript/TypeScript/Python)
+    const functionMatch = content.match(/(?:export\s+)?(?:function|def)\s+(\w+)/);
+    if (functionMatch) {
+        return { type: 'function', name: functionMatch[1] };
+    }
+    // Configuration files
+    if (/\.(config|conf|yaml|yml|json)$/.test(filePath)) {
+        return { type: 'config', name: null };
+    }
+    return { type: 'unknown', name: null };
 }
 // ---------------------------------------------------------------------------
 // Chunking
@@ -213,6 +271,9 @@ async function harvestRepo(hostname, org, repo) {
             const content = await fetchFileContent(hostname, org, repo, file.sha);
             if (!content)
                 continue;
+            // Compute domain and code element metadata
+            const domainId = await computeDomainForFile(file.path);
+            const { type: elementType, name: elementName } = extractCodeElementInfo(content, file.path);
             const chunks = chunkContent(file.path, content);
             for (const { chunk, index } of chunks) {
                 batchChunks.push({
@@ -222,6 +283,9 @@ async function harvestRepo(hostname, org, repo) {
                     content_chunk: chunk,
                     chunk_index: index,
                     last_commit_sha: latestSha,
+                    domain_id: domainId,
+                    code_element_type: elementType,
+                    code_element_name: elementName,
                 });
             }
             // Small rate limit between file fetches

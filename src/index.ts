@@ -14,6 +14,7 @@ import {
   insertOrUpdateFeedback, getRecentFeedback,
   insertReviewLessons, getRecentLessons, getSimilarLessons, getPRsNeedingLessonExtraction,
   searchSimilarDocs, searchDocsByTitlePattern, upsertDocumentChunks, listDocuments, deleteDocument,
+  fetchDomainScopedCodeExamples,
   pool,
 } from './db/client';
 import {
@@ -490,6 +491,25 @@ async function main(): Promise<void> {
         return;
       }
 
+      // Get domain file mappings for repo harvester
+      if (url === '/api/domain-file-mappings' && method === 'GET') {
+        if (!validateApiKey(req)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+
+        const mappings = await pool.query(`
+          SELECT domain_id, file_pattern, priority
+          FROM domain_file_mappings
+          ORDER BY priority DESC
+        `);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ mappings: mappings.rows }));
+        return;
+      }
+
       // Receive harvested PR data (reviews + files)
       if (url === '/api/harvest-data' && method === 'POST') {
         if (!validateApiKey(req)) {
@@ -666,6 +686,30 @@ async function main(): Promise<void> {
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ chunks }));
+        return;
+      }
+
+      // Domain-scoped code examples endpoint (for testing)
+      if (url === '/api/domain-code-examples' && method === 'POST') {
+        if (!validateApiKey(req)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+
+        const body = await parseJsonBody(req);
+        const examples = await fetchDomainScopedCodeExamples({
+          domainIds: body.domain_ids || [],
+          changedFiles: body.changed_files || [],
+          org: body.org,
+          repo: body.repo,
+          elementTypes: body.element_types,
+          limit: body.limit || 5,
+          maxPerFile: body.max_per_file || 1,
+        });
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ examples, count: examples.length }));
         return;
       }
 

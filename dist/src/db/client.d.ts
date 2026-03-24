@@ -140,6 +140,10 @@ export interface RepoKnowledge {
     content_chunk: string;
     chunk_index: number;
     last_commit_sha: string | null;
+    embedding?: number[];
+    domain_id?: number | null;
+    code_element_type?: string | null;
+    code_element_name?: string | null;
     created_at: Date;
     updated_at: Date;
 }
@@ -150,6 +154,11 @@ export interface EmbeddingRecord {
     content_text: string;
     metadata: Record<string, any>;
     created_at: Date;
+}
+export interface CodeExample extends RepoKnowledge {
+    domain_name: string;
+    domain_display_name: string;
+    similarity?: number;
 }
 export declare function insertPRReview(review: Omit<PRReview, 'id' | 'created_at'>): Promise<PRReview | null>;
 export declare function getPRReviewCount(prUrl: string): Promise<number>;
@@ -206,5 +215,6 @@ export declare function upsertDocumentChunks(sourceUrl: string, title: string, d
 }[]): Promise<number>;
 export declare function listDocuments(): Promise<any[]>;
 export declare function deleteDocument(sourceUrl: string): Promise<number>;
+export { fetchDomainScopedCodeExamples, formatCodeExamplesForPrompt } from '../services/codeContextProvider';
 export { pool };
 //# sourceMappingURL=client.d.ts.map

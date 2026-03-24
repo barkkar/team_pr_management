@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.pool = void 0;
+exports.pool = exports.formatCodeExamplesForPrompt = exports.fetchDomainScopedCodeExamples = void 0;
 exports.insertTrackedPR = insertTrackedPR;
 exports.getPendingReminders = getPendingReminders;
 exports.markReminderSent = markReminderSent;
@@ -313,11 +313,28 @@ async function upsertRepoHarvestState(org, repo, sha) {
 // --- Repo Knowledge ---
 async function upsertRepoKnowledge(chunk) {
     const result = await pool.query(`
-    INSERT INTO repo_knowledge (org, repo, file_path, content_chunk, chunk_index, last_commit_sha)
-    VALUES ($1, $2, $3, $4, $5, $6)
-    ON CONFLICT DO NOTHING
+    INSERT INTO repo_knowledge (org, repo, file_path, content_chunk, chunk_index, last_commit_sha, domain_id, code_element_type, code_element_name)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    ON CONFLICT (org, repo, file_path, chunk_index)
+    DO UPDATE SET
+      content_chunk = EXCLUDED.content_chunk,
+      last_commit_sha = EXCLUDED.last_commit_sha,
+      domain_id = EXCLUDED.domain_id,
+      code_element_type = EXCLUDED.code_element_type,
+      code_element_name = EXCLUDED.code_element_name,
+      updated_at = NOW()
     RETURNING id
-  `, [chunk.org, chunk.repo, chunk.file_path, chunk.content_chunk, chunk.chunk_index, chunk.last_commit_sha]);
+  `, [
+        chunk.org,
+        chunk.repo,
+        chunk.file_path,
+        chunk.content_chunk,
+        chunk.chunk_index,
+        chunk.last_commit_sha,
+        chunk.domain_id || null,
+        chunk.code_element_type || null,
+        chunk.code_element_name || null,
+    ]);
     return result.rows[0]?.id || 0;
 }
 async function deleteRepoKnowledgeForFile(org, repo, filePath) {
@@ -569,4 +586,8 @@ async function deleteDocument(sourceUrl) {
     const result = await pool.query('DELETE FROM team_documents WHERE source_url = $1', [sourceUrl]);
     return result.rowCount || 0;
 }
+// Re-export code context provider functions
+var codeContextProvider_1 = require("../services/codeContextProvider");
+Object.defineProperty(exports, "fetchDomainScopedCodeExamples", { enumerable: true, get: function () { return codeContextProvider_1.fetchDomainScopedCodeExamples; } });
+Object.defineProperty(exports, "formatCodeExamplesForPrompt", { enumerable: true, get: function () { return codeContextProvider_1.formatCodeExamplesForPrompt; } });
 //# sourceMappingURL=client.js.map

@@ -26,6 +26,7 @@ const axios_1 = __importDefault(require("axios"));
 const ollama_1 = require("ollama");
 const gheTokenResolver_1 = require("../src/utils/gheTokenResolver");
 const claudeClient_1 = require("../src/services/claudeClient");
+const client_1 = require("../src/db/client");
 const HEROKU_API_URL = process.env.HEROKU_API_URL;
 const WORKER_API_KEY = process.env.WORKER_API_KEY;
 const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
@@ -411,7 +412,7 @@ Rules:
 - You MUST return at least ${minComments} comments spread across different files
 - For each file: look for missing error handling, null/undefined access, security issues, logic bugs, race conditions, missing edge cases`;
 }
-function pass1_userPrompt(prTitle, implDiff, implFiles, similarReviews, learningContext) {
+function pass1_userPrompt(prTitle, implDiff, implFiles, similarReviews, learningContext, codeExamples) {
     const parts = [];
     parts.push(`Review these IMPLEMENTATION files from PR: "${prTitle}"`);
     parts.push(`\nFiles: ${implFiles.join(', ')}`);
@@ -420,6 +421,9 @@ function pass1_userPrompt(prTitle, implDiff, implFiles, similarReviews, learning
         for (const r of similarReviews.slice(0, 5)) {
             parts.push(`- ${r.file_path || 'general'}: "${(r.comment_body || '').substring(0, 300)}"`);
         }
+    }
+    if (codeExamples.length > 0) {
+        parts.push((0, client_1.formatCodeExamplesForPrompt)(codeExamples));
     }
     parts.push(buildLearningContextBlock(learningContext));
     parts.push(`\nDiff:\n${implDiff.substring(0, 28000)}`);
@@ -452,7 +456,7 @@ Rules:
 - Only comment on genuine violations — do not force-fit unrelated rules
 - If no rules are violated, return {"summary": "No rule violations found", "comments": []}`;
 }
-function pass2_userPrompt(prTitle, implDiff, implFiles, rules) {
+function pass2_userPrompt(prTitle, implDiff, implFiles, rules, codeExamples) {
     const parts = [];
     parts.push(`Check this PR against coding rules: "${prTitle}"`);
     parts.push(`\nFiles: ${implFiles.join(', ')}`);
@@ -464,6 +468,16 @@ function pass2_userPrompt(prTitle, implDiff, implFiles, rules) {
         parts.push(`--- [${rule.title}] (${rule.rule_key}) ${severityTag} domain:${domain}${matchedVia} ---`);
         parts.push(rule.description.substring(0, 1000));
         parts.push('---');
+    }
+    if (codeExamples.length > 0) {
+        parts.push('\n\nCOMPLIANCE EXAMPLES showing correct patterns:');
+        for (const ex of codeExamples.slice(0, 3)) {
+            const elementInfo = ex.code_element_name
+                ? `${ex.code_element_type}: ${ex.code_element_name}`
+                : ex.code_element_type || 'code';
+            parts.push(`\n--- ${ex.file_path} (${ex.domain_display_name || ex.domain_name}) [${elementInfo}] ---`);
+            parts.push(ex.content_chunk.substring(0, 300));
+        }
     }
     parts.push(`\nDiff:\n${implDiff.substring(0, 20000)}`);
     parts.push(JSON_SCHEMA);
@@ -498,11 +512,22 @@ Rules:
 - You MUST return at least ${minComments} comments across different test files
 - Cross-reference implementation files to find untested branches and error handling`;
 }
-function pass3_userPrompt(prTitle, testDiff, testFiles, implFiles) {
+function pass3_userPrompt(prTitle, testDiff, testFiles, implFiles, testCodeExamples) {
     const parts = [];
     parts.push(`Review test files for PR: "${prTitle}"`);
     parts.push(`\nTest files: ${testFiles.join(', ')}`);
     parts.push(`\nImplementation files being tested: ${implFiles.join(', ')}`);
+    if (testCodeExamples.length > 0) {
+        parts.push('\n\nTEST PATTERN EXAMPLES from this codebase:');
+        for (const ex of testCodeExamples) {
+            const elementInfo = ex.code_element_name
+                ? `${ex.code_element_type}: ${ex.code_element_name}`
+                : ex.code_element_type || 'code';
+            parts.push(`\n--- ${ex.file_path} (${ex.domain_display_name || ex.domain_name}) [${elementInfo}] ---`);
+            parts.push(ex.content_chunk.substring(0, 400));
+        }
+        parts.push('\nFollow these test patterns and conventions.');
+    }
     parts.push(`\nTest diff:\n${testDiff.substring(0, 28000)}`);
     parts.push(JSON_SCHEMA);
     return parts.join('\n');
@@ -690,15 +715,7 @@ async function analyzePR(prUrl, channelId, messageTs) {
     catch (error) {
         log(`  No similar reviews found: ${error.message}`);
     }
-    log('  Searching for related codebase context...');
-    let similarCode = [];
-    try {
-        similarCode = await fetchSimilarCode(diffEmbedding, 5);
-        log(`  Found ${similarCode.length} related code chunks`);
-    }
-    catch (error) {
-        log(`  No related code found: ${error.message}`);
-    }
+    // Vector search removed - replaced by domain-scoped code examples below
     // 3b. Fetch full file content for context-aware doc matching
     log('  Fetching full file content for doc matching...');
     const headSha = prDetails.head?.sha || '';
@@ -736,7 +753,47 @@ async function analyzePR(prUrl, channelId, messageTs) {
     // Combine all resolved rules
     const allRules = [...ontologyResult.rules];
     log(`  Total applicable rules: ${allRules.length}`);
-    // 3e. Fetch learning context (lessons + feedback from similar past reviews)
+    // 3e. Fetch domain-scoped code examples for review context
+    log('  Fetching code examples from related domains...');
+    let implCodeExamples = [];
+    let testCodeExamples = [];
+    // Collect all domain IDs (deterministic + LLM classified)
+    const allDomainIds = [
+        ...new Set([
+            ...ontologyResult.rules.map((r) => r.domain_id),
+            ...llmClassifiedDomainIds,
+        ]),
+    ];
+    if (allDomainIds.length > 0) {
+        try {
+            // Fetch implementation examples (exclude test element types)
+            implCodeExamples = await (0, client_1.fetchDomainScopedCodeExamples)({
+                domainIds: allDomainIds,
+                changedFiles: changedFiles,
+                org,
+                repo,
+                elementTypes: ['class', 'function', 'interface', 'config'], // exclude 'test'
+                limit: 5,
+                maxPerFile: 1,
+            });
+            log(`  Found ${implCodeExamples.length} implementation code examples`);
+            // Fetch test examples separately
+            testCodeExamples = await (0, client_1.fetchDomainScopedCodeExamples)({
+                domainIds: allDomainIds,
+                changedFiles: changedFiles,
+                org,
+                repo,
+                elementTypes: ['test'],
+                limit: 3,
+                maxPerFile: 1,
+            });
+            log(`  Found ${testCodeExamples.length} test code examples`);
+        }
+        catch (error) {
+            log(`  Error fetching code examples: ${error.message}`);
+        }
+    }
+    // 3f. Fetch learning context (lessons + feedback from similar past reviews)
     log('  Fetching relevant learning context...');
     const learningContext = await fetchLearningContext(diffEmbedding);
     log(`  Got ${learningContext.lessons.length} relevant lesson(s), ${learningContext.feedback.length} feedback item(s)`);
@@ -748,21 +805,21 @@ async function analyzePR(prUrl, channelId, messageTs) {
     const summaries = [];
     // Pass 1: Implementation code review
     if (implFiles.length > 0) {
-        const p1 = await runReviewPass('Pass 1: Implementation', pass1_systemPrompt(implFiles.length), pass1_userPrompt(prTitle, implDiff, implFiles, similarReviews, learningContext));
+        const p1 = await runReviewPass('Pass 1: Implementation', pass1_systemPrompt(implFiles.length), pass1_userPrompt(prTitle, implDiff, implFiles, similarReviews, learningContext, implCodeExamples));
         allComments.push(...(p1.comments || []));
         if (p1.summary)
             summaries.push(p1.summary);
     }
     // Pass 2: Ontology rules compliance (replaces vector-based doc retrieval)
     if (implFiles.length > 0 && allRules.length > 0) {
-        const p2 = await runReviewPass('Pass 2: Rules Compliance', pass2_systemPrompt(), pass2_userPrompt(prTitle, implDiff, implFiles, allRules));
+        const p2 = await runReviewPass('Pass 2: Rules Compliance', pass2_systemPrompt(), pass2_userPrompt(prTitle, implDiff, implFiles, allRules, implCodeExamples));
         allComments.push(...(p2.comments || []));
         if (p2.summary && p2.summary !== 'No rule violations found')
             summaries.push(p2.summary);
     }
     // Pass 3: Test review
     if (testFiles.length > 0) {
-        const p3 = await runReviewPass('Pass 3: Tests', pass3_systemPrompt(testFiles.length), pass3_userPrompt(prTitle, testDiff, testFiles, implFiles));
+        const p3 = await runReviewPass('Pass 3: Tests', pass3_systemPrompt(testFiles.length), pass3_userPrompt(prTitle, testDiff, testFiles, implFiles, testCodeExamples));
         allComments.push(...(p3.comments || []));
         if (p3.summary)
             summaries.push(p3.summary);

@@ -13,6 +13,7 @@ import 'dotenv/config';
 import { notifyError } from '../src/utils/errorNotifier';
 import axios from 'axios';
 import { requireTokenForHost } from '../src/utils/gheTokenResolver';
+import { minimatch } from 'minimatch';
 
 const HEROKU_API_URL = process.env.HEROKU_API_URL;
 const WORKER_API_KEY = process.env.WORKER_API_KEY;
@@ -143,6 +144,88 @@ async function fetchFileContent(hostname: string, org: string, repo: string, sha
 }
 
 // ---------------------------------------------------------------------------
+// Domain and Code Element Metadata
+// ---------------------------------------------------------------------------
+
+interface DomainMapping {
+  domain_id: number;
+  file_pattern: string;
+  priority: number;
+}
+
+let domainMappingsCache: DomainMapping[] | null = null;
+
+async function fetchDomainMappings(): Promise<DomainMapping[]> {
+  if (domainMappingsCache) {
+    return domainMappingsCache;
+  }
+
+  try {
+    const response = await axios.get(`${HEROKU_API_URL}/api/domain-file-mappings`, {
+      headers: { 'X-Worker-API-Key': WORKER_API_KEY },
+      timeout: 30000,
+    });
+    const mappings: DomainMapping[] = response.data.mappings || [];
+    domainMappingsCache = mappings;
+    return mappings;
+  } catch (error: any) {
+    logError(`Failed to fetch domain mappings: ${error.message}`, 'warn');
+    return [];
+  }
+}
+
+async function computeDomainForFile(filePath: string): Promise<number | null> {
+  const mappings = await fetchDomainMappings();
+
+  // Try each mapping in priority order (highest priority first)
+  for (const mapping of mappings) {
+    if (minimatch(filePath, mapping.file_pattern)) {
+      return mapping.domain_id;
+    }
+  }
+
+  return null; // No domain match
+}
+
+function extractCodeElementInfo(content: string, filePath: string): {
+  type: string;
+  name: string | null;
+} {
+  // Simple heuristics to extract element type and name
+
+  // Test files
+  if (/Test\.(java|ts|js|py)$/.test(filePath) || /\.test\.(ts|js)$/.test(filePath) || /\.spec\.(ts|js)$/.test(filePath)) {
+    const match = content.match(/(?:class|function|def)\s+(\w+Test)/);
+    return { type: 'test', name: match?.[1] || null };
+  }
+
+  // Java/TypeScript classes
+  const classMatch = content.match(/(?:public|export)?\s*class\s+(\w+)/);
+  if (classMatch) {
+    return { type: 'class', name: classMatch[1] };
+  }
+
+  // Java/TypeScript interfaces
+  const interfaceMatch = content.match(/(?:export)?\s*interface\s+(\w+)/);
+  if (interfaceMatch) {
+    return { type: 'interface', name: interfaceMatch[1] };
+  }
+
+  // Functions (JavaScript/TypeScript/Python)
+  const functionMatch = content.match(/(?:export\s+)?(?:function|def)\s+(\w+)/);
+  if (functionMatch) {
+    return { type: 'function', name: functionMatch[1] };
+  }
+
+  // Configuration files
+  if (/\.(config|conf|yaml|yml|json)$/.test(filePath)) {
+    return { type: 'config', name: null };
+  }
+
+  return { type: 'unknown', name: null };
+}
+
+// ---------------------------------------------------------------------------
 // Chunking
 // ---------------------------------------------------------------------------
 
@@ -264,6 +347,10 @@ async function harvestRepo(hostname: string, org: string, repo: string): Promise
       const content = await fetchFileContent(hostname, org, repo, file.sha);
       if (!content) continue;
 
+      // Compute domain and code element metadata
+      const domainId = await computeDomainForFile(file.path);
+      const { type: elementType, name: elementName } = extractCodeElementInfo(content, file.path);
+
       const chunks = chunkContent(file.path, content);
       for (const { chunk, index } of chunks) {
         batchChunks.push({
@@ -273,6 +360,9 @@ async function harvestRepo(hostname: string, org: string, repo: string): Promise
           content_chunk: chunk,
           chunk_index: index,
           last_commit_sha: latestSha,
+          domain_id: domainId,
+          code_element_type: elementType,
+          code_element_name: elementName,
         });
       }
 

@@ -332,6 +332,10 @@ export interface RepoKnowledge {
   content_chunk: string;
   chunk_index: number;
   last_commit_sha: string | null;
+  embedding?: number[];
+  domain_id?: number | null;
+  code_element_type?: string | null;
+  code_element_name?: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -343,6 +347,12 @@ export interface EmbeddingRecord {
   content_text: string;
   metadata: Record<string, any>;
   created_at: Date;
+}
+
+export interface CodeExample extends RepoKnowledge {
+  domain_name: string;
+  domain_display_name: string;
+  similarity?: number;
 }
 
 // --- PR Reviews ---
@@ -444,11 +454,28 @@ export async function upsertRepoHarvestState(org: string, repo: string, sha: str
 
 export async function upsertRepoKnowledge(chunk: Omit<RepoKnowledge, 'id' | 'created_at' | 'updated_at'>): Promise<number> {
   const result = await pool.query(`
-    INSERT INTO repo_knowledge (org, repo, file_path, content_chunk, chunk_index, last_commit_sha)
-    VALUES ($1, $2, $3, $4, $5, $6)
-    ON CONFLICT DO NOTHING
+    INSERT INTO repo_knowledge (org, repo, file_path, content_chunk, chunk_index, last_commit_sha, domain_id, code_element_type, code_element_name)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    ON CONFLICT (org, repo, file_path, chunk_index)
+    DO UPDATE SET
+      content_chunk = EXCLUDED.content_chunk,
+      last_commit_sha = EXCLUDED.last_commit_sha,
+      domain_id = EXCLUDED.domain_id,
+      code_element_type = EXCLUDED.code_element_type,
+      code_element_name = EXCLUDED.code_element_name,
+      updated_at = NOW()
     RETURNING id
-  `, [chunk.org, chunk.repo, chunk.file_path, chunk.content_chunk, chunk.chunk_index, chunk.last_commit_sha]);
+  `, [
+    chunk.org,
+    chunk.repo,
+    chunk.file_path,
+    chunk.content_chunk,
+    chunk.chunk_index,
+    chunk.last_commit_sha,
+    chunk.domain_id || null,
+    chunk.code_element_type || null,
+    chunk.code_element_name || null,
+  ]);
   return result.rows[0]?.id || 0;
 }
 
@@ -747,5 +774,8 @@ export async function deleteDocument(sourceUrl: string): Promise<number> {
   const result = await pool.query('DELETE FROM team_documents WHERE source_url = $1', [sourceUrl]);
   return result.rowCount || 0;
 }
+
+// Re-export code context provider functions
+export { fetchDomainScopedCodeExamples, formatCodeExamplesForPrompt } from '../services/codeContextProvider';
 
 export { pool };
