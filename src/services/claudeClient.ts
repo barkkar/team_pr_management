@@ -58,13 +58,13 @@ async function bedrockChat(
     jsonMode = false,
   } = options;
 
-  const messages: any[] = [
-    { role: 'user', content: userPrompt },
-  ];
+  const effectiveUserPrompt = jsonMode
+    ? userPrompt + '\n\nIMPORTANT: Respond with valid JSON only. No markdown, no explanation, no code fences.'
+    : userPrompt;
 
-  if (jsonMode) {
-    messages.push({ role: 'assistant', content: '{' });
-  }
+  const messages: any[] = [
+    { role: 'user', content: effectiveUserPrompt },
+  ];
 
   const body: any = {
     model: CLAUDE_MODEL,
@@ -116,10 +116,6 @@ async function bedrockChat(
     throw new Error(`Unexpected Bedrock response: ${JSON.stringify(data).substring(0, 500)}`);
   }
 
-  if (jsonMode) {
-    text = '{' + text;
-  }
-
   return text.trim();
 }
 
@@ -139,13 +135,13 @@ async function directChat(
     jsonMode = false,
   } = options;
 
-  const messages: Anthropic.MessageParam[] = [
-    { role: 'user', content: userPrompt },
-  ];
+  const effectiveUserPrompt = jsonMode
+    ? userPrompt + '\n\nIMPORTANT: Respond with valid JSON only. No markdown, no explanation, no code fences.'
+    : userPrompt;
 
-  if (jsonMode) {
-    messages.push({ role: 'assistant', content: '{' });
-  }
+  const messages: Anthropic.MessageParam[] = [
+    { role: 'user', content: effectiveUserPrompt },
+  ];
 
   const response = await client.messages.create({
     model: CLAUDE_MODEL,
@@ -160,10 +156,6 @@ async function directChat(
     if (block.type === 'text') {
       text += block.text;
     }
-  }
-
-  if (jsonMode) {
-    text = '{' + text;
   }
 
   return text.trim();

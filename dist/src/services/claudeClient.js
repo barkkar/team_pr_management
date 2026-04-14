@@ -40,12 +40,12 @@ function getDirectClient() {
  */
 async function bedrockChat(systemPrompt, userPrompt, options) {
     const { temperature = 0.3, maxTokens = 4096, jsonMode = false, } = options;
+    const effectiveUserPrompt = jsonMode
+        ? userPrompt + '\n\nIMPORTANT: Respond with valid JSON only. No markdown, no explanation, no code fences.'
+        : userPrompt;
     const messages = [
-        { role: 'user', content: userPrompt },
+        { role: 'user', content: effectiveUserPrompt },
     ];
-    if (jsonMode) {
-        messages.push({ role: 'assistant', content: '{' });
-    }
     const body = {
         model: CLAUDE_MODEL,
         max_tokens: maxTokens,
@@ -98,9 +98,6 @@ async function bedrockChat(systemPrompt, userPrompt, options) {
     else {
         throw new Error(`Unexpected Bedrock response: ${JSON.stringify(data).substring(0, 500)}`);
     }
-    if (jsonMode) {
-        text = '{' + text;
-    }
     return text.trim();
 }
 /**
@@ -109,12 +106,12 @@ async function bedrockChat(systemPrompt, userPrompt, options) {
 async function directChat(systemPrompt, userPrompt, options) {
     const client = getDirectClient();
     const { temperature = 0.3, maxTokens = 4096, jsonMode = false, } = options;
+    const effectiveUserPrompt = jsonMode
+        ? userPrompt + '\n\nIMPORTANT: Respond with valid JSON only. No markdown, no explanation, no code fences.'
+        : userPrompt;
     const messages = [
-        { role: 'user', content: userPrompt },
+        { role: 'user', content: effectiveUserPrompt },
     ];
-    if (jsonMode) {
-        messages.push({ role: 'assistant', content: '{' });
-    }
     const response = await client.messages.create({
         model: CLAUDE_MODEL,
         max_tokens: maxTokens,
@@ -127,9 +124,6 @@ async function directChat(systemPrompt, userPrompt, options) {
         if (block.type === 'text') {
             text += block.text;
         }
-    }
-    if (jsonMode) {
-        text = '{' + text;
     }
     return text.trim();
 }
