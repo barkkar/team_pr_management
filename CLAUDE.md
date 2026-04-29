@@ -1,0 +1,65 @@
+# CLAUDE.md
+
+Orientation for Claude sessions working in this repo. Keep this file short — deep references live in `docs/`.
+
+## What this repo is
+
+A Slack bot + background-worker system that watches team Slack channels for GitHub Enterprise PR links, tracks them in Postgres, sends review reminders during PST business hours, and posts AI-generated code reviews (via Claude) with suggested reviewers (via RAG over past reviews and a deterministic rule ontology).
+
+See `README.md` for end-user setup. This file exists for Claude.
+
+## Runtime split (non-obvious)
+
+The system is deliberately split in two because GitHub Enterprise (`*.soma.salesforce.com`) is only reachable from the corporate VPN:
+
+1. **Heroku dyno** (`src/`) — Slack Bolt app in Socket Mode + HTTP server exposing `/api/*` endpoints. Owns Postgres. Cannot reach GHE.
+2. **Local VPN worker** (`worker/`) — runs on a laptop on VPN. Pulls work from Heroku via HTTP, calls GHE + Claude + Ollama, posts results back.
+
+All `worker/*` calls to `${HEROKU_API_URL}/api/*` are authenticated with the `X-Worker-API-Key` header (`src/index.ts:43-53`). The only exception is `scripts/checkReminders.ts`, which runs on Heroku Scheduler.
+
+## Entry points
+
+| Path | Role |
+|---|---|
+| `src/index.ts` | Boots Slack app (Socket Mode) + HTTP server on `PORT`. Defines every `/api/*` endpoint and the Slack message-block formatter. |
+| `src/app.ts` | Slack Bolt app: message handler, `/pr-monitor` slash command, feedback button/view handlers, app_home. |
+| `scripts/checkReminders.ts` | Heroku Scheduler job: `pollChannelsForPRs` + `processPendingReminders`. |
+| `worker/localPRChecker.ts` | Main VPN worker loop (default / `--watch` every 5 min). Also spawns `prAnalyzer.js` as child process. |
+
+## Documentation layout
+
+Start with the doc that matches the task:
+
+- `docs/architecture.md` — runtime topology, data flow, request/event lifecycles. Read first if unsure where something runs.
+- `docs/database.md` — full schema catalog, pgvector columns, every exported `src/db/client.ts` function.
+- `docs/services.md` — per-module notes for `src/services/` and `src/utils/`.
+- `docs/api-endpoints.md` — every HTTP route exposed by `src/index.ts`, grouped by function.
+- `docs/workers.md` — what each `worker/*` and `scripts/*` file does, when to run it, how it's idempotent.
+- `docs/ontology.md` — hybrid deterministic-rules + LLM-classifier design (3-pass AI review).
+- `docs/environment.md` — every `process.env.*` read in the codebase, with required/optional + source location.
+
+## House rules when editing
+
+- **Don't assume** a change is complete after TypeScript compiles: most runtime behavior requires either Socket Mode connectivity or the worker loop to exercise. Dry-run with `npm run test-review -- <pr-url>` when touching `worker/prAnalyzer.ts` / `worker/testReview.ts`.
+- **Migrations are immutable once numbered.** `src/db/migrate.ts` applies `src/db/migrations/*.sql` in filename order, tracks applied files in `schema_migrations`, and has special seeding logic for 001–006 when upgrading an existing DB (`src/db/migrate.ts:21-47`). Add new migrations with the next sequential prefix.
+- **Claude model** is whatever `CLAUDE_MODEL` env var says; the code default in `src/services/claudeClient.ts:21` is `claude-3-5-sonnet-20241022`, but production env sets a newer Sonnet. When updating model IDs, verify both the default string and the deployed config var.
+- **Ollama stays local, Claude goes remote.** Ollama only does embeddings (768-dim `nomic-embed-text`); Claude does all LLM chat. Do not reintroduce Ollama for generation.
+- **Pgvector dimension is 768 everywhere.** If you swap embedding models, every vector column and IVFFlat index must be migrated.
+- **Channel access control is enforced at module load** (`src/services/channelAccessControl.ts`). The app hard-exits if `ALLOWED_CHANNEL_IDS` is missing or empty. Non-allowlisted channels are silently dropped both in Socket Mode and the slash command.
+- **Worker API auth is required.** If `WORKER_API_KEY` is unset on Heroku, every `/api/*` endpoint returns 401 (`src/index.ts:47-50`). `/health` is public.
+- **Errors should funnel through `notifyError`** (`src/utils/errorNotifier.ts`). It throttles to 1 per minute per source+message and gracefully no-ops if `ERROR_SLACK_CHANNEL_ID` is unset.
+
+## Common pitfalls
+
+- The `pr_url` column is the de-facto primary key across `tracked_prs`, `pr_analysis_results`, `ai_review_lessons`, `ai_review_feedback`. Joins assume string-equality on the full URL — never substring-match.
+- The Heroku dyno cannot resolve GHE hostnames. If you add a feature that needs a live GHE call, route it through the worker.
+- `reviewLearner.ts` and `localPRChecker.ts` both perform lesson extraction. Don't add a third; check which one owns the path you're touching.
+- Severity ordering is critical → high → medium → low (`src/services/ontologyEngine.ts:375`). Slack block formatting in `src/index.ts:94-99` depends on that order.
+- Some DB migrations touch the same table (`tracked_prs` 001/003/005/006; `repo_knowledge` 008/017). When reading schema, consult `docs/database.md` for the merged view, not a single migration file.
+
+## Tooling
+
+- Node 20.x, npm 10.x (`package.json:29-32`).
+- TypeScript compiles to `dist/`. `npm run compile` also copies `src/db/migrations/*.sql` into `dist/src/db/migrations/` so the release script can find them.
+- `Procfile` has two process types: `release: npm run migrate`, `web: node dist/src/index.js`. No `worker:` entry — worker runs on the laptop.
+- `.claude/settings.local.json` pre-allows `git add/commit`, `heroku pg:psql`, `heroku config:get`, `heroku run`, `heroku info`, `curl`, `jq`, `grep`, `head`, `tee`.
