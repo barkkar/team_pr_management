@@ -163,7 +163,7 @@ async function fetchFileContent(
 }
 
 // ---------------------------------------------------------------------------
-// Heroku API: fetch similar context + report results
+// Heroku API: ontology rules, reviewers, learning context, report results
 // ---------------------------------------------------------------------------
 
 async function fetchOntologyRules(
@@ -252,10 +252,10 @@ If no domains apply, respond with {"domain_ids": []}`;
   }
 }
 
-async function fetchSuggestedReviewers(filePaths: string[], prAuthor: string, similarReviews?: any[]): Promise<any[]> {
+async function fetchSuggestedReviewers(filePaths: string[], prAuthor: string): Promise<any[]> {
   const response = await axios.post(
     `${HEROKU_API_URL}/api/suggested-reviewers`,
-    { file_paths: filePaths, pr_author: prAuthor, similar_reviews: similarReviews || [] },
+    { file_paths: filePaths, pr_author: prAuthor },
     { headers: herokuHeaders(), timeout: 30000 },
   );
   return response.data.reviewers || [];
@@ -394,18 +394,12 @@ Rules:
 
 function pass1_userPrompt(
   prTitle: string, implDiff: string, implFiles: string[],
-  similarReviews: any[], learningContext: { lessons: any[]; feedback: any[] } | undefined,
+  learningContext: { lessons: any[]; feedback: any[] } | undefined,
   codeExamples: any[],
 ): string {
   const parts: string[] = [];
   parts.push(`Review these IMPLEMENTATION files from PR: "${prTitle}"`);
   parts.push(`\nFiles: ${implFiles.join(', ')}`);
-  if (similarReviews.length > 0) {
-    parts.push('\nPast team review comments on similar code:');
-    for (const r of similarReviews.slice(0, 5)) {
-      parts.push(`- ${r.file_path || 'general'}: "${(r.comment_body || '').substring(0, 300)}"`);
-    }
-  }
   if (codeExamples.length > 0) {
     parts.push(formatCodeExamplesForPrompt(codeExamples));
   }
@@ -699,7 +693,7 @@ async function analyzePR(prUrl: string, channelId: string, messageTs: string): P
 
   // Semantic vector search removed — domain-scoped code examples
   // (via fetchDomainScopedCodeExamples below) replace this path.
-  const similarReviews: any[] = [];
+  // Reviewer ranking now relies on file-path + code-author signals only.
 
   // 2. Fetch full file content for context-aware doc matching
   log('  Fetching full file content for doc matching...');
@@ -798,7 +792,7 @@ async function analyzePR(prUrl: string, channelId: string, messageTs: string): P
     const p1 = await runReviewPass(
       'Pass 1: Implementation',
       pass1_systemPrompt(implFiles.length),
-      pass1_userPrompt(prTitle, implDiff, implFiles, similarReviews, learningContext, implCodeExamples),
+      pass1_userPrompt(prTitle, implDiff, implFiles, learningContext, implCodeExamples),
     );
     allComments.push(...(p1.comments || []));
     if (p1.summary) summaries.push(p1.summary);
@@ -848,7 +842,7 @@ async function analyzePR(prUrl: string, channelId: string, messageTs: string): P
   log('  Finding suggested reviewers...');
   let reviewers: any[] = [];
   try {
-    reviewers = await fetchSuggestedReviewers(changedFiles, prAuthor, similarReviews);
+    reviewers = await fetchSuggestedReviewers(changedFiles, prAuthor);
     log(`  Found ${reviewers.length} suggested reviewers`);
   } catch (error: any) {
     log(`  No reviewer suggestions: ${error.message}`);
