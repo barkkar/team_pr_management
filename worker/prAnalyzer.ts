@@ -365,7 +365,7 @@ function pass1_systemPrompt(fileCount: number): string {
   const minComments = Math.max(2, Math.min(fileCount, 8));
   return `You are an expert code reviewer reviewing IMPLEMENTATION files only (no test files). Respond with valid JSON only.
 
-{"summary": "1-2 sentence assessment", "comments": [{"file_path": "path/to/file", "line_hint": "line 42", "comment": "your comment", "type": "suggestion", "severity": "high", "reason": "1-sentence why this matters", "suggested_fix": "- if (val) {\n+ if (val != null) {", "source": "Past review on similar code"}]}
+{"summary": "1-2 sentence assessment", "comments": [{"file_path": "path/to/file", "line_hint": "line 42", "comment": "your comment", "type": "suggestion", "severity": "high", "reason": "1-sentence why this matters", "suggested_fix": "- if (val) {\n+ if (val != null) {", "source": "Learning context takeaway"}]}
 
 Severity classification (REQUIRED for every comment):
 - "critical": security hole, crash risk, race condition, data loss
@@ -376,7 +376,7 @@ Severity classification (REQUIRED for every comment):
 Context & evidence (REQUIRED):
 - "reason" (REQUIRED): One sentence explaining what breaks, what risk exists, or what improves. Be specific.
 - "suggested_fix" (optional): Include ONLY for small, self-contained fixes (null check, guard clause, missing import, rename). Format as unified diff: "-" for removed lines, "+" for added lines. Max 6 lines. Do NOT include for architectural concerns or complex refactors.
-- "source" (optional): Cite what informed the comment — e.g. "Past review on similar code" or a learning context takeaway.
+- "source" (optional): Cite what informed the comment — e.g. a learning context takeaway or a coding-rule title.
 
 Rules:
 - type: "comment", "question", or "suggestion"
