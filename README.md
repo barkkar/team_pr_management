@@ -28,15 +28,14 @@ A Slack bot that monitors team channels for GitHub Enterprise PR links and sends
                         │  (Your Laptop)   │     │ (VPN Required)   │
                         └──────────────────┘     └─────────────────┘
                                  │
-                          ┌──────┴──────┐
-                          ▼             ▼
-                  ┌──────────────┐ ┌──────────────┐
-                  │  Claude AI   │ │  Ollama      │
-                  │  (Chat/LLM)  │ │  (Embeddings)│
-                  └──────────────┘ └──────────────┘
+                                 ▼
+                        ┌──────────────────┐
+                        │  Claude AI       │
+                        │  (chat + review) │
+                        └──────────────────┘
 ```
 
-The local worker runs on your VPN-connected laptop to check PR status from internal GitHub Enterprise servers, then reports the status back to Heroku. AI reviews are generated via **Claude AI API** (Anthropic), while embeddings are generated locally via **Ollama** (nomic-embed-text).
+The local worker runs on your VPN-connected laptop to check PR status from internal GitHub Enterprise servers, then reports the status back to Heroku. AI reviews are generated via **Claude AI API** (Anthropic). Semantic retrieval has been removed; reviewer suggestions and code context use deterministic file-path + ontology matching.
 
 ## Prerequisites
 
@@ -46,7 +45,6 @@ The local worker runs on your VPN-connected laptop to check PR status from inter
 - GitHub Enterprise Personal Access Token
 - VPN access to GitHub Enterprise (for local worker)
 - **Anthropic API Key** — for Claude AI chat/LLM (get one at [console.anthropic.com](https://console.anthropic.com))
-- **Ollama** — running locally for embeddings (`ollama pull nomic-embed-text`)
 
 ## Setup
 
@@ -180,10 +178,6 @@ The local worker runs on your laptop (behind VPN) to check PR status from intern
    # Claude AI (required for LLM chat/review generation)
    ANTHROPIC_API_KEY=sk-ant-...
    CLAUDE_MODEL=claude-sonnet-4-20250514
-
-   # Ollama (required for embeddings only)
-   OLLAMA_HOST=http://localhost:11434
-   OLLAMA_EMBED_MODEL=nomic-embed-text
    ```
 
 4. Get the worker API key from Heroku:
@@ -268,11 +262,8 @@ launchctl list | grep pr-worker
 │   │   ├── channelPoller.ts      # Channel polling for PRs
 │   │   ├── channelAccessControl.ts # Channel allowlist enforcement
 │   │   ├── claudeClient.ts       # Claude AI (Anthropic) shared client for all LLM chat calls
-│   │   ├── reviewGenerator.ts    # AI review generation via Claude
 │   │   ├── ontologyEngine.ts     # Deterministic rule resolver (file paths + code patterns → exact rules)
-│   │   ├── ruleClassifier.ts     # LLM-as-classifier fallback (via Claude) for edge cases
-│   │   ├── embeddingService.ts   # Ollama embedding generation (nomic-embed-text)
-│   │   └── vectorSearch.ts       # Vector similarity search (legacy, retained for review search)
+│   │   └── ruleClassifier.ts     # LLM-as-classifier fallback (via Claude) for edge cases
 │   ├── db/
 │   │   ├── client.ts             # PostgreSQL client + queries
 │   │   ├── migrate.ts            # Migration runner
@@ -288,9 +279,7 @@ launchctl list | grep pr-worker
 │   ├── prAnalyzer.ts             # AI PR analysis worker (multi-pass review via Claude)
 │   ├── testReview.ts             # Dry-run AI review for a single PR (no Slack posting)
 │   ├── bootstrapLearner.ts       # Batch lesson extraction for closed PRs
-│   ├── reviewLearner.ts          # Continuous lesson extraction worker
-│   ├── embeddingPipeline.ts      # Embedding generation pipeline (Ollama)
-│   └── docIngester.ts            # Documentation ingestion + embedding
+│   └── reviewLearner.ts          # Continuous lesson extraction worker
 ├── package.json
 ├── tsconfig.json
 ├── Procfile
@@ -387,8 +376,6 @@ heroku config:set GHE_TOKENS='{"gitcore.soma.salesforce.com":"ghp_abc","git.soma
 | `WORKER_API_KEY` | Same API key as configured on Heroku |
 | `ANTHROPIC_API_KEY` | Anthropic API key for Claude AI chat/LLM |
 | `CLAUDE_MODEL` | Claude model to use (default: `claude-sonnet-4-20250514`) |
-| `OLLAMA_HOST` | Ollama server URL for embeddings (default: `http://localhost:11434`) |
-| `OLLAMA_EMBED_MODEL` | Ollama embedding model (default: `nomic-embed-text`) |
 
 ## Channel Access Control
 
