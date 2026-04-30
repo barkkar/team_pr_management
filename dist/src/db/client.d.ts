@@ -16,6 +16,7 @@ export interface TrackedPR {
     is_open?: boolean;
     status_checked_at?: Date;
     reminder_count?: number;
+    suggestions_sent?: boolean;
 }
 export interface PRStatusUpdate {
     pr_url: string;
@@ -132,24 +133,6 @@ export interface HarvestState {
     last_harvested_at: Date | null;
     last_repo_harvested_at: Date | null;
 }
-export interface RepoKnowledge {
-    id: number;
-    org: string;
-    repo: string;
-    file_path: string;
-    content_chunk: string;
-    chunk_index: number;
-    last_commit_sha: string | null;
-    domain_id?: number | null;
-    code_element_type?: string | null;
-    code_element_name?: string | null;
-    created_at: Date;
-    updated_at: Date;
-}
-export interface CodeExample extends RepoKnowledge {
-    domain_name: string;
-    domain_display_name: string;
-}
 export declare function insertPRReview(review: Omit<PRReview, 'id' | 'created_at'>): Promise<PRReview | null>;
 export declare function getPRReviewCount(prUrl: string): Promise<number>;
 export declare function insertPRFile(file: Omit<PRFile, 'id' | 'created_at'>): Promise<PRFile | null>;
@@ -158,9 +141,6 @@ export declare function getUserMapping(gheLogin: string): Promise<UserMapping | 
 export declare function getAllUserMappings(): Promise<UserMapping[]>;
 export declare function getHarvestState(org: string, repo: string): Promise<HarvestState | null>;
 export declare function upsertHarvestState(org: string, repo: string, lastPrNumber: number): Promise<void>;
-export declare function upsertRepoHarvestState(org: string, repo: string, sha: string): Promise<void>;
-export declare function upsertRepoKnowledge(chunk: Omit<RepoKnowledge, 'id' | 'created_at' | 'updated_at'>): Promise<number>;
-export declare function deleteRepoKnowledgeForFile(org: string, repo: string, filePath: string): Promise<void>;
 export declare function findReviewersByFiles(filePaths: string[], topK?: number): Promise<{
     reviewer_login: string;
     review_count: number;
@@ -175,17 +155,5 @@ export declare function getDistinctRepos(): Promise<{
     org: string;
     repo: string;
 }[]>;
-export declare function insertOrUpdateFeedback(prUrl: string, userId: string, rating: string, feedbackText?: string): Promise<void>;
-export declare function getRecentFeedback(limit?: number): Promise<any[]>;
-export declare function insertOrUpdateCommentFeedback(prUrl: string, commentIndex: number, userId: string, rating: string, commentSnapshot?: any): Promise<void>;
-export declare function getCommentFeedbackStats(prUrl: string): Promise<{
-    comment_index: number;
-    helpful: number;
-    not_helpful: number;
-}[]>;
-export declare function insertReviewLessons(prUrl: string, aiReview: any, peerComments: any[], lessons: any): Promise<void>;
-export declare function getRecentLessons(limit?: number): Promise<any[]>;
-export declare function getPRsNeedingLessonExtraction(): Promise<any[]>;
-export { fetchDomainScopedCodeExamples, formatCodeExamplesForPrompt } from '../services/codeContextProvider';
 export { pool };
 //# sourceMappingURL=client.d.ts.map

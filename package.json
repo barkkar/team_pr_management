@@ -16,13 +16,9 @@
     "test-ghe": "node dist/scripts/testGheConnectivity.js",
     "harvest": "node dist/worker/prHarvester.js",
     "harvest:incremental": "node dist/worker/prHarvester.js --incremental",
-    "harvest:repos": "node dist/worker/repoHarvester.js",
     "map-users": "node dist/worker/userMapper.js",
-    "analyze-pr": "node dist/worker/prAnalyzer.js",
-    "test-review": "node dist/worker/testReview.js",
-    "review-learn": "node dist/worker/reviewLearner.js",
-    "review-learn:watch": "node dist/worker/reviewLearner.js --watch",
-    "bootstrap-learn": "node dist/worker/bootstrapLearner.js"
+    "suggest-reviewers": "node dist/worker/prAnalyzer.js",
+    "test-suggest-reviewers": "npx ts-node worker/testSuggestReviewers.ts"
   },
   "engines": {
     "node": "20.x",
