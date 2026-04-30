@@ -612,8 +612,6 @@ export async function getPRsNeedingLessonExtraction(): Promise<any[]> {
   return result.rows;
 }
 
-// --- Team Documents (removed - Ollama-only) ---
-
 // Re-export code context provider functions
 export { fetchDomainScopedCodeExamples, formatCodeExamplesForPrompt } from '../services/codeContextProvider';
 
