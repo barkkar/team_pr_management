@@ -140,25 +140,15 @@ export interface RepoKnowledge {
     content_chunk: string;
     chunk_index: number;
     last_commit_sha: string | null;
-    embedding?: number[];
     domain_id?: number | null;
     code_element_type?: string | null;
     code_element_name?: string | null;
     created_at: Date;
     updated_at: Date;
 }
-export interface EmbeddingRecord {
-    id: number;
-    content_type: string;
-    source_id: number;
-    content_text: string;
-    metadata: Record<string, any>;
-    created_at: Date;
-}
 export interface CodeExample extends RepoKnowledge {
     domain_name: string;
     domain_display_name: string;
-    similarity?: number;
 }
 export declare function insertPRReview(review: Omit<PRReview, 'id' | 'created_at'>): Promise<PRReview | null>;
 export declare function getPRReviewCount(prUrl: string): Promise<number>;
@@ -171,16 +161,6 @@ export declare function upsertHarvestState(org: string, repo: string, lastPrNumb
 export declare function upsertRepoHarvestState(org: string, repo: string, sha: string): Promise<void>;
 export declare function upsertRepoKnowledge(chunk: Omit<RepoKnowledge, 'id' | 'created_at' | 'updated_at'>): Promise<number>;
 export declare function deleteRepoKnowledgeForFile(org: string, repo: string, filePath: string): Promise<void>;
-export declare function insertEmbedding(contentType: string, sourceId: number, contentText: string, embedding: number[], metadata?: Record<string, any>): Promise<number>;
-export declare function updateRepoKnowledgeEmbedding(id: number, embedding: number[]): Promise<void>;
-export declare function getUnembeddedPRReviews(limit?: number): Promise<PRReview[]>;
-export declare function getUnembeddedRepoKnowledge(limit?: number): Promise<RepoKnowledge[]>;
-export declare function searchSimilarReviews(embedding: number[], topK?: number): Promise<(PRReview & {
-    similarity: number;
-})[]>;
-export declare function searchSimilarCode(embedding: number[], topK?: number): Promise<(RepoKnowledge & {
-    similarity: number;
-})[]>;
 export declare function findReviewersByFiles(filePaths: string[], topK?: number): Promise<{
     reviewer_login: string;
     review_count: number;
@@ -203,18 +183,9 @@ export declare function getCommentFeedbackStats(prUrl: string): Promise<{
     helpful: number;
     not_helpful: number;
 }[]>;
-export declare function insertReviewLessons(prUrl: string, aiReview: any, peerComments: any[], lessons: any, embedding?: number[]): Promise<void>;
+export declare function insertReviewLessons(prUrl: string, aiReview: any, peerComments: any[], lessons: any): Promise<void>;
 export declare function getRecentLessons(limit?: number): Promise<any[]>;
-export declare function getSimilarLessons(embedding: number[], limit?: number): Promise<any[]>;
 export declare function getPRsNeedingLessonExtraction(): Promise<any[]>;
-export declare function searchSimilarDocs(embedding: number[], topK?: number): Promise<any[]>;
-export declare function searchDocsByTitlePattern(embedding: number[], titlePatterns: string[], topK?: number): Promise<any[]>;
-export declare function upsertDocumentChunks(sourceUrl: string, title: string, docType: string, chunks: {
-    content: string;
-    embedding: number[];
-}[]): Promise<number>;
-export declare function listDocuments(): Promise<any[]>;
-export declare function deleteDocument(sourceUrl: string): Promise<number>;
 export { fetchDomainScopedCodeExamples, formatCodeExamplesForPrompt } from '../services/codeContextProvider';
 export { pool };
 //# sourceMappingURL=client.d.ts.map

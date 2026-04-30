@@ -26,12 +26,6 @@ exports.upsertHarvestState = upsertHarvestState;
 exports.upsertRepoHarvestState = upsertRepoHarvestState;
 exports.upsertRepoKnowledge = upsertRepoKnowledge;
 exports.deleteRepoKnowledgeForFile = deleteRepoKnowledgeForFile;
-exports.insertEmbedding = insertEmbedding;
-exports.updateRepoKnowledgeEmbedding = updateRepoKnowledgeEmbedding;
-exports.getUnembeddedPRReviews = getUnembeddedPRReviews;
-exports.getUnembeddedRepoKnowledge = getUnembeddedRepoKnowledge;
-exports.searchSimilarReviews = searchSimilarReviews;
-exports.searchSimilarCode = searchSimilarCode;
 exports.findReviewersByFiles = findReviewersByFiles;
 exports.findCodeTouchersByFiles = findCodeTouchersByFiles;
 exports.getDistinctRepos = getDistinctRepos;
@@ -41,13 +35,7 @@ exports.insertOrUpdateCommentFeedback = insertOrUpdateCommentFeedback;
 exports.getCommentFeedbackStats = getCommentFeedbackStats;
 exports.insertReviewLessons = insertReviewLessons;
 exports.getRecentLessons = getRecentLessons;
-exports.getSimilarLessons = getSimilarLessons;
 exports.getPRsNeedingLessonExtraction = getPRsNeedingLessonExtraction;
-exports.searchSimilarDocs = searchSimilarDocs;
-exports.searchDocsByTitlePattern = searchDocsByTitlePattern;
-exports.upsertDocumentChunks = upsertDocumentChunks;
-exports.listDocuments = listDocuments;
-exports.deleteDocument = deleteDocument;
 const pg_1 = require("pg");
 const pool = new pg_1.Pool({
     connectionString: process.env.DATABASE_URL,
@@ -340,58 +328,7 @@ async function upsertRepoKnowledge(chunk) {
 async function deleteRepoKnowledgeForFile(org, repo, filePath) {
     await pool.query('DELETE FROM repo_knowledge WHERE org = $1 AND repo = $2 AND file_path = $3', [org, repo, filePath]);
 }
-// --- Embeddings ---
-async function insertEmbedding(contentType, sourceId, contentText, embedding, metadata = {}) {
-    const result = await pool.query(`
-    INSERT INTO pr_embeddings (content_type, source_id, content_text, embedding, metadata)
-    VALUES ($1, $2, $3, $4::vector, $5)
-    RETURNING id
-  `, [contentType, sourceId, contentText, `[${embedding.join(',')}]`, JSON.stringify(metadata)]);
-    return result.rows[0]?.id || 0;
-}
-async function updateRepoKnowledgeEmbedding(id, embedding) {
-    await pool.query('UPDATE repo_knowledge SET embedding = $2::vector, updated_at = NOW() WHERE id = $1', [id, `[${embedding.join(',')}]`]);
-}
-async function getUnembeddedPRReviews(limit = 100) {
-    const result = await pool.query(`
-    SELECT r.* FROM pr_reviews r
-    LEFT JOIN pr_embeddings e ON e.content_type = 'pr_review' AND e.source_id = r.id
-    WHERE e.id IS NULL
-    ORDER BY r.id ASC
-    LIMIT $1
-  `, [limit]);
-    return result.rows;
-}
-async function getUnembeddedRepoKnowledge(limit = 100) {
-    const result = await pool.query(`
-    SELECT * FROM repo_knowledge
-    WHERE embedding IS NULL
-    ORDER BY id ASC
-    LIMIT $1
-  `, [limit]);
-    return result.rows;
-}
-// --- Vector Search ---
-async function searchSimilarReviews(embedding, topK = 10) {
-    const result = await pool.query(`
-    SELECT r.*, 1 - (e.embedding <=> $1::vector) as similarity
-    FROM pr_embeddings e
-    JOIN pr_reviews r ON e.source_id = r.id AND e.content_type = 'pr_review'
-    ORDER BY e.embedding <=> $1::vector
-    LIMIT $2
-  `, [`[${embedding.join(',')}]`, topK]);
-    return result.rows;
-}
-async function searchSimilarCode(embedding, topK = 10) {
-    const result = await pool.query(`
-    SELECT rk.*, 1 - (rk.embedding <=> $1::vector) as similarity
-    FROM repo_knowledge rk
-    WHERE rk.embedding IS NOT NULL
-    ORDER BY rk.embedding <=> $1::vector
-    LIMIT $2
-  `, [`[${embedding.join(',')}]`, topK]);
-    return result.rows;
-}
+// --- Reviewer discovery (file + code-history based) ---
 async function findReviewersByFiles(filePaths, topK = 10) {
     // Extract unique parent directories for fuzzy matching
     const dirs = [...new Set(filePaths.map(f => f.split('/').slice(0, -1).join('/')).filter(d => d.length > 0))];
@@ -475,24 +412,13 @@ async function getCommentFeedbackStats(prUrl) {
 // ---------------------------------------------------------------------------
 // AI Review Lessons (automated post-merge comparison)
 // ---------------------------------------------------------------------------
-async function insertReviewLessons(prUrl, aiReview, peerComments, lessons, embedding) {
-    if (embedding && embedding.length > 0) {
-        const embeddingStr = `[${embedding.join(',')}]`;
-        await pool.query(`
-      INSERT INTO ai_review_lessons (pr_url, ai_review_json, peer_comments_json, lessons_json, embedding, created_at)
-      VALUES ($1, $2, $3, $4, $5::vector, NOW())
-      ON CONFLICT (pr_url) DO UPDATE SET
-        ai_review_json = $2, peer_comments_json = $3, lessons_json = $4, embedding = $5::vector, created_at = NOW()
-    `, [prUrl, JSON.stringify(aiReview), JSON.stringify(peerComments), JSON.stringify(lessons), embeddingStr]);
-    }
-    else {
-        await pool.query(`
-      INSERT INTO ai_review_lessons (pr_url, ai_review_json, peer_comments_json, lessons_json, created_at)
-      VALUES ($1, $2, $3, $4, NOW())
-      ON CONFLICT (pr_url) DO UPDATE SET
-        ai_review_json = $2, peer_comments_json = $3, lessons_json = $4, created_at = NOW()
-    `, [prUrl, JSON.stringify(aiReview), JSON.stringify(peerComments), JSON.stringify(lessons)]);
-    }
+async function insertReviewLessons(prUrl, aiReview, peerComments, lessons) {
+    await pool.query(`
+    INSERT INTO ai_review_lessons (pr_url, ai_review_json, peer_comments_json, lessons_json, created_at)
+    VALUES ($1, $2, $3, $4, NOW())
+    ON CONFLICT (pr_url) DO UPDATE SET
+      ai_review_json = $2, peer_comments_json = $3, lessons_json = $4, created_at = NOW()
+  `, [prUrl, JSON.stringify(aiReview), JSON.stringify(peerComments), JSON.stringify(lessons)]);
 }
 async function getRecentLessons(limit = 3) {
     const result = await pool.query(`
@@ -501,18 +427,6 @@ async function getRecentLessons(limit = 3) {
     ORDER BY created_at DESC
     LIMIT $1
   `, [limit]);
-    return result.rows;
-}
-async function getSimilarLessons(embedding, limit = 5) {
-    const embeddingStr = `[${embedding.join(',')}]`;
-    const result = await pool.query(`
-    SELECT pr_url, lessons_json, created_at,
-           1 - (embedding <=> $1::vector) AS similarity
-    FROM ai_review_lessons
-    WHERE embedding IS NOT NULL
-    ORDER BY embedding <=> $1::vector
-    LIMIT $2
-  `, [embeddingStr, limit]);
     return result.rows;
 }
 async function getPRsNeedingLessonExtraction() {
@@ -527,64 +441,6 @@ async function getPRsNeedingLessonExtraction() {
     LIMIT 20
   `);
     return result.rows;
-}
-// --- Team Documents (design docs, requirements) ---
-async function searchSimilarDocs(embedding, topK = 3) {
-    const embeddingStr = `[${embedding.join(',')}]`;
-    const result = await pool.query(`
-    SELECT id, title, source_url, doc_type, content_chunk, chunk_index,
-           1 - (embedding <=> $1::vector) AS similarity
-    FROM team_documents
-    WHERE embedding IS NOT NULL
-    ORDER BY embedding <=> $1::vector
-    LIMIT $2
-  `, [embeddingStr, topK]);
-    return result.rows;
-}
-async function searchDocsByTitlePattern(embedding, titlePatterns, topK = 5) {
-    if (titlePatterns.length === 0)
-        return [];
-    const embeddingStr = `[${embedding.join(',')}]`;
-    const result = await pool.query(`
-    SELECT id, title, source_url, doc_type, content_chunk, chunk_index,
-           1 - (embedding <=> $1::vector) AS similarity
-    FROM team_documents
-    WHERE title LIKE ANY($2::text[])
-      AND embedding IS NOT NULL
-    ORDER BY embedding <=> $1::vector
-    LIMIT $3
-  `, [embeddingStr, titlePatterns, topK]);
-    return result.rows;
-}
-async function upsertDocumentChunks(sourceUrl, title, docType, chunks) {
-    // Delete old chunks for this doc
-    await pool.query('DELETE FROM team_documents WHERE source_url = $1', [sourceUrl]);
-    let inserted = 0;
-    for (let i = 0; i < chunks.length; i++) {
-        const embeddingStr = `[${chunks[i].embedding.join(',')}]`;
-        await pool.query(`
-      INSERT INTO team_documents (title, source_url, doc_type, content_chunk, chunk_index, embedding, last_fetched_at, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6::vector, NOW(), NOW(), NOW())
-    `, [title, sourceUrl, docType, chunks[i].content, i, embeddingStr]);
-        inserted++;
-    }
-    return inserted;
-}
-async function listDocuments() {
-    const result = await pool.query(`
-    SELECT source_url, title, doc_type,
-           COUNT(*) AS chunk_count,
-           MIN(created_at) AS created_at,
-           MAX(last_fetched_at) AS last_fetched_at
-    FROM team_documents
-    GROUP BY source_url, title, doc_type
-    ORDER BY MAX(created_at) DESC
-  `);
-    return result.rows;
-}
-async function deleteDocument(sourceUrl) {
-    const result = await pool.query('DELETE FROM team_documents WHERE source_url = $1', [sourceUrl]);
-    return result.rowCount || 0;
 }
 // Re-export code context provider functions
 var codeContextProvider_1 = require("../services/codeContextProvider");

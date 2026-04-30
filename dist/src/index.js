@@ -533,84 +533,6 @@ async function main() {
                 res.end(JSON.stringify({ count }));
                 return;
             }
-            // Receive embeddings from worker
-            if (url === '/api/embeddings' && method === 'POST') {
-                if (!validateApiKey(req)) {
-                    res.writeHead(401, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Unauthorized' }));
-                    return;
-                }
-                try {
-                    const body = await parseJsonBody(req);
-                    let count = 0;
-                    for (const emb of (body.embeddings || [])) {
-                        await (0, client_1.insertEmbedding)(emb.content_type, emb.source_id, emb.content_text, emb.embedding, emb.metadata || {});
-                        count++;
-                    }
-                    console.log(`[Worker API] Stored ${count} embeddings`);
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ count }));
-                }
-                catch (err) {
-                    console.error(`[Worker API] Error storing embeddings:`, err.message);
-                    res.writeHead(500, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: err.message }));
-                }
-                return;
-            }
-            // Receive repo knowledge embedding updates
-            if (url === '/api/repo-knowledge-embeddings' && method === 'POST') {
-                if (!validateApiKey(req)) {
-                    res.writeHead(401, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Unauthorized' }));
-                    return;
-                }
-                try {
-                    const body = await parseJsonBody(req);
-                    let count = 0;
-                    for (const update of (body.updates || [])) {
-                        await (0, client_1.updateRepoKnowledgeEmbedding)(update.id, update.embedding);
-                        count++;
-                    }
-                    console.log(`[Worker API] Updated ${count} repo knowledge embeddings`);
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ count }));
-                }
-                catch (err) {
-                    console.error(`[Worker API] Error updating repo knowledge embeddings:`, err.message);
-                    res.writeHead(500, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: err.message }));
-                }
-                return;
-            }
-            // Get un-embedded reviews
-            if (url.startsWith('/api/unembedded-reviews') && method === 'GET') {
-                if (!validateApiKey(req)) {
-                    res.writeHead(401, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Unauthorized' }));
-                    return;
-                }
-                const params = new URL(url, `http://${req.headers.host}`).searchParams;
-                const limit = parseInt(params.get('limit') || '50', 10);
-                const reviews = await (0, client_1.getUnembeddedPRReviews)(limit);
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ reviews }));
-                return;
-            }
-            // Get un-embedded repo knowledge chunks
-            if (url.startsWith('/api/unembedded-repo-knowledge') && method === 'GET') {
-                if (!validateApiKey(req)) {
-                    res.writeHead(401, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Unauthorized' }));
-                    return;
-                }
-                const params = new URL(url, `http://${req.headers.host}`).searchParams;
-                const limit = parseInt(params.get('limit') || '50', 10);
-                const chunks = await (0, client_1.getUnembeddedRepoKnowledge)(limit);
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ chunks }));
-                return;
-            }
             // Domain-scoped code examples endpoint (for testing)
             if (url === '/api/domain-code-examples' && method === 'POST') {
                 if (!validateApiKey(req)) {
@@ -632,32 +554,6 @@ async function main() {
                 res.end(JSON.stringify({ examples, count: examples.length }));
                 return;
             }
-            // Vector search: similar reviews
-            if (url === '/api/search-similar-reviews' && method === 'POST') {
-                if (!validateApiKey(req)) {
-                    res.writeHead(401, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Unauthorized' }));
-                    return;
-                }
-                const body = await parseJsonBody(req);
-                const reviews = await (0, client_1.searchSimilarReviews)(body.embedding, body.top_k || 10);
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ reviews }));
-                return;
-            }
-            // Vector search: similar code
-            if (url === '/api/search-similar-code' && method === 'POST') {
-                if (!validateApiKey(req)) {
-                    res.writeHead(401, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Unauthorized' }));
-                    return;
-                }
-                const body = await parseJsonBody(req);
-                const chunks = await (0, client_1.searchSimilarCode)(body.embedding, body.top_k || 5);
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ chunks }));
-                return;
-            }
             // Get suggested reviewers by file paths
             if (url === '/api/suggested-reviewers' && method === 'POST') {
                 if (!validateApiKey(req)) {
@@ -668,7 +564,6 @@ async function main() {
                 const body = await parseJsonBody(req);
                 const filePaths = body.file_paths || [];
                 const prAuthor = body.pr_author || '';
-                const similarReviewsFromVector = body.similar_reviews || [];
                 // Combine file-based reviewers and code touchers
                 const reviewers = await (0, client_1.findReviewersByFiles)(filePaths, 10);
                 const touchers = await (0, client_1.findCodeTouchersByFiles)(filePaths, 10);
@@ -678,7 +573,7 @@ async function main() {
                     if (!candidateMap.has(login)) {
                         candidateMap.set(login, {
                             ghe_login: login, score: 0, files: [],
-                            hasReviewed: false, hasAuthored: false, hasSemantic: false,
+                            hasReviewed: false, hasAuthored: false,
                         });
                     }
                     return candidateMap.get(login);
@@ -701,20 +596,6 @@ async function main() {
                     c.files = [...new Set([...c.files, ...t.files])];
                     c.hasAuthored = true;
                 }
-                // Signal 3: Reviewers from semantically similar past reviews
-                if (similarReviewsFromVector.length > 0) {
-                    const semanticCounts = new Map();
-                    for (const sr of similarReviewsFromVector) {
-                        if (!sr.reviewer_login || sr.reviewer_login === prAuthor)
-                            continue;
-                        semanticCounts.set(sr.reviewer_login, (semanticCounts.get(sr.reviewer_login) || 0) + 1);
-                    }
-                    for (const [login, count] of semanticCounts) {
-                        const c = ensureCandidate(login);
-                        c.score += count * 3;
-                        c.hasSemantic = true;
-                    }
-                }
                 // Generate natural reasons
                 for (const c of candidateMap.values()) {
                     const parts = [];
@@ -726,11 +607,6 @@ async function main() {
                     }
                     else if (c.hasAuthored) {
                         parts.push("you've made changes to related code");
-                    }
-                    if (c.hasSemantic) {
-                        parts.push(parts.length > 0
-                            ? 'and have context from reviewing closely related PRs'
-                            : "you've reviewed closely related PRs before");
                     }
                     c.reason = parts.join(' ') || 'familiar with this area of the codebase';
                 }
@@ -903,20 +779,18 @@ async function main() {
                     return;
                 }
                 const body = await parseJsonBody(req);
-                const { pr_url, ai_review, peer_comments, lessons, embedding } = body;
+                const { pr_url, ai_review, peer_comments, lessons } = body;
                 if (!pr_url) {
                     res.writeHead(400, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ error: 'pr_url is required' }));
                     return;
                 }
-                await (0, client_1.insertReviewLessons)(pr_url, ai_review || {}, peer_comments || [], lessons || {}, embedding);
-                console.log(`[Worker API] Stored lessons for ${pr_url} (embedding: ${embedding ? 'yes' : 'no'})`);
+                await (0, client_1.insertReviewLessons)(pr_url, ai_review || {}, peer_comments || [], lessons || {});
+                console.log(`[Worker API] Stored lessons for ${pr_url}`);
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ ok: true }));
                 return;
             }
-            // Get combined learning context (lessons + feedback) for LLM prompt enrichment
-            // POST with embedding → semantic similarity search; GET → recency fallback
             if (url.startsWith('/api/ai-learning-context') && (method === 'POST' || method === 'GET')) {
                 if (!validateApiKey(req)) {
                     res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -925,20 +799,7 @@ async function main() {
                 }
                 const params = new URL(url, `http://${req.headers.host}`).searchParams;
                 const limit = parseInt(params.get('limit') || '5', 10);
-                let lessons;
-                if (method === 'POST') {
-                    const body = await parseJsonBody(req);
-                    if (body.embedding && Array.isArray(body.embedding) && body.embedding.length > 0) {
-                        lessons = await (0, client_1.getSimilarLessons)(body.embedding, Math.min(limit, 5));
-                        console.log(`[Worker API] Returning ${lessons.length} similar lessons (by embedding)`);
-                    }
-                    else {
-                        lessons = await (0, client_1.getRecentLessons)(Math.min(limit, 5));
-                    }
-                }
-                else {
-                    lessons = await (0, client_1.getRecentLessons)(Math.min(limit, 5));
-                }
+                const lessons = await (0, client_1.getRecentLessons)(Math.min(limit, 5));
                 const feedback = await (0, client_1.getRecentFeedback)(Math.min(limit, 3));
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ lessons, feedback }));
@@ -956,7 +817,7 @@ async function main() {
                 const force = params.get('force') === 'true';
                 let result;
                 if (force) {
-                    // Return all closed PRs (for re-processing / backfilling embeddings)
+                    // Return all closed PRs (for re-processing / backfilling lessons)
                     result = await client_1.pool.query(`
             SELECT tp.pr_url, tp.org, tp.repo, tp.pr_number, tp.channel_id, tp.message_ts
             FROM tracked_prs tp
@@ -981,78 +842,6 @@ async function main() {
                 return;
             }
             // --- Team Documents ---
-            // Vector search: similar docs
-            if (url === '/api/search-similar-docs' && method === 'POST') {
-                if (!validateApiKey(req)) {
-                    res.writeHead(401, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Unauthorized' }));
-                    return;
-                }
-                const body = await parseJsonBody(req);
-                const docs = await (0, client_1.searchSimilarDocs)(body.embedding, body.top_k || 3);
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ docs }));
-                return;
-            }
-            // Scoped vector search: docs by title pattern
-            if (url === '/api/search-docs-by-title' && method === 'POST') {
-                if (!validateApiKey(req)) {
-                    res.writeHead(401, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Unauthorized' }));
-                    return;
-                }
-                const body = await parseJsonBody(req);
-                if (!body.embedding || !body.patterns || !Array.isArray(body.patterns)) {
-                    res.writeHead(400, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'embedding and patterns[] are required' }));
-                    return;
-                }
-                const docs = await (0, client_1.searchDocsByTitlePattern)(body.embedding, body.patterns, body.top_k || 5);
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ docs }));
-                return;
-            }
-            // Register / list / delete team documents
-            if (url.startsWith('/api/team-documents')) {
-                if (!validateApiKey(req)) {
-                    res.writeHead(401, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Unauthorized' }));
-                    return;
-                }
-                if (method === 'GET') {
-                    const docs = await (0, client_1.listDocuments)();
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ docs }));
-                    return;
-                }
-                if (method === 'POST') {
-                    const body = await parseJsonBody(req);
-                    const { source_url, title, doc_type, chunks } = body;
-                    if (!source_url || !title || !chunks || !Array.isArray(chunks)) {
-                        res.writeHead(400, { 'Content-Type': 'application/json' });
-                        res.end(JSON.stringify({ error: 'source_url, title, and chunks[] are required' }));
-                        return;
-                    }
-                    const inserted = await (0, client_1.upsertDocumentChunks)(source_url, title, doc_type || 'design', chunks);
-                    console.log(`[Worker API] Stored ${inserted} chunks for doc "${title}"`);
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ ok: true, chunks_stored: inserted }));
-                    return;
-                }
-                if (method === 'DELETE') {
-                    const body = await parseJsonBody(req);
-                    if (!body.source_url) {
-                        res.writeHead(400, { 'Content-Type': 'application/json' });
-                        res.end(JSON.stringify({ error: 'source_url is required' }));
-                        return;
-                    }
-                    const deleted = await (0, client_1.deleteDocument)(body.source_url);
-                    console.log(`[Worker API] Deleted ${deleted} chunks for doc "${body.source_url}"`);
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ ok: true, chunks_deleted: deleted }));
-                    return;
-                }
-            }
             // ========== Ontology Rule Engine Endpoints ==========
             // Resolve rules for a PR (deterministic ontology lookup)
             if (url === '/api/resolve-rules' && method === 'POST') {
@@ -1258,7 +1047,7 @@ async function main() {
         console.log(`HTTP server listening on port ${port}`);
         console.log(`  - Health check: GET /health`);
         console.log(`  - Worker API: GET /api/pending-prs, POST /api/pr-status`);
-        console.log(`  - AI API: /api/harvest-data, /api/repo-knowledge, /api/embeddings, /api/pr-analysis, ...`);
+        console.log(`  - AI API: /api/harvest-data, /api/repo-knowledge, /api/pr-analysis, /api/resolve-rules, ...`);
     });
 }
 main().catch(async (error) => {
