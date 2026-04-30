@@ -332,7 +332,6 @@ export interface RepoKnowledge {
   content_chunk: string;
   chunk_index: number;
   last_commit_sha: string | null;
-  embedding?: number[];
   domain_id?: number | null;
   code_element_type?: string | null;
   code_element_name?: string | null;
@@ -340,19 +339,9 @@ export interface RepoKnowledge {
   updated_at: Date;
 }
 
-export interface EmbeddingRecord {
-  id: number;
-  content_type: string;
-  source_id: number;
-  content_text: string;
-  metadata: Record<string, any>;
-  created_at: Date;
-}
-
 export interface CodeExample extends RepoKnowledge {
   domain_name: string;
   domain_display_name: string;
-  similarity?: number;
 }
 
 // --- PR Reviews ---
@@ -483,7 +472,7 @@ export async function deleteRepoKnowledgeForFile(org: string, repo: string, file
   await pool.query('DELETE FROM repo_knowledge WHERE org = $1 AND repo = $2 AND file_path = $3', [org, repo, filePath]);
 }
 
-// --- Vector Search (removed - Ollama-only) ---
+// --- Reviewer discovery (file + code-history based) ---
 
 export async function findReviewersByFiles(filePaths: string[], topK: number = 10): Promise<{ reviewer_login: string; review_count: number; files: string[] }[]> {
   // Extract unique parent directories for fuzzy matching

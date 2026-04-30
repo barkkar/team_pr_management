@@ -635,7 +635,6 @@ async function main(): Promise<void> {
         const body = await parseJsonBody(req);
         const filePaths = body.file_paths || [];
         const prAuthor = body.pr_author || '';
-        const similarReviewsFromVector = body.similar_reviews || [];
 
         // Combine file-based reviewers and code touchers
         const reviewers = await findReviewersByFiles(filePaths, 10);
@@ -648,7 +647,7 @@ async function main(): Promise<void> {
           if (!candidateMap.has(login)) {
             candidateMap.set(login, {
               ghe_login: login, score: 0, files: [],
-              hasReviewed: false, hasAuthored: false, hasSemantic: false,
+              hasReviewed: false, hasAuthored: false,
             });
           }
           return candidateMap.get(login);
@@ -672,20 +671,6 @@ async function main(): Promise<void> {
           c.hasAuthored = true;
         }
 
-        // Signal 3: Reviewers from semantically similar past reviews
-        if (similarReviewsFromVector.length > 0) {
-          const semanticCounts = new Map<string, number>();
-          for (const sr of similarReviewsFromVector) {
-            if (!sr.reviewer_login || sr.reviewer_login === prAuthor) continue;
-            semanticCounts.set(sr.reviewer_login, (semanticCounts.get(sr.reviewer_login) || 0) + 1);
-          }
-          for (const [login, count] of semanticCounts) {
-            const c = ensureCandidate(login);
-            c.score += count * 3;
-            c.hasSemantic = true;
-          }
-        }
-
         // Generate natural reasons
         for (const c of candidateMap.values()) {
           const parts: string[] = [];
@@ -695,11 +680,6 @@ async function main(): Promise<void> {
             parts.push("you've reviewed similar files in this area before");
           } else if (c.hasAuthored) {
             parts.push("you've made changes to related code");
-          }
-          if (c.hasSemantic) {
-            parts.push(parts.length > 0
-              ? 'and have context from reviewing closely related PRs'
-              : "you've reviewed closely related PRs before");
           }
           c.reason = parts.join(' ') || 'familiar with this area of the codebase';
         }
@@ -940,7 +920,7 @@ async function main(): Promise<void> {
 
         let result;
         if (force) {
-          // Return all closed PRs (for re-processing / backfilling embeddings)
+          // Return all closed PRs (for re-processing / backfilling lessons)
           result = await pool.query(`
             SELECT tp.pr_url, tp.org, tp.repo, tp.pr_number, tp.channel_id, tp.message_ts
             FROM tracked_prs tp
