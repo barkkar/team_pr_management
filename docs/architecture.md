@@ -22,7 +22,7 @@
            │                                 │
      Heroku Scheduler                 ┌──────┴──────┐
      (every ~10 min)                  │  Postgres   │
-     scripts/checkReminders.ts        │  + pgvector │
+     scripts/checkReminders.ts        │             │
                                       └─────────────┘
                           ▲
               HTTPS (API key)
@@ -80,7 +80,7 @@ GitHub Enterprise (`*.soma.salesforce.com`) is only reachable inside the corpora
 Triggered per PR either by `localPRChecker` (live) or by `bootstrapLearner` (batch backfill) or by `testReview.ts --post` (dry-run). Pipeline:
 
 1. Fetch PR details + unified diff (`Accept: application/vnd.github.v3.diff`) + file list from GHE.
-2. (Removed — semantic vector search was dropped along with the Ollama integration.)
+(Semantic vector search for past similar reviews was dropped along with the Ollama integration.)
 3. Per file, fetch content fingerprint → domain-scoped code examples via `POST /api/domain-code-examples`.
 4. `POST /api/resolve-rules` → deterministic ontology match (`src/services/ontologyEngine.ts`). Files with no match are classified by Claude (`src/services/ruleClassifier.ts`) against the full taxonomy, then rules are fetched for the predicted domain IDs.
 5. `POST /api/ai-learning-context` (recency-only) → recent lessons + user feedback.

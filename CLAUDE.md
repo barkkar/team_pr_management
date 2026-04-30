@@ -4,7 +4,7 @@ Orientation for Claude sessions working in this repo. Keep this file short — d
 
 ## What this repo is
 
-A Slack bot + background-worker system that watches team Slack channels for GitHub Enterprise PR links, tracks them in Postgres, sends review reminders during PST business hours, and posts AI-generated code reviews (via Claude) with suggested reviewers (via RAG over past reviews and a deterministic rule ontology).
+A Slack bot + background-worker system that watches team Slack channels for GitHub Enterprise PR links, tracks them in Postgres, sends review reminders during PST business hours, and posts AI-generated code reviews (via Claude) with suggested reviewers (via a deterministic rule ontology plus file-path/code-author scoring).
 
 See `README.md` for end-user setup. This file exists for Claude.
 
