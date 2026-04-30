@@ -11,19 +11,18 @@ All workers authenticate with `X-Worker-API-Key` against `WORKER_API_KEY`. Base 
 ### `worker/localPRChecker.ts`
 
 - **CLI**: `npm run worker` (once), `npm run worker:watch` / `node ... --watch` (5-min loop).
-- **Env**: `HEROKU_API_URL`, `WORKER_API_KEY`, `GHE_TOKEN` or `GHE_TOKENS`, plus anything `prAnalyzer` needs (it gets spawned as a child process).
+- **Env**: `HEROKU_API_URL`, `WORKER_API_KEY`, `GHE_TOKEN` or `GHE_TOKENS`.
 - **Loop**:
   1. `GET /api/pending-prs` → list of PRs to check.
   2. For each: GHE call for PR + reviews via `GitHubEnterpriseClient`.
   3. `POST /api/pr-status` with `{ results: [...] }`.
-  4. `GET /api/prs-needing-reviewer-suggestions` → for any PR needing suggestions, spawn `prAnalyzer.js <pr_url>` as a child process.
-- **Constants**: `POLL_INTERVAL_MS = 5 * 60 * 1000` (worker/localPRChecker.ts:39); GHE timeout 10s.
-- **Idempotency**: driven by Heroku-side state (`status_checked_at`, `suggestions_sent`). Safe to re-run.
-- **Env requirements**: GHE + Claude only.
+- **Constants**: `POLL_INTERVAL_MS = 5 * 60 * 1000`; GHE timeout 10s.
+- **Idempotency**: driven by Heroku-side `status_checked_at`. Safe to re-run.
+- Reviewer suggestions are produced independently by `worker/prAnalyzer.ts` — this worker does PR-status polling only.
 
 ### `worker/prAnalyzer.ts`
 
-- **CLI**: `npm run suggest-reviewers -- <pr-url>` (single PR), or spawned by `localPRChecker` for PRs from `/api/prs-needing-reviewer-suggestions`.
+- **CLI**: `npm run suggest-reviewers -- <pr-url>` (single PR), or `npm run suggest-reviewers` to poll `/api/prs-needing-reviewer-suggestions`.
 - **Env**: GHE + Claude only.
 - **Pipeline** (tool-use loop):
   1. Fetch PR metadata from GHE.
