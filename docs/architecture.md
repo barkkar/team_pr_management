@@ -33,17 +33,14 @@
 │  │   └─ spawns worker/prAnalyzer.js per PR               │
 │  ├─ worker/prHarvester.ts     (batch)                    │
 │  ├─ worker/repoHarvester.ts   (batch)                    │
-│  ├─ worker/embeddingPipeline.ts                          │
 │  ├─ worker/userMapper.ts                                 │
 │  ├─ worker/reviewLearner.ts   (--watch = 10 min)         │
 │  ├─ worker/bootstrapLearner.ts (one-shot)                │
-│  ├─ worker/docIngester.ts     (manual)                   │
 │  └─ worker/testReview.ts      (dry-run)                  │
 │                                                          │
 │  External calls (from worker):                           │
 │    • GitHub Enterprise *.soma.salesforce.com             │
 │    • Claude (Bedrock gateway or direct Anthropic API)    │
-│    • Ollama (localhost:11434) for embeddings only        │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -83,12 +80,12 @@ GitHub Enterprise (`*.soma.salesforce.com`) is only reachable inside the corpora
 Triggered per PR either by `localPRChecker` (live) or by `bootstrapLearner` (batch backfill) or by `testReview.ts --post` (dry-run). Pipeline:
 
 1. Fetch PR details + unified diff (`Accept: application/vnd.github.v3.diff`) + file list from GHE.
-2. Ollama-embed the diff → `POST /api/search-similar-reviews` for RAG context.
-3. Per file, fetch content fingerprint + embedding → domain-scoped code examples via `POST /api/domain-code-examples`.
+2. (Removed — semantic vector search was dropped along with the Ollama integration.)
+3. Per file, fetch content fingerprint → domain-scoped code examples via `POST /api/domain-code-examples`.
 4. `POST /api/resolve-rules` → deterministic ontology match (`src/services/ontologyEngine.ts`). Files with no match are classified by Claude (`src/services/ruleClassifier.ts`) against the full taxonomy, then rules are fetched for the predicted domain IDs.
-5. `POST /api/ai-learning-context` (embedding-weighted) → recent lessons + user feedback.
+5. `POST /api/ai-learning-context` (recency-only) → recent lessons + user feedback.
 6. Three Claude passes:
-   - **Pass 1**: implementation bugs, using similar reviews + learning context.
+   - **Pass 1**: implementation bugs, using learning context.
    - **Pass 2**: rule compliance, using resolved ontology rules.
    - **Pass 3**: test coverage, using test-file diff.
 7. Merge + dedupe comments, `POST /api/suggested-reviewers` for reviewer ranking, `POST /api/pr-analysis` → Heroku stores in `pr_analysis_results` **and** posts a threaded Slack reply via `formatSlackAnalysis` (`src/index.ts:77-286`).
@@ -106,7 +103,7 @@ Two paths converge on `ai_review_lessons`:
 - **In-line**: `localPRChecker` extracts lessons as soon as a PR closes.
 - **Polling**: `worker/reviewLearner.ts --watch` runs every 10 min; `worker/bootstrapLearner.ts` does a batch backfill (default 50 PRs, `--force` re-processes).
 
-Each stores `lessons_json` + a 768-dim embedding. `GET /api/ai-learning-context` returns either the top-N most similar lessons (POST with embedding) or the N most recent (GET). Consumed by `prAnalyzer` Pass 1.
+Each stores `lessons_json`. `GET /api/ai-learning-context` returns the N most recent lessons. Consumed by `prAnalyzer` Pass 1.
 
 ## Critical timing / business rules
 
@@ -125,7 +122,5 @@ A directed graph of `code_domains` (parent_id references the same table for hier
 ## What *not* to do
 
 - Don't call GHE from `src/`. It won't work from Heroku.
-- Don't use Ollama for chat. The migration away from it was intentional.
-- Don't embed with dimensions other than 768. Every `vector(768)` column and every IVFFlat index assumes it.
 - Don't bypass `channelAccessControl` — the app hard-exits without `ALLOWED_CHANNEL_IDS` and silently drops blocked channels.
 - Don't trust `process.env.WORKER_API_KEY` being set locally; copy it from Heroku with `heroku config:get WORKER_API_KEY`.

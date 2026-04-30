@@ -35,24 +35,6 @@ Every route is served by the single HTTP server created in `src/index.ts:336`. T
 | POST | `/api/user-mappings` | `{mappings[]}` | `userMapper` upserts GHE↔Slack mappings. |
 | GET | `/api/domain-file-mappings` | — | Ordered by `priority DESC`; used by `repoHarvester` to assign `domain_id` per chunk. |
 
-## Embeddings
-
-| Method | Path | Body / Query | Purpose |
-|---|---|---|---|
-| GET | `/api/unembedded-reviews?limit=50` | — | Reviews without a matching `pr_embeddings` row. |
-| GET | `/api/unembedded-repo-knowledge?limit=50` | — | `repo_knowledge` rows with NULL embedding. |
-| POST | `/api/embeddings` | `{embeddings: [{content_type, source_id, content_text, embedding[], metadata}]}` | Insert into `pr_embeddings`. |
-| POST | `/api/repo-knowledge-embeddings` | `{updates: [{id, embedding[]}]}` | Update `repo_knowledge.embedding` in place. |
-
-## Vector search (used by `prAnalyzer`)
-
-| Method | Path | Body | Purpose |
-|---|---|---|---|
-| POST | `/api/search-similar-reviews` | `{embedding[], top_k?}` (default 10) | `1 - (e.embedding <=> $1)` ordered ascending. |
-| POST | `/api/search-similar-code` | `{embedding[], top_k?}` (default 5 at the HTTP layer — `src/index.ts:741`; the underlying `searchSimilarCode` defaults to 10) | Queries `repo_knowledge`. |
-| POST | `/api/suggested-reviewers` | `{file_paths[], pr_author?, similar_reviews?}` | Three-signal ranker (file reviewers ×2, file authors ×1, semantic ×3; caps at 20; Slack-mapped users only). Returns top 5. |
-| POST | `/api/domain-code-examples` | `{domain_ids, changed_files, org?, repo?, element_types?, limit?=5, max_per_file?=1}` | Test endpoint for `fetchDomainScopedCodeExamples`. |
-
 ## Analysis lifecycle
 
 | Method | Path | Body | Purpose |
@@ -60,6 +42,8 @@ Every route is served by the single HTTP server created in `src/index.ts:336`. T
 | GET | `/api/prs-needing-analysis` | — | Tracked PRs from last 24h that have no `pr_analysis_results` row. `LIMIT 10`. |
 | POST | `/api/pr-analysis` | `{pr_url, channel_id, message_ts, review, reviewers}` | Worker submits final review. Stored, and posted to Slack as a thread reply when `channel_id !== 'manual'`. |
 | POST | `/api/repost-analysis` | `{pr_url, channel_id?, message_ts?}` | Re-posts stored analysis if the first post failed. |
+| POST | `/api/suggested-reviewers` | `{file_paths[], pr_author?}` | Two-signal ranker (file reviewers ×2, file authors ×1; caps at 20; Slack-mapped users only). Returns top 5. |
+| POST | `/api/domain-code-examples` | `{domain_ids, changed_files, org?, repo?, element_types?, limit?=5, max_per_file?=1}` | Test endpoint for `fetchDomainScopedCodeExamples`. |
 
 ## Feedback + learning
 
@@ -67,19 +51,9 @@ Every route is served by the single HTTP server created in `src/index.ts:336`. T
 |---|---|---|---|
 | POST | `/api/ai-feedback` | `{pr_url, user_id, rating, feedback_text?}` | External ingest of feedback (Slack buttons go through the Bolt action handler). |
 | GET | `/api/prs-needing-lessons` | — | Closed PRs with AI review but no lessons. |
-| POST | `/api/ai-lessons` | `{pr_url, ai_review, peer_comments, lessons, embedding?}` | Store extracted lessons. |
-| GET / POST | `/api/ai-learning-context?limit=5` | POST body `{embedding?[]}` (`limit` is only read from the query string — `src/index.ts:1041-1042`) | POST w/ embedding → top-N similar lessons; GET → N most recent. Both responses include `{lessons, feedback}`. `limit` is clamped to 5 (lessons) and 3 (feedback). |
+| POST | `/api/ai-lessons` | `{pr_url, ai_review, peer_comments, lessons}` | Store extracted lessons. |
+| GET / POST | `/api/ai-learning-context?limit=5` | `limit` via query string only | Accepts GET or POST; returns `{lessons, feedback}` from recency lookup only. `limit` is clamped to 5 (lessons) and 3 (feedback). |
 | GET | `/api/closed-prs-without-lessons?limit=50&force=true` | — | `bootstrapLearner` input. `force=true` returns all closed PRs that *do* have `pr_analysis_results`. |
-
-## Team documents (RAG over design docs)
-
-| Method | Path | Body | Purpose |
-|---|---|---|---|
-| POST | `/api/search-similar-docs` | `{embedding[], top_k?=3}` | |
-| POST | `/api/search-docs-by-title` | `{embedding[], patterns[], top_k?=5}` | Title `LIKE ANY(patterns)` pre-filter. |
-| GET | `/api/team-documents` | — | List aggregated `{source_url, title, doc_type, chunks}`. |
-| POST | `/api/team-documents` | `{source_url, title, doc_type?='design', chunks[]}` | Upsert doc — deletes existing chunks for that `source_url` first. |
-| DELETE | `/api/team-documents` | `{source_url}` | |
 
 ## Ontology
 
