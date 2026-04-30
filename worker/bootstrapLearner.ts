@@ -396,15 +396,15 @@ async function processPR(pr: any): Promise<boolean> {
 
   try {
     // 1. Fetch PR details, diff, files
-    log('  [1/9] Fetching PR details...');
+    log('  [1/8] Fetching PR details...');
     const prDetails = await fetchPRDetails(hostname, org, repo, pr_number);
     const prTitle = prDetails.title || `PR #${pr_number}`;
     const prAuthor = prDetails.user?.login || '';
 
-    log('  [2/9] Fetching PR diff...');
+    log('  [2/8] Fetching PR diff...');
     const prDiff = await fetchPRDiff(hostname, org, repo, pr_number);
 
-    log('  [3/9] Fetching changed files...');
+    log('  [3/8] Fetching changed files...');
     const prFiles = await fetchPRFiles(hostname, org, repo, pr_number);
     const changedFiles = prFiles.map((f: any) => f.filename);
     log(`         "${prTitle}" by ${prAuthor}: ${changedFiles.length} files, ${prDiff.length} chars diff`);
@@ -412,11 +412,11 @@ async function processPR(pr: any): Promise<boolean> {
     // Semantic vector search removed — domain-scoped code examples only.
 
     // 4. Fetch learning context
-    log('  [4/9] Fetching learning context...');
+    log('  [4/8] Fetching learning context...');
     const learningContext = await fetchLearningContext();
 
     // 5. Generate AI review via LLM
-    log('  [5/9] Generating AI review via Claude...');
+    log('  [5/8] Generating AI review via Claude...');
     const systemPrompt = buildSystemPrompt(changedFiles.length);
     const userPrompt = buildUserPrompt(prTitle, prDiff, changedFiles, learningContext);
 
@@ -435,24 +435,24 @@ async function processPR(pr: any): Promise<boolean> {
     }
 
     // 6. Store AI review
-    log('  [6/9] Storing AI review...');
+    log('  [6/8] Storing AI review...');
     await reportAnalysisResults({
       pr_url, channel_id: channel_id || 'bootstrap', message_ts: message_ts || '0',
       review, reviewers: [],
     });
 
     // 7. Fetch peer review comments
-    log('  [7/9] Fetching peer review comments...');
+    log('  [7/8] Fetching peer review comments...');
     const peerComments = await fetchPeerComments(hostname, org, repo, pr_number);
     log(`         ${peerComments.length} peer comment(s)`);
 
     // 8-9. Compare AI vs peer + store lessons
     let lessons: any;
     if (peerComments.length === 0) {
-      log('  [8/9] No peer comments — storing placeholder lesson...');
+      log('  [8/8] No peer comments — storing placeholder lesson...');
       lessons = { missed_issues: [], wrong_calls: [], correct_calls: [], patterns: [], review_blind_spots: [], key_takeaways: ['No peer comments available for comparison'] };
     } else {
-      log('  [8/9] Comparing AI vs peer reviews via LLM...');
+      log('  [8/8] Comparing AI vs peer reviews via LLM...');
       lessons = await generateLessonsViaLLM(review, peerComments, prDiff);
       log(`         Missed: ${lessons.missed_issues.length} | Wrong: ${lessons.wrong_calls.length} | Correct: ${lessons.correct_calls.length}`);
       log(`         Patterns: ${(lessons.patterns || []).join('; ')}`);
