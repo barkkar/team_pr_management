@@ -55,7 +55,6 @@ export async function fetchDomainScopedCodeExamples(
     WHERE
       rk.domain_id = ANY($1::int[])
       AND rk.file_path <> ALL($2::text[])
-      AND rk.embedding IS NOT NULL
   `;
 
   const params: any[] = [domainIds, changedFiles];

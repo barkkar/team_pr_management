@@ -276,7 +276,6 @@ export function createApp(): App {
             );
             const reviewCount = await pool.query('SELECT COUNT(*) as count FROM pr_reviews');
             const fileCount = await pool.query('SELECT COUNT(*) as count FROM pr_files');
-            const embeddingCount = await pool.query('SELECT COUNT(*) as count FROM pr_embeddings');
             const repoKnowledgeCount = await pool.query('SELECT COUNT(*) as count FROM repo_knowledge');
             const userMappingCount = await pool.query('SELECT COUNT(*) as count FROM user_mappings');
             const mappedCount = await pool.query('SELECT COUNT(*) as count FROM user_mappings WHERE slack_user_id IS NOT NULL');
@@ -295,7 +294,6 @@ export function createApp(): App {
                 `*Data:*\n` +
                 `• PR review comments: ${reviewCount.rows[0].count}\n` +
                 `• PR files tracked: ${fileCount.rows[0].count}\n` +
-                `• Embeddings: ${embeddingCount.rows[0].count}\n` +
                 `• Codebase chunks: ${repoKnowledgeCount.rows[0].count}\n` +
                 `• User mappings: ${userMappingCount.rows[0].count} (${mappedCount.rows[0].count} with Slack ID)\n\n` +
                 `*Repos:*\n${repoLines}`,
