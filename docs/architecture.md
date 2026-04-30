@@ -31,12 +31,8 @@
 │  Local VPN worker laptop                                 │
 │  ├─ worker/localPRChecker.ts  (--watch = 5 min)          │
 │  │   └─ spawns worker/prAnalyzer.js per PR               │
-│  ├─ worker/prHarvester.ts     (batch)                    │
-│  ├─ worker/repoHarvester.ts   (batch)                    │
-│  ├─ worker/userMapper.ts                                 │
-│  ├─ worker/reviewLearner.ts   (--watch = 10 min)         │
-│  ├─ worker/bootstrapLearner.ts (one-shot)                │
-│  └─ worker/testReview.ts      (dry-run)                  │
+│  ├─ worker/testSuggestReviewers.ts (dry-run)             │
+│  └─ worker/userMapper.ts                                 │
 │                                                          │
 │  External calls (from worker):                           │
 │    • GitHub Enterprise *.soma.salesforce.com             │
@@ -72,38 +68,12 @@ GitHub Enterprise (`*.soma.salesforce.com`) is only reachable inside the corpora
 1. `GET /api/pending-prs` → list of PRs due for a status check.
 2. For each: call GHE `GET /repos/{org}/{repo}/pulls/{n}` + `/reviews` (via `GitHubEnterpriseClient`, per-hostname token from `gheTokenResolver`), compute `is_open` + `has_reviews`.
 3. `POST /api/pr-status` with `{ results: [...] }` → Heroku updates `tracked_prs`.
-4. For newly tracked PRs: spawn `worker/prAnalyzer.js` as a child process to generate an AI review (see §4).
-5. For closed PRs without stored lessons: fetch peer comments from GHE, call Claude to compare AI review vs peer comments, `POST /api/ai-lessons`.
+4. `GET /api/prs-needing-reviewer-suggestions` → for any PR needing suggestions, spawn `prAnalyzer.js` as a child process (see §4).
 
-### 4. AI review generation (prAnalyzer 3-pass)
+### 4. Reviewer suggestion (prAnalyzer tool-use loop)
 
-Triggered per PR either by `localPRChecker` (live) or by `bootstrapLearner` (batch backfill) or by `testReview.ts --post` (dry-run). Pipeline:
+Triggered per PR by `localPRChecker` when a new PR is detected. The worker invokes Claude with four tools (`fetch_pr_files`, `fetch_pr_diff`, `get_past_reviewers`, `get_past_authors`). Claude decides what to fetch; the worker executes each tool call against GHE + Postgres and returns results. After up to 6 rounds, Claude returns a JSON list of up to 5 suggested reviewers with reasons. The Heroku app resolves Slack IDs and posts a threaded reply.
 
-1. Fetch PR details + unified diff (`Accept: application/vnd.github.v3.diff`) + file list from GHE.
-(Semantic vector search for past similar reviews was dropped along with the Ollama integration.)
-3. Per file, fetch content fingerprint → domain-scoped code examples via `POST /api/domain-code-examples`.
-4. `POST /api/resolve-rules` → deterministic ontology match (`src/services/ontologyEngine.ts`). Files with no match are classified by Claude (`src/services/ruleClassifier.ts`) against the full taxonomy, then rules are fetched for the predicted domain IDs.
-5. `POST /api/ai-learning-context` (recency-only) → recent lessons + user feedback.
-6. Three Claude passes:
-   - **Pass 1**: implementation bugs, using learning context.
-   - **Pass 2**: rule compliance, using resolved ontology rules.
-   - **Pass 3**: test coverage, using test-file diff.
-7. Merge + dedupe comments, `POST /api/suggested-reviewers` for reviewer ranking, `POST /api/pr-analysis` → Heroku stores in `pr_analysis_results` **and** posts a threaded Slack reply via `formatSlackAnalysis` (`src/index.ts:77-286`).
-
-### 5. Slack feedback loop
-
-- Overall review: 👍/👎 buttons → `ai_review_helpful` / `ai_review_not_helpful` actions (`src/app.ts:381`) → opens a modal → `ai_review_feedback_modal` view handler writes to `ai_review_feedback`.
-- Per-comment: 👍/👎 buttons are only rendered when the full message fits under Slack's 50-block limit (`src/index.ts:110-115`). Writes to `ai_comment_feedback`.
-- Rule-level feedback is written via `POST /api/ontology/rule-feedback` (`src/index.ts:1385`) → `rule_feedback` table.
-
-### 6. Learning loop
-
-Two paths converge on `ai_review_lessons`:
-
-- **In-line**: `localPRChecker` extracts lessons as soon as a PR closes.
-- **Polling**: `worker/reviewLearner.ts --watch` runs every 10 min; `worker/bootstrapLearner.ts` does a batch backfill (default 50 PRs, `--force` re-processes).
-
-Each stores `lessons_json`. `GET /api/ai-learning-context` returns the N most recent lessons. Consumed by `prAnalyzer` Pass 1.
 
 ## Critical timing / business rules
 
@@ -112,12 +82,7 @@ Each stores `lessons_json`. `GET /api/ai-learning-context` returns the N most re
 - If a PR is posted ≥ 5 PM, its first reminder shifts to the next 9 AM business day (`src/utils/timezone.ts:19-31, 38-52`).
 - Worker status freshness threshold: **10 min** (`src/services/reminder.ts:38-44`). Reminders are suppressed when the stored status is staler than that — forces waiting for fresh worker data.
 - `localPRChecker` polling loop: **5 min** (`worker/localPRChecker.ts:39`).
-- `reviewLearner` polling loop: **10 min** (`worker/reviewLearner.ts:22`).
-- Slack section text limit: **2900 chars** (`src/index.ts:56`, leaves margin vs Slack's 3000 limit). Blocks are capped at **50** per message; per-comment feedback buttons are skipped when that would overflow.
 
-## Ontology review in one paragraph
-
-A directed graph of `code_domains` (parent_id references the same table for hierarchy), `code_rules` belonging to a domain, `rule_matchers` (code-pattern or annotation), and `domain_file_mappings` (glob pattern → domain). `resolveRulesForPR` walks file paths against glob mappings (minimatch, `dot: true, nocase: true`), then fetches every rule for the matched domains and their ancestors via a recursive CTE, then scans the diff text for `code_pattern`/`annotation` matchers that resolve to additional rules. Files with zero deterministic hits get sent to the LLM classifier, which picks a subset of domain IDs from the taxonomy; rules are fetched for those. See `docs/ontology.md`.
 
 ## What *not* to do
 

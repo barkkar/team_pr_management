@@ -4,7 +4,7 @@ Orientation for Claude sessions working in this repo. Keep this file short — d
 
 ## What this repo is
 
-A Slack bot + background-worker system that watches team Slack channels for GitHub Enterprise PR links, tracks them in Postgres, sends review reminders during PST business hours, and posts AI-generated code reviews (via Claude) with suggested reviewers (via a deterministic rule ontology plus file-path/code-author scoring).
+A Slack bot + background-worker system that watches team Slack channels for GitHub Enterprise PR links, tracks them in Postgres, sends review reminders during PST business hours, and posts suggested reviewers using a Claude tool-use loop (Claude decides what PR data to fetch; the worker executes tool calls; Claude returns reviewer suggestions with reasons).
 
 See `README.md` for end-user setup. This file exists for Claude.
 
@@ -35,7 +35,6 @@ Start with the doc that matches the task:
 - `docs/services.md` — per-module notes for `src/services/` and `src/utils/`.
 - `docs/api-endpoints.md` — every HTTP route exposed by `src/index.ts`, grouped by function.
 - `docs/workers.md` — what each `worker/*` and `scripts/*` file does, when to run it, how it's idempotent.
-- `docs/ontology.md` — hybrid deterministic-rules + LLM-classifier design (3-pass AI review).
 - `docs/environment.md` — every `process.env.*` read in the codebase, with required/optional + source location.
 
 ## House rules when editing
@@ -46,14 +45,13 @@ Start with the doc that matches the task:
 - **Channel access control is enforced at module load** (`src/services/channelAccessControl.ts`). The app hard-exits if `ALLOWED_CHANNEL_IDS` is missing or empty. Non-allowlisted channels are silently dropped both in Socket Mode and the slash command.
 - **Worker API auth is required.** If `WORKER_API_KEY` is unset on Heroku, every `/api/*` endpoint returns 401 (`src/index.ts:47-50`). `/health` is public.
 - **Errors should funnel through `notifyError`** (`src/utils/errorNotifier.ts`). It throttles to 1 per minute per source+message and gracefully no-ops if `ERROR_SLACK_CHANNEL_ID` is unset.
+- **Claude has tool-use access via `claudeToolLoop`** (`src/services/claudeClient.ts`). The worker executes tools; Claude never makes HTTP calls itself.
 
 ## Common pitfalls
 
-- The `pr_url` column is the de-facto primary key across `tracked_prs`, `pr_analysis_results`, `ai_review_lessons`, `ai_review_feedback`. Joins assume string-equality on the full URL — never substring-match.
+- The `pr_url` column is the de-facto primary key across `tracked_prs` and related tables. Joins assume string-equality on the full URL — never substring-match.
 - The Heroku dyno cannot resolve GHE hostnames. If you add a feature that needs a live GHE call, route it through the worker.
-- `reviewLearner.ts` and `localPRChecker.ts` both perform lesson extraction. Don't add a third; check which one owns the path you're touching.
-- Severity ordering is critical → high → medium → low (`src/services/ontologyEngine.ts:375`). Slack block formatting in `src/index.ts:94-99` depends on that order.
-- Some DB migrations touch the same table (`tracked_prs` 001/003/005/006; `repo_knowledge` 008/017). When reading schema, consult `docs/database.md` for the merged view, not a single migration file.
+- Some DB migrations touch the same table (`tracked_prs` 001/003/005/006/020). When reading schema, consult `docs/database.md` for the merged view, not a single migration file.
 
 ## Tooling
 

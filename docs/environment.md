@@ -20,7 +20,7 @@ All `process.env.*` reads in the codebase. Required means the process hard-exits
 | `HEROKU_API_URL` | Base URL to the Heroku app (e.g., `https://pr-manager.herokuapp.com`). Every worker reads this. |
 | `WORKER_API_KEY` | Shared secret — must match Heroku's `WORKER_API_KEY` Heroku config var. Every worker sets this as `X-Worker-API-Key`. |
 | `GHE_TOKEN` **or** `GHE_TOKENS` | Same as Heroku; workers call GHE directly. |
-| For Claude: `ANTHROPIC_BEDROCK_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` (preferred) or `ANTHROPIC_API_KEY` (fallback). `claudeChat` throws at call-time if neither pair is set (`src/services/claudeClient.ts:184-187`). |
+| For Claude: `ANTHROPIC_BEDROCK_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` (preferred) or `ANTHROPIC_API_KEY` (fallback). `claudeChat` and `claudeToolLoop` throw at call-time if neither pair is set (`src/services/claudeClient.ts`). |
 
 ## Optional
 
@@ -60,7 +60,7 @@ All `process.env.*` reads in the codebase. Required means the process hard-exits
 | `axios` | `claudeClient.ts` (Bedrock), `github.ts`, workers | HTTP client for GHE + Bedrock + Heroku API. |
 | `dotenv` | `src/index.ts:1` etc. | Loads `.env` at startup. |
 | `luxon` | `src/utils/timezone.ts` | Timezone-aware datetime. |
-| `minimatch` | `ontologyEngine.ts` | Glob matching for `domain_file_mappings`. |
+| `minimatch` | (legacy) | Previously used for glob matching. |
 | `pg` | `src/db/client.ts`, migrate.ts | Postgres. |
 
 Dev deps: `typescript` 5.7, `ts-node` 10.9, `@types/*` for `luxon`, `minimatch`, `node`, `pg`.

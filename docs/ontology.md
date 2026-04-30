@@ -1,6 +1,6 @@
 # Ontology & 3-pass review
 
-This repo has a deterministic rule system for Pass 2 of the AI code review, backed by a hierarchical domain taxonomy. LLM classification is the fallback when deterministic matching finds nothing.
+**DEPRECATED**: This document describes the ontology-based AI review system that was removed in migration 019. The system now uses a tool-use loop for reviewer suggestions only. This file is kept for historical reference.
 
 ## Why this exists
 

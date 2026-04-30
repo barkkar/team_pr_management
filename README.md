@@ -35,7 +35,7 @@ A Slack bot that monitors team channels for GitHub Enterprise PR links and sends
                         └──────────────────┘
 ```
 
-The local worker runs on your VPN-connected laptop to check PR status from internal GitHub Enterprise servers, then reports the status back to Heroku. AI reviews are generated via **Claude AI API** (Anthropic). Semantic retrieval has been removed; reviewer suggestions and code context use deterministic file-path + ontology matching.
+The local worker runs on your VPN-connected laptop to check PR status from internal GitHub Enterprise servers, then reports the status back to Heroku. When a new PR is detected, the worker invokes Claude with four tools to suggest reviewers.
 
 ## Prerequisites
 
@@ -175,7 +175,7 @@ The local worker runs on your laptop (behind VPN) to check PR status from intern
    HEROKU_API_URL=https://your-app-name.herokuapp.com
    WORKER_API_KEY=<same-key-as-heroku>
 
-   # Claude AI (required for LLM chat/review generation)
+   # Claude AI (required for reviewer suggestions)
    ANTHROPIC_API_KEY=sk-ant-...
    CLAUDE_MODEL=claude-sonnet-4-20250514
    ```
@@ -261,13 +261,11 @@ launchctl list | grep pr-worker
 │   │   ├── reminder.ts           # Reminder processing
 │   │   ├── channelPoller.ts      # Channel polling for PRs
 │   │   ├── channelAccessControl.ts # Channel allowlist enforcement
-│   │   ├── claudeClient.ts       # Claude AI (Anthropic) shared client for all LLM chat calls
-│   │   ├── ontologyEngine.ts     # Deterministic rule resolver (file paths + code patterns → exact rules)
-│   │   └── ruleClassifier.ts     # LLM-as-classifier fallback (via Claude) for edge cases
+│   │   └── claudeClient.ts       # Claude AI (Anthropic) chat + tool-use loop
 │   ├── db/
 │   │   ├── client.ts             # PostgreSQL client + queries
 │   │   ├── migrate.ts            # Migration runner
-│   │   └── migrations/           # SQL migrations (includes 015/016 for ontology tables + seed data)
+│   │   └── migrations/           # SQL migrations
 │   └── utils/
 │       ├── timezone.ts           # Business hours logic
 │       ├── prParser.ts           # PR URL parser
@@ -275,11 +273,9 @@ launchctl list | grep pr-worker
 ├── scripts/
 │   └── checkReminders.ts         # Scheduled job (Heroku Scheduler)
 ├── worker/
-│   ├── localPRChecker.ts         # Local VPN worker (status checks + lesson extraction)
-│   ├── prAnalyzer.ts             # AI PR analysis worker (multi-pass review via Claude)
-│   ├── testReview.ts             # Dry-run AI review for a single PR (no Slack posting)
-│   ├── bootstrapLearner.ts       # Batch lesson extraction for closed PRs
-│   └── reviewLearner.ts          # Continuous lesson extraction worker
+│   ├── localPRChecker.ts         # Local VPN worker (status checks)
+│   ├── prAnalyzer.ts             # Reviewer suggestion worker (tool-use loop via Claude)
+│   └── testSuggestReviewers.ts   # Dry-run reviewer suggestion for a single PR
 ├── package.json
 ├── tsconfig.json
 ├── Procfile
@@ -294,35 +290,13 @@ The Heroku app exposes these endpoints for the local worker:
 |----------|--------|-------------|
 | `/api/pending-prs` | GET | Get PRs needing status check |
 | `/api/pr-status` | POST | Report PR status from worker |
-| `/api/resolve-rules` | POST | Resolve ontology rules for a PR (changed files + diff) |
-| `/api/ontology/taxonomy` | GET | Get full domain taxonomy with rule counts |
-| `/api/ontology/domains` | GET/POST | List or create code domains |
-| `/api/ontology/rules` | GET/POST | List or create coding rules (with matchers) |
-| `/api/ontology/rules/:id` | PUT/DELETE | Update or delete a coding rule |
-| `/api/ontology/rule-feedback` | POST | Record human override/dismissal of a rule |
+| `/api/past-reviewers` | POST | Find reviewers who reviewed files in the given paths |
+| `/api/past-authors` | POST | Find authors who changed files in the given paths |
+| `/api/prs-needing-reviewer-suggestions` | GET | PRs from last 24h needing reviewer suggestions |
+| `/api/pr-reviewers` | POST | Worker submits suggested reviewers; Heroku posts to Slack |
 | `/health` | GET | Health check |
 
 All `/api/*` endpoints require the `X-Worker-API-Key` header.
-
-### Ontology Rule Engine
-
-The bot uses a **hybrid ontology + LLM classifier** for deterministic code rule enforcement during Pass 2 (compliance review):
-
-1. **Deterministic matching** — File paths are matched against `domain_file_mappings` (glob patterns) to find applicable domains, then rules are fetched for those domains (with ancestor inheritance via recursive CTE). Code patterns in the diff are also matched against `rule_matchers`.
-2. **LLM classifier fallback** — For files with no deterministic matches, **Claude AI** classifies the diff into domain categories using the full taxonomy as context, then fetches exact rules for those domains.
-
-To seed initial rules, run the migrations:
-```bash
-npm run migrate
-```
-
-To add new rules via the API:
-```bash
-curl -X POST "$HEROKU_API_URL/api/ontology/rules" \
-  -H "X-Worker-API-Key: $WORKER_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"domain_id": 1, "rule_key": "entity.field.must_have_help_text", "title": "Entity Fields Must Have Help Text", "description": "All custom entity fields must include a help text description.", "severity": "high", "matchers": [{"matcher_type": "code_pattern", "pattern": "CustomField", "is_regex": false}]}'
-```
 
 ## Scripts
 
@@ -335,14 +309,8 @@ curl -X POST "$HEROKU_API_URL/api/ontology/rules" \
 | `npm run check-reminders` | Run reminder check (for scheduler) |
 | `npm run worker` | Run local VPN worker once |
 | `npm run worker:watch` | Run local VPN worker continuously |
-| `npm run test-review -- <PR_URL>` | Dry-run AI review for a single PR (prints to console, no Slack posting) |
-| `npm run test-review -- <PR_URL> --no-mention` | Same as above but suppresses reviewer @mentions |
-| `npm run test-review -- <PR_URL> --post --channel=CHANNEL_ID` | Run AI review and post result to Slack |
-| `npm run bootstrap-learn` | Batch process closed PRs through the full RAG + lesson pipeline (default limit: 50) |
-| `npm run bootstrap-learn -- --limit 10` | Same as above with custom limit |
-| `npm run bootstrap-learn -- --force` | Re-process PRs that already have lessons |
-| `npm run review-learn` | Run lesson extraction once for PRs needing lessons |
-| `npm run review-learn -- --watch` | Run lesson extraction continuously (every 10 minutes) |
+| `npm run suggest-reviewers -- <PR_URL>` | Dry-run reviewer suggestion for a single PR (prints to console) |
+| `npm run test-suggest-reviewers -- <PR_URL>` | Dry-run reviewer suggestion with detailed logging |
 
 ## Environment Variables
 
