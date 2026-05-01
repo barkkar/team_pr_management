@@ -20,14 +20,21 @@ Heroku Scheduler's fallback path for PRs missed by Socket Mode. Pulls channels f
 
 ### `claudeClient.ts`
 
-Routes every Claude chat and tool-use call. Exports both `claudeChat` and `claudeToolLoop`. Two modes decided at import time by env vars:
+Routes every Claude chat and tool-use call. Two modes decided at import time by env vars:
 
 1. **Bedrock proxy** (preferred): raw axios POST to `{BEDROCK_BASE_URL}/v1/messages` with `x-api-key: {AUTH_TOKEN}` + `anthropic-version: 2023-06-01`. The code strips a trailing `/bedrock` from the base URL (so `.../bedrock` and `.../bedrock/` both work). 120s timeout.
 2. **Direct Anthropic API**: uses `@anthropic-ai/sdk`.
 
-The default model is `claude-3-5-sonnet-20241022` (`claudeClient.ts:21`). `jsonMode` appends a hard instruction telling Claude to respond with valid JSON only, no code fences.
+The code default model is `claude-3-5-sonnet-20241022` (`claudeClient.ts:20`); Heroku production overrides via `CLAUDE_MODEL` env var. `jsonMode` on `claudeChat` appends a hard instruction telling Claude to respond with valid JSON only, no code fences.
 
-`claudeToolLoop` runs a multi-turn conversation with tool-use support. The caller provides tool definitions and a tool-execution handler; the loop runs up to `maxRounds` (default 6), collecting tool results and feeding them back to Claude. Returns `{content, toolUseCount, rounds, stopReason}`.
+Exports:
+- `claudeChat(systemPrompt?, userPrompt, { temperature?, maxTokens?, jsonMode? })` — single-turn chat.
+- `claudeToolLoop(systemPrompt?, userPrompt, tools, { temperature?, maxTokens?, maxIterations?=6, onToolCall })` — multi-turn conversation with tool use. Caller supplies tool schemas (`ClaudeTool[]`) and an `onToolCall` handler; the loop feeds tool results back to Claude until it returns `end_turn` / `stop_sequence` or hits `maxIterations`. Returns `{ finalText, iterations, toolCalls }`.
+- `extractJsonFromClaudeText<T>(text): T | null` — tolerant JSON parser for Claude final messages. Tries plain `JSON.parse`, then strips ` ```json ``` ` fences, then grabs the outermost `{...}` block. Used by the reviewer-suggestion workers because Claude Opus 4.x sometimes adds a preamble.
+- `checkClaudeHealth()` — sends "Respond with exactly: ok" and verifies the reply contains "ok".
+- `getClaudeModel(): string` — returns the model ID currently in effect.
+
+Type exports: `ClaudeChatOptions`, `ClaudeTool`, `ClaudeToolCall`, `ClaudeToolResult`, `ToolLoopOptions`, `ToolLoopResult`.
 
 Env vars read: `ANTHROPIC_BEDROCK_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `CLAUDE_MODEL`.
 

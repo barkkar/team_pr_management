@@ -26,7 +26,7 @@ All `process.env.*` reads in the codebase. Required means the process hard-exits
 
 | Var | Default | Purpose |
 |---|---|---|
-| `CLAUDE_MODEL` | `claude-3-5-sonnet-20241022` (`src/services/claudeClient.ts:21`) | Claude model ID. Code default is the 3-5 Sonnet above; production Heroku config may override via this var. `.env.example` shows `claude-sonnet-4-20250514` as the reference production value. |
+| `CLAUDE_MODEL` | `claude-3-5-sonnet-20241022` (`src/services/claudeClient.ts:20`) | Claude model ID. Code default is the 3-5 Sonnet above; Heroku production overrides via this env var. `.env.example` documents `claude-sonnet-4-20250514`; the live Heroku app is currently running `claude-opus-4-6-v1`. |
 | `ANTHROPIC_BEDROCK_BASE_URL` | — | Internal Bedrock gateway URL. If set with `ANTHROPIC_AUTH_TOKEN`, Bedrock mode is used. |
 | `ANTHROPIC_AUTH_TOKEN` | — | Auth token for the Bedrock gateway. |
 | `ANTHROPIC_API_KEY` | — | Direct Anthropic API key. Used only if Bedrock vars are not both set. |

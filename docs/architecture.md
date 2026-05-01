@@ -7,7 +7,6 @@
                        │  Slack workspace        │
                        │  • /pr-monitor command  │
                        │  • PR-link messages     │
-                       │  • Feedback buttons     │
                        └──────────┬──────────────┘
                      Socket Mode  │  HTTP (slash/actions)
                                   ▼
@@ -64,18 +63,21 @@ GitHub Enterprise (`*.soma.salesforce.com`) is only reachable inside the corpora
 
 ### 3. VPN worker loop
 
-`worker/localPRChecker.ts` (`--watch` = 5-min loop):
+`worker/localPRChecker.ts` (`--watch` = 5-min loop) — one process on the laptop handles both PR-status polling AND reviewer-suggestion polling, in order:
 
 1. `GET /api/pending-prs` → list of PRs due for a status check.
 2. For each: call GHE `GET /repos/{org}/{repo}/pulls/{n}` + `/reviews` (via `GitHubEnterpriseClient`, per-hostname token from `gheTokenResolver`), compute `is_open` + `has_reviews`.
 3. `POST /api/pr-status` with `{ results: [...] }` → Heroku updates `tracked_prs`.
-`localPRChecker` only polls PR status. Reviewer suggestions are produced by a separate `prAnalyzer` process — see §4.
+4. `await runSuggestReviewersLoop()` — imported from `worker/prAnalyzer.ts` (`worker/localPRChecker.ts:23, ~225`). See §4 for what this does. Errors here are logged but do NOT fail the status-polling step.
 
 ### 4. Reviewer suggestion (prAnalyzer tool-use loop)
 
-`worker/prAnalyzer.ts` runs as its own polling daemon (`npm run suggest-reviewers` — invoke per PR with `-- <pr-url>`, or let the default polling loop pick PRs). Polls `GET /api/prs-needing-reviewer-suggestions` for tracked PRs with `suggestions_sent=FALSE` from the last 24h.
+`worker/prAnalyzer.ts` exports `runSuggestReviewersLoop()` which polls `GET /api/prs-needing-reviewer-suggestions` (tracked PRs with `suggestions_sent=FALSE` from the last 24h, LIMIT 10). It's called from two entry points:
 
-For each PR, the worker invokes Claude via `claudeToolLoop` with four tools (`fetch_pr_files`, `fetch_pr_diff`, `get_past_reviewers`, `get_past_authors`). Claude decides what to fetch; the worker executes each tool call against GHE + Postgres and returns results. After up to 6 rounds, Claude returns a JSON list of up to 5 suggested reviewers with reasons. The worker POSTs the list to `/api/pr-reviewers`; the Heroku app resolves Slack IDs via `user_mappings`, sets `tracked_prs.suggestions_sent=TRUE`, and posts a threaded Slack reply.
+- **Automatic**: `localPRChecker.ts` calls it every tick of the `--watch` loop (§3 step 4). This is the normal operating mode.
+- **Standalone CLI**: `npm run suggest-reviewers` (polling) or `npm run suggest-reviewers -- <pr-url>` (one-shot — but note this uses `channel_id='manual'` / `message_ts='0'`, which the server explicitly skips for Slack posting: no thread reply for CLI one-shots).
+
+For each PR, the worker invokes Claude via `claudeToolLoop` with four tools (`fetch_pr_files`, `fetch_pr_diff`, `get_past_reviewers`, `get_past_authors`). Claude decides what to fetch; the worker executes each tool call against GHE + Postgres and returns results. After up to 6 rounds (cap in `src/services/claudeClient.ts:~315`), Claude returns a JSON object with up to 5 suggested reviewers. The JSON is parsed with `extractJsonFromClaudeText` (handles markdown fences and preamble — common Claude Opus 4.x behavior). The worker POSTs the list to `/api/pr-reviewers`; the Heroku app resolves Slack IDs via `user_mappings`, sets `tracked_prs.suggestions_sent=TRUE`, and posts a threaded Slack reply when `channel_id !== 'manual'` and `message_ts !== '0'`.
 
 
 ## Critical timing / business rules

@@ -31,11 +31,13 @@ A Slack bot that monitors team channels for GitHub Enterprise PR links and sends
                                  ▼
                         ┌──────────────────┐
                         │  Claude AI       │
-                        │  (chat + review) │
+                        │  (tool-use:      │
+                        │   reviewer       │
+                        │   suggestions)   │
                         └──────────────────┘
 ```
 
-The local worker runs on your VPN-connected laptop to check PR status from internal GitHub Enterprise servers, then reports the status back to Heroku. When a new PR is detected, the worker invokes Claude with four tools to suggest reviewers.
+The local worker runs on your VPN-connected laptop. Each 5-minute tick it (1) polls Heroku for PRs whose GHE status needs checking, queries GHE, reports status back, then (2) polls Heroku for PRs that still need reviewer suggestions, invokes Claude with four tools (`fetch_pr_files`, `fetch_pr_diff`, `get_past_reviewers`, `get_past_authors`), and ships the resulting reviewer list back to Heroku which posts a threaded Slack reply.
 
 ## Prerequisites
 
@@ -269,12 +271,15 @@ launchctl list | grep pr-worker
 │   └── utils/
 │       ├── timezone.ts           # Business hours logic
 │       ├── prParser.ts           # PR URL parser
-│       └── gheTokenResolver.ts   # Per-hostname GHE token resolution
+│       ├── gheTokenResolver.ts   # Per-hostname GHE token resolution
+│       └── errorNotifier.ts      # Throttled Slack error notifier
 ├── scripts/
 │   └── checkReminders.ts         # Scheduled job (Heroku Scheduler)
 ├── worker/
-│   ├── localPRChecker.ts         # Local VPN worker (status checks)
-│   ├── prAnalyzer.ts             # Reviewer suggestion worker (tool-use loop via Claude)
+│   ├── localPRChecker.ts         # Local VPN worker: PR-status poll + reviewer-suggestion poll
+│   ├── prAnalyzer.ts             # Reviewer-suggestion engine (exports runSuggestReviewersLoop)
+│   ├── prHarvester.ts            # Batch harvest of PR review history (feeds reviewer candidate DB)
+│   ├── userMapper.ts             # GHE login → Slack user ID mapping builder
 │   └── testSuggestReviewers.ts   # Dry-run reviewer suggestion for a single PR
 ├── package.json
 ├── tsconfig.json
@@ -343,7 +348,7 @@ heroku config:set GHE_TOKENS='{"gitcore.soma.salesforce.com":"ghp_abc","git.soma
 | `HEROKU_API_URL` | URL of your Heroku app |
 | `WORKER_API_KEY` | Same API key as configured on Heroku |
 | `ANTHROPIC_API_KEY` | Anthropic API key for Claude AI chat/LLM |
-| `CLAUDE_MODEL` | Claude model to use (default: `claude-sonnet-4-20250514`) |
+| `CLAUDE_MODEL` | Claude model to use. Code default: `claude-3-5-sonnet-20241022` (`src/services/claudeClient.ts:20`). Heroku production overrides this — see `.env.example` for the production value. |
 
 ## Channel Access Control
 

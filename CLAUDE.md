@@ -24,8 +24,8 @@ All `worker/*` calls to `${HEROKU_API_URL}/api/*` are authenticated with the `X-
 | `src/index.ts` | Boots Slack app (Socket Mode) + HTTP server on `PORT`. Defines every `/api/*` endpoint and the Slack message-block formatter. |
 | `src/app.ts` | Slack Bolt app: message handler, `/pr-monitor` slash command, app_home. |
 | `scripts/checkReminders.ts` | Heroku Scheduler job: `pollChannelsForPRs` + `processPendingReminders`. |
-| `worker/localPRChecker.ts` | Main VPN worker loop (default / `--watch` every 5 min). Polls PR status only. |
-| `worker/prAnalyzer.ts` | Reviewer-suggestion daemon. Invokes Claude via `claudeToolLoop` with four tools. |
+| `worker/localPRChecker.ts` | Main VPN worker loop (default / `--watch` every 5 min). Each tick: poll PR status, then call `runSuggestReviewersLoop()` from `prAnalyzer`. |
+| `worker/prAnalyzer.ts` | Exports `runSuggestReviewersLoop()` (called by `localPRChecker`) and a CLI entry for standalone runs. Invokes Claude via `claudeToolLoop` with four tools. |
 
 ## Documentation layout
 
@@ -42,7 +42,7 @@ Start with the doc that matches the task:
 
 - **Don't assume** a change is complete after TypeScript compiles: most runtime behavior requires either Socket Mode connectivity or the worker loop to exercise. Dry-run with `npm run test-suggest-reviewers -- <pr-url>` when touching `worker/prAnalyzer.ts` / `worker/testSuggestReviewers.ts`.
 - **Migrations are immutable once numbered.** `src/db/migrate.ts` applies `src/db/migrations/*.sql` in filename order, tracks applied files in `schema_migrations`, and has special seeding logic for 001–006 when upgrading an existing DB (`src/db/migrate.ts:21-47`). Add new migrations with the next sequential prefix.
-- **Claude model** is whatever `CLAUDE_MODEL` env var says; the code default in `src/services/claudeClient.ts:21` is `claude-3-5-sonnet-20241022`, but production env sets a newer Sonnet. When updating model IDs, verify both the default string and the deployed config var.
+- **Claude model** is whatever `CLAUDE_MODEL` env var says; the code default in `src/services/claudeClient.ts:20` is `claude-3-5-sonnet-20241022`, but production env currently runs `claude-opus-4-6-v1`. When updating model IDs, verify both the default string and the deployed Heroku config var.
 - **Channel access control is enforced at module load** (`src/services/channelAccessControl.ts`). The app hard-exits if `ALLOWED_CHANNEL_IDS` is missing or empty. Non-allowlisted channels are silently dropped both in Socket Mode and the slash command.
 - **Worker API auth is required.** If `WORKER_API_KEY` is unset on Heroku, every `/api/*` endpoint returns 401 (`src/index.ts:47-50`). `/health` is public.
 - **Errors should funnel through `notifyError`** (`src/utils/errorNotifier.ts`). It throttles to 1 per minute per source+message and gracefully no-ops if `ERROR_SLACK_CHANNEL_ID` is unset.

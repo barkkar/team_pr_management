@@ -12,7 +12,7 @@ To run: `npm run migrate` locally, or rely on the Heroku `release` process (`Pro
 
 ## Table catalog (merged view)
 
-### `tracked_prs` — core PR state (001, 003, 005, 006)
+### `tracked_prs` — core PR state (001, 003, 005, 006, 020)
 
 | Column | Type | Notes |
 |---|---|---|
@@ -33,7 +33,11 @@ To run: `npm run migrate` locally, or rely on the Heroku `release` process (`Pro
 | `suggestions_sent` | BOOL DEFAULT FALSE | Added by migration 020; marks if reviewer suggestions posted |
 | `created_at` | TIMESTAMP DEFAULT NOW() | |
 
-Indexes: `idx_tracked_prs_url`, `idx_tracked_prs_pending`, `idx_tracked_prs_status_check`.
+Indexes (all partial, where noted):
+- `idx_tracked_prs_url` ON `(pr_url)` — from migration 001.
+- `idx_tracked_prs_pending` ON `(eligible_reminder_at)` WHERE `reminder_sent = FALSE AND (is_open = TRUE OR is_open IS NULL)` — from 006.
+- `idx_tracked_prs_status_check` ON `(reminder_sent, status_checked_at)` WHERE `(is_open = TRUE OR is_open IS NULL)` — from 006.
+- `idx_tracked_prs_suggestions_pending` ON `(suggestions_sent, created_at)` WHERE `suggestions_sent = FALSE` — from 020.
 
 ### `channel_poll_state` (002)
 
@@ -112,22 +116,22 @@ Removed in migration 018.
 See `src/db/client.ts` for signatures; this is a map of what touches which table. All exports return plain objects — no ORM layer.
 
 ### PR tracking
-- `insertTrackedPR(pr)` — `INSERT tracked_prs ON CONFLICT (pr_url) DO NOTHING RETURNING *`. (`client.ts:42`)
-- `getPendingReminders()` — `reminder_sent=FALSE AND is_open≠FALSE AND eligible_reminder_at ≤ NOW()`. (`client.ts:64`)
-- `markReminderSent(id)` / `scheduleNextReminder(id, nextAt?)` — the latter keeps `reminder_sent=FALSE` and bumps `reminder_count`. (`client.ts:76, 85`)
-- `getOpenUnreviewedPRs()` — `is_open IN (TRUE, NULL)` AND `has_reviews IN (FALSE, NULL)`, ordered by `posted_at ASC`. (`client.ts:103`)
-- `markPRClosed(id)` / `getTrackedPRByUrl(prUrl)` / `updatePRStatus(prUrl, isOpen, hasReviews)` / `getPRsNeedingStatusCheck()` — status-check picks PRs never checked or stale > 5 min, `LIMIT 50`. (`client.ts:114, 118, 131, 146`)
-- `getDistinctRepos()` — powers `/api/distinct-repos`. (`client.ts:587`)
-- `getReviewStats()` — summary for `/pr-monitor stats` (breakdown by `reminder_count` bucket). (`client.ts:217`)
+- `insertTrackedPR(pr)` — `INSERT tracked_prs ON CONFLICT (pr_url) DO NOTHING RETURNING *`. (`client.ts:43`)
+- `getPendingReminders()` — `reminder_sent=FALSE AND is_open≠FALSE AND eligible_reminder_at ≤ NOW()`. (`client.ts:65`)
+- `markReminderSent(id)` / `scheduleNextReminder(id, nextAt?)` — the latter keeps `reminder_sent=FALSE` and bumps `reminder_count`. (`client.ts:77, 86`)
+- `getOpenUnreviewedPRs()` — `is_open IN (TRUE, NULL)` AND `has_reviews IN (FALSE, NULL)`, ordered by `posted_at ASC`. (`client.ts:104`)
+- `markPRClosed(id)` / `getTrackedPRByUrl(prUrl)` / `updatePRStatus(prUrl, isOpen, hasReviews)` / `getPRsNeedingStatusCheck()` — status-check picks PRs never checked or stale > 5 min, `LIMIT 50`. (`client.ts:115, 119, 132, 147`)
+- `getDistinctRepos()` — powers `/api/distinct-repos`. (`client.ts:454`)
+- `getReviewStats()` — summary for `/pr-monitor stats` (breakdown by `reminder_count` bucket). (`client.ts:218`)
 
 ### Monitored channels
-- `addMonitoredChannel`, `removeMonitoredChannel`, `getMonitoredChannels`, `isChannelMonitored`. (`client.ts:162, 176, 187, 197`)
+- `addMonitoredChannel`, `removeMonitoredChannel`, `getMonitoredChannels`, `isChannelMonitored`. (`client.ts:163, 177, 188, 198`)
 
-### Harvest + knowledge
-- `insertPRReview`, `getPRReviewCount`, `insertPRFile`. (`client.ts:360, 374, 381`)
-- `upsertUserMapping`, `getUserMapping`, `getAllUserMappings`. (`client.ts:397, 416, 421`)
-- `getHarvestState`, `upsertHarvestState`, `upsertRepoHarvestState`. (`client.ts:428, 433, 443`)
-- `findReviewersByFiles(filePaths, topK=10)` / `findCodeTouchersByFiles(filePaths, topK=10)` — aggregate over `pr_reviews`/`pr_files`, match exact path or `LIKE` dir prefix, excluding NULL authors for touchers. (`client.ts:552, 570`)
+### Harvest + reviewer scoring
+- `insertPRReview`, `getPRReviewCount`, `insertPRFile`. (`client.ts:330, 344, 351`)
+- `upsertUserMapping`, `getUserMapping`, `getAllUserMappings`. (`client.ts:367, 386, 391`)
+- `getHarvestState`, `upsertHarvestState`. (`client.ts:398, 403`)
+- `findReviewersByFiles(filePaths, topK=10)` / `findCodeTouchersByFiles(filePaths, topK=10)` — aggregate over `pr_reviews`/`pr_files`, match exact path or `LIKE` dir prefix, excluding NULL authors for touchers. Consumed by `/api/past-reviewers`, `/api/past-authors`, and `/api/suggested-reviewers`. (`client.ts:419, 437`)
 
 ## pgvector patterns
 
