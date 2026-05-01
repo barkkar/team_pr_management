@@ -20,27 +20,27 @@ All workers authenticate with `X-Worker-API-Key` against `WORKER_API_KEY`. Base 
   5. `GET /api/prs-needing-lessons` → for each, pull peer comments from GHE, call Claude to compare AI review vs. peer comments, `POST /api/ai-lessons`.
 - **Constants**: `POLL_INTERVAL_MS = 5 * 60 * 1000` (worker/localPRChecker.ts:39); GHE timeout 10s.
 - **Idempotency**: driven by Heroku-side state (`status_checked_at`, `pr_analysis_results`, `ai_review_lessons`). Safe to re-run.
+- **Env requirements**: GHE + Claude only.
 
 ### `worker/prAnalyzer.ts`
 
 - **CLI**: `npm run analyze-pr -- <pr-url>` (single PR), or the worker's polling branch picks PRs from `/api/prs-needing-analysis`.
-- **Env**: all live GHE + Claude + Ollama vars.
-- **Pipeline** (3-pass RAG review):
+- **Env**: GHE + Claude only.
+- **Pipeline** (3-pass ontology review):
   1. Fetch PR metadata + unified diff + file list from GHE.
-  2. Ollama-embed the diff → `POST /api/search-similar-reviews`.
-  3. Per file, fetch content fingerprint (≤2000 chars), embed, call `POST /api/domain-code-examples` for domain-scoped examples.
-  4. `POST /api/resolve-rules` for deterministic rules + taxonomy + unmatched files.
-  5. For unmatched files, call `classifyUnmatchedFiles` (Claude) against the taxonomy.
-  6. `POST /api/ai-learning-context` with the diff embedding for similar lessons + recent feedback.
-  7. Three Claude passes: implementation bugs, rule compliance, test coverage. Merge + dedupe.
-  8. `POST /api/suggested-reviewers`.
-  9. `POST /api/pr-analysis` (Heroku stores + posts Slack thread reply).
+  2. Per file, fetch content fingerprint (≤2000 chars), call `POST /api/domain-code-examples` for domain-scoped examples.
+  3. `POST /api/resolve-rules` for deterministic rules + taxonomy + unmatched files.
+  4. For unmatched files, call `classifyUnmatchedFiles` (Claude) against the taxonomy.
+  5. `POST /api/ai-learning-context` for recent lessons + feedback.
+  6. Three Claude passes: implementation bugs, rule compliance, test coverage. Merge + dedupe.
+  7. `POST /api/suggested-reviewers`.
+  8. `POST /api/pr-analysis` (Heroku stores + posts Slack thread reply).
 - **Constants**: per-pass max 3 comments/file; severity `critical|high|medium|low`; diff truncation 16K; file fingerprint 2K; learning-context limit 5.
 
 ### `worker/reviewLearner.ts`
 
 - **CLI**: `npm run review-learn` (once), `npm run review-learn:watch` (10-min loop).
-- **Env**: `HEROKU_API_URL`, `WORKER_API_KEY`, `GHE_TOKEN`/`GHE_TOKENS`, `ANTHROPIC_API_KEY` (or Bedrock vars).
+- **Env**: `HEROKU_API_URL`, `WORKER_API_KEY`, `GHE_TOKEN`/`GHE_TOKENS`, Claude vars.
 - **Loop**:
   1. `GET /api/prs-needing-lessons`.
   2. For each, GHE call for peer review comments.
@@ -67,13 +67,6 @@ All workers authenticate with `X-Worker-API-Key` against `WORKER_API_KEY`. Base 
 - For each chunk: regex-extracts `code_element_type` + `code_element_name`, and resolves `domain_id` via `/api/domain-file-mappings`.
 - Uploads in batches of 20 to `/api/repo-knowledge`.
 
-### `worker/embeddingPipeline.ts`
-
-- **CLI**: `npm run embed`.
-- Ollama health check first. Loops:
-  1. `GET /api/unembedded-reviews?limit=50` → for each, format as `Repo / File / Type / Code / Comment`, truncate to 6000 chars, Ollama-embed, `POST /api/embeddings`.
-  2. `GET /api/unembedded-repo-knowledge?limit=50` → embed, `POST /api/repo-knowledge-embeddings`.
-
 ### `worker/userMapper.ts`
 
 - **CLI**: `npm run map-users`.
@@ -83,18 +76,9 @@ All workers authenticate with `X-Worker-API-Key` against `WORKER_API_KEY`. Base 
 ### `worker/bootstrapLearner.ts`
 
 - **CLI**: `npm run bootstrap-learn [-- --limit N] [-- --force]`. Default limit 50.
+- **Env**: GHE + Claude only.
 - One-shot batch: pulls `/api/closed-prs-without-lessons?limit=N&force={bool}` and runs the full `prAnalyzer` pipeline + lesson extraction per PR. 2s delay between PRs.
-- `--force` pulls all closed PRs that have an AI review stored (used to backfill embeddings on old rows).
-
-### `worker/docIngester.ts`
-
-- **CLI**:
-  - Directory: `npm run ingest-doc -- --dir ./skills [--type codebase-knowledge]`
-  - File: `npm run ingest-doc -- --file ./doc.txt --title "Name" [--type design|requirements|runbook]`
-  - Google Drive: `npm run ingest-doc -- <google-drive-url> --title "Name" [--type ...]`
-  - List: `npm run ingest-doc -- --list`
-  - Delete: `npm run ingest-doc -- --delete <source-identifier>`
-- Chunks at paragraph boundaries (~1500 chars, 200 overlap, min 50 chars/chunk). Embeds per chunk via Ollama. Upserts via `/api/team-documents`.
+- `--force` pulls all closed PRs that have an AI review stored (used to backfill old rows).
 
 ### `worker/testReview.ts`
 
@@ -102,6 +86,7 @@ All workers authenticate with `X-Worker-API-Key` against `WORKER_API_KEY`. Base 
   - Dry-run: `npm run test-review -- <pr-url>` (prints to console, no DB writes, no Slack).
   - Suppress @mentions: `npm run test-review -- <pr-url> --no-mention`.
   - Post to Slack (still no DB writes): `npm run test-review -- <pr-url> --post --channel=C123`.
+- **Env**: GHE + Claude only.
 - Runs the same pipeline as `prAnalyzer` but with heavy logging. Use this before shipping any prAnalyzer/ontology change.
 
 ### Backfill scripts (one-offs)
@@ -142,15 +127,13 @@ Diagnostic for GHE reachability.
 | `scripts/testGheConnectivity.ts` | ✅ (diagnostic) | — |
 | `scripts/deleteBotMessages.ts` | — | ✅ (manual) |
 | `worker/localPRChecker.ts` | — | ✅ (needs GHE) |
-| `worker/prAnalyzer.ts` | — | ✅ (needs GHE + Claude + Ollama) |
+| `worker/prAnalyzer.ts` | — | ✅ (needs GHE + Claude) |
 | `worker/testReview.ts` | — | ✅ |
 | `worker/prHarvester.ts` | — | ✅ |
 | `worker/repoHarvester.ts` | — | ✅ |
-| `worker/embeddingPipeline.ts` | — | ✅ (runs Ollama) |
 | `worker/userMapper.ts` | — | ✅ (Slack + GHE) |
 | `worker/bootstrapLearner.ts` | — | ✅ |
-| `worker/reviewLearner.ts` | — | ✅ (can technically run on Heroku once we confirm it doesn't need GHE-only data, but currently needs peer comments from GHE, so laptop) |
-| `worker/docIngester.ts` | — | ✅ (has local/Drive file reads) |
+| `worker/reviewLearner.ts` | — | ✅ (needs peer comments from GHE) |
 | `worker/backfillDomainMetadata*.ts` | either (direct DB) | ✅ |
 
 Heroku's `Procfile` has no `worker:` process type. All continuous workers are laptop-resident.

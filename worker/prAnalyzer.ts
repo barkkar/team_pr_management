@@ -2,13 +2,12 @@
 /**
  * PR Analyzer
  *
- * Analyzes a single PR using RAG + Ollama LLM:
+ * Analyzes a single PR using Claude AI:
  *   1. Fetches PR diff + changed files from GHE
- *   2. Generates embeddings for the diff
- *   3. Queries vector DB for similar past reviews and codebase context
- *   4. Calls Ollama LLM to generate review comments
- *   5. Identifies suggested reviewers
- *   6. Reports results back to Heroku for Slack posting
+ *   2. Resolves domain-scoped code examples via ontology engine
+ *   3. Calls Claude AI to generate review comments (3-pass)
+ *   4. Identifies suggested reviewers
+ *   5. Reports results back to Heroku for Slack posting
  *
  * Can be run standalone:
  *   npm run analyze-pr -- --pr-url <url>
@@ -19,15 +18,12 @@
 import 'dotenv/config';
 import { notifyError } from '../src/utils/errorNotifier';
 import axios from 'axios';
-import { Ollama } from 'ollama';
 import { requireTokenForHost } from '../src/utils/gheTokenResolver';
 import { claudeChat, checkClaudeHealth, getClaudeModel } from '../src/services/claudeClient';
 import { fetchDomainScopedCodeExamples, formatCodeExamplesForPrompt } from '../src/db/client';
 
 const HEROKU_API_URL = process.env.HEROKU_API_URL;
 const WORKER_API_KEY = process.env.WORKER_API_KEY;
-const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
-const OLLAMA_EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
 
 function log(message: string): void {
   console.log(`[${new Date().toISOString()}] [PRAnalyzer] ${message}`);
@@ -48,29 +44,6 @@ function herokuHeaders(): Record<string, string> {
 function extractHostname(prUrl: string): string | null {
   const match = prUrl.match(/https:\/\/([a-zA-Z0-9-]+\.soma\.salesforce\.com)/);
   return match ? match[1] : null;
-}
-
-// ---------------------------------------------------------------------------
-// Ollama helpers
-// ---------------------------------------------------------------------------
-
-let ollama: Ollama | null = null;
-
-function getOllama(): Ollama {
-  if (!ollama) {
-    ollama = new Ollama({ host: OLLAMA_HOST });
-  }
-  return ollama;
-}
-
-async function generateEmbedding(text: string): Promise<number[]> {
-  const client = getOllama();
-  const truncated = text.substring(0, 2000);
-  const response = await client.embed({
-    model: OLLAMA_EMBED_MODEL,
-    input: truncated,
-  });
-  return response.embeddings[0];
 }
 
 // ---------------------------------------------------------------------------
@@ -189,84 +162,9 @@ async function fetchFileContent(
   }
 }
 
-function buildFileContextSummary(files: { path: string; content: string }[]): string {
-  const parts: string[] = [];
-  for (const file of files) {
-    const lines = file.content.split('\n');
-    const fingerprint: string[] = [`File: ${file.path}`];
-
-    // Extract imports/requires (first 30 lines)
-    const importLines = lines.slice(0, 30).filter(l =>
-      /^\s*(import |from |require\(|#include|using |package |@import)/.test(l),
-    );
-    if (importLines.length > 0) {
-      fingerprint.push('Imports: ' + importLines.slice(0, 10).join('; '));
-    }
-
-    // Extract class/function/component declarations
-    const declLines = lines.filter(l =>
-      /^\s*(export\s+)?(public\s+|private\s+|protected\s+)?(class |interface |function |const \w+ = |def |type |enum |abstract |@api|@wire|@track|@AuraEnabled)/.test(l),
-    ).slice(0, 8);
-    if (declLines.length > 0) {
-      fingerprint.push('Declarations: ' + declLines.map(l => l.trim()).join('; '));
-    }
-
-    parts.push(fingerprint.join('\n'));
-  }
-  // Cap at 2000 chars for embedding model input
-  return parts.join('\n\n').substring(0, 2000);
-}
-
 // ---------------------------------------------------------------------------
-// Heroku API: fetch similar context + report results
+// Heroku API: ontology rules, reviewers, learning context, report results
 // ---------------------------------------------------------------------------
-
-async function fetchSimilarReviews(embedding: number[], topK: number = 10): Promise<any[]> {
-  const response = await axios.post(
-    `${HEROKU_API_URL}/api/search-similar-reviews`,
-    { embedding, top_k: topK },
-    { headers: herokuHeaders(), timeout: 30000 },
-  );
-  return response.data.reviews || [];
-}
-
-async function fetchSimilarCode(embedding: number[], topK: number = 5): Promise<any[]> {
-  const response = await axios.post(
-    `${HEROKU_API_URL}/api/search-similar-code`,
-    { embedding, top_k: topK },
-    { headers: herokuHeaders(), timeout: 30000 },
-  );
-  return response.data.chunks || [];
-}
-
-async function fetchSimilarDocs(embedding: number[], topK: number = 3): Promise<any[]> {
-  try {
-    const response = await axios.post(
-      `${HEROKU_API_URL}/api/search-similar-docs`,
-      { embedding, top_k: topK },
-      { headers: herokuHeaders(), timeout: 15000 },
-    );
-    return response.data.docs || [];
-  } catch {
-    return [];
-  }
-}
-
-async function fetchDocsByTitlePattern(
-  embedding: number[], patterns: string[], topK: number = 5,
-): Promise<any[]> {
-  try {
-    if (patterns.length === 0) return [];
-    const response = await axios.post(
-      `${HEROKU_API_URL}/api/search-docs-by-title`,
-      { embedding, patterns, top_k: topK },
-      { headers: herokuHeaders(), timeout: 15000 },
-    );
-    return response.data.docs || [];
-  } catch {
-    return [];
-  }
-}
 
 async function fetchOntologyRules(
   changedFiles: string[], diffText: string,
@@ -354,25 +252,17 @@ If no domains apply, respond with {"domain_ids": []}`;
   }
 }
 
-async function fetchSuggestedReviewers(filePaths: string[], prAuthor: string, similarReviews?: any[]): Promise<any[]> {
+async function fetchSuggestedReviewers(filePaths: string[], prAuthor: string): Promise<any[]> {
   const response = await axios.post(
     `${HEROKU_API_URL}/api/suggested-reviewers`,
-    { file_paths: filePaths, pr_author: prAuthor, similar_reviews: similarReviews || [] },
+    { file_paths: filePaths, pr_author: prAuthor },
     { headers: herokuHeaders(), timeout: 30000 },
   );
   return response.data.reviewers || [];
 }
 
-async function fetchLearningContext(embedding?: number[]): Promise<{ lessons: any[]; feedback: any[] }> {
+async function fetchLearningContext(): Promise<{ lessons: any[]; feedback: any[] }> {
   try {
-    if (embedding && embedding.length > 0) {
-      const response = await axios.post(
-        `${HEROKU_API_URL}/api/ai-learning-context?limit=5`,
-        { embedding },
-        { headers: herokuHeaders(), timeout: 15000 },
-      );
-      return { lessons: response.data.lessons || [], feedback: response.data.feedback || [] };
-    }
     const response = await axios.get(
       `${HEROKU_API_URL}/api/ai-learning-context?limit=5`,
       { headers: herokuHeaders(), timeout: 15000 },
@@ -475,7 +365,7 @@ function pass1_systemPrompt(fileCount: number): string {
   const minComments = Math.max(2, Math.min(fileCount, 8));
   return `You are an expert code reviewer reviewing IMPLEMENTATION files only (no test files). Respond with valid JSON only.
 
-{"summary": "1-2 sentence assessment", "comments": [{"file_path": "path/to/file", "line_hint": "line 42", "comment": "your comment", "type": "suggestion", "severity": "high", "reason": "1-sentence why this matters", "suggested_fix": "- if (val) {\n+ if (val != null) {", "source": "Past review on similar code"}]}
+{"summary": "1-2 sentence assessment", "comments": [{"file_path": "path/to/file", "line_hint": "line 42", "comment": "your comment", "type": "suggestion", "severity": "high", "reason": "1-sentence why this matters", "suggested_fix": "- if (val) {\n+ if (val != null) {", "source": "Learning context takeaway"}]}
 
 Severity classification (REQUIRED for every comment):
 - "critical": security hole, crash risk, race condition, data loss
@@ -486,7 +376,7 @@ Severity classification (REQUIRED for every comment):
 Context & evidence (REQUIRED):
 - "reason" (REQUIRED): One sentence explaining what breaks, what risk exists, or what improves. Be specific.
 - "suggested_fix" (optional): Include ONLY for small, self-contained fixes (null check, guard clause, missing import, rename). Format as unified diff: "-" for removed lines, "+" for added lines. Max 6 lines. Do NOT include for architectural concerns or complex refactors.
-- "source" (optional): Cite what informed the comment — e.g. "Past review on similar code" or a learning context takeaway.
+- "source" (optional): Cite what informed the comment — e.g. a learning context takeaway or a coding-rule title.
 
 Rules:
 - type: "comment", "question", or "suggestion"
@@ -504,18 +394,12 @@ Rules:
 
 function pass1_userPrompt(
   prTitle: string, implDiff: string, implFiles: string[],
-  similarReviews: any[], learningContext: { lessons: any[]; feedback: any[] } | undefined,
+  learningContext: { lessons: any[]; feedback: any[] } | undefined,
   codeExamples: any[],
 ): string {
   const parts: string[] = [];
   parts.push(`Review these IMPLEMENTATION files from PR: "${prTitle}"`);
   parts.push(`\nFiles: ${implFiles.join(', ')}`);
-  if (similarReviews.length > 0) {
-    parts.push('\nPast team review comments on similar code:');
-    for (const r of similarReviews.slice(0, 5)) {
-      parts.push(`- ${r.file_path || 'general'}: "${(r.comment_body || '').substring(0, 300)}"`);
-    }
-  }
   if (codeExamples.length > 0) {
     parts.push(formatCodeExamplesForPrompt(codeExamples));
   }
@@ -807,25 +691,11 @@ async function analyzePR(prUrl: string, channelId: string, messageTs: string): P
 
   log(`  PR "${prTitle}" by ${prAuthor}: ${changedFiles.length} files changed`);
 
-  // 2. Generate embedding for the PR diff
-  log('  Generating embedding for PR diff...');
-  const fileList = changedFiles.slice(0, 15).join(', ') + (changedFiles.length > 15 ? ` (+${changedFiles.length - 15} more)` : '');
-  const diffSummary = `PR: ${prTitle}\nAuthor: ${prAuthor}\nFiles: ${fileList}\n\n${prDiff.substring(0, 1500)}`;
-  const diffEmbedding = await generateEmbedding(diffSummary);
+  // Semantic vector search removed — domain-scoped code examples
+  // (via fetchDomainScopedCodeExamples below) replace this path.
+  // Reviewer ranking now relies on file-path + code-author signals only.
 
-  // 3. Search for similar past reviews and codebase context
-  log('  Searching for similar past reviews...');
-  let similarReviews: any[] = [];
-  try {
-    similarReviews = await fetchSimilarReviews(diffEmbedding, 10);
-    log(`  Found ${similarReviews.length} similar past reviews`);
-  } catch (error: any) {
-    log(`  No similar reviews found: ${error.message}`);
-  }
-
-  // Vector search removed - replaced by domain-scoped code examples below
-
-  // 3b. Fetch full file content for context-aware doc matching
+  // 2. Fetch full file content for context-aware doc matching
   log('  Fetching full file content for doc matching...');
   const headSha = prDetails.head?.sha || '';
   const implPrFiles = prFiles
@@ -842,16 +712,7 @@ async function analyzePR(prUrl: string, channelId: string, messageTs: string): P
   }
   log(`  Fetched ${fileContents.length}/${implPrFiles.length} file(s) for context`);
 
-  // 3c. Build file-context summary and generate embedding
-  let fileContextEmbedding = diffEmbedding; // fallback
-  let fileContextSummary = '';
-  if (fileContents.length > 0) {
-    fileContextSummary = buildFileContextSummary(fileContents);
-    log('  Generating file-context embedding...');
-    fileContextEmbedding = await generateEmbedding(fileContextSummary);
-  }
-
-  // 3d. Ontology-based rule resolution (deterministic + LLM fallback)
+  // 3. Ontology-based rule resolution (deterministic + LLM fallback)
   log('  Resolving coding rules via ontology engine...');
   const ontologyResult = await fetchOntologyRules(changedFiles, prDiff);
   log(`  Deterministic rules: ${ontologyResult.rules.length}, unmatched files: ${ontologyResult.unmatched_files.length}`);
@@ -915,7 +776,7 @@ async function analyzePR(prUrl: string, channelId: string, messageTs: string): P
 
   // 3f. Fetch learning context (lessons + feedback from similar past reviews)
   log('  Fetching relevant learning context...');
-  const learningContext = await fetchLearningContext(diffEmbedding);
+  const learningContext = await fetchLearningContext();
   log(`  Got ${learningContext.lessons.length} relevant lesson(s), ${learningContext.feedback.length} feedback item(s)`);
 
   // 4. Multi-pass LLM review
@@ -931,7 +792,7 @@ async function analyzePR(prUrl: string, channelId: string, messageTs: string): P
     const p1 = await runReviewPass(
       'Pass 1: Implementation',
       pass1_systemPrompt(implFiles.length),
-      pass1_userPrompt(prTitle, implDiff, implFiles, similarReviews, learningContext, implCodeExamples),
+      pass1_userPrompt(prTitle, implDiff, implFiles, learningContext, implCodeExamples),
     );
     allComments.push(...(p1.comments || []));
     if (p1.summary) summaries.push(p1.summary);
@@ -981,7 +842,7 @@ async function analyzePR(prUrl: string, channelId: string, messageTs: string): P
   log('  Finding suggested reviewers...');
   let reviewers: any[] = [];
   try {
-    reviewers = await fetchSuggestedReviewers(changedFiles, prAuthor, similarReviews);
+    reviewers = await fetchSuggestedReviewers(changedFiles, prAuthor);
     log(`  Found ${reviewers.length} suggested reviewers`);
   } catch (error: any) {
     log(`  No reviewer suggestions: ${error.message}`);
@@ -1051,17 +912,6 @@ async function run(): Promise<void> {
 
   if (!process.env.GHE_TOKEN && !process.env.GHE_TOKENS) {
     logError('GHE_TOKEN or GHE_TOKENS is required');
-    process.exit(1);
-  }
-
-  // Verify Ollama (embeddings only)
-  try {
-    const client = getOllama();
-    await client.embed({ model: OLLAMA_EMBED_MODEL, input: 'test' });
-    log(`Ollama embedding model ready: ${OLLAMA_EMBED_MODEL}`);
-  } catch (error: any) {
-    logError(`Ollama not ready: ${error.message}`);
-    logError(`Run: ollama pull ${OLLAMA_EMBED_MODEL}`);
     process.exit(1);
   }
 

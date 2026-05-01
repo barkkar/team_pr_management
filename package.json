@@ -17,14 +17,12 @@
     "harvest": "node dist/worker/prHarvester.js",
     "harvest:incremental": "node dist/worker/prHarvester.js --incremental",
     "harvest:repos": "node dist/worker/repoHarvester.js",
-    "embed": "node dist/worker/embeddingPipeline.js",
     "map-users": "node dist/worker/userMapper.js",
     "analyze-pr": "node dist/worker/prAnalyzer.js",
     "test-review": "node dist/worker/testReview.js",
     "review-learn": "node dist/worker/reviewLearner.js",
     "review-learn:watch": "node dist/worker/reviewLearner.js --watch",
-    "bootstrap-learn": "node dist/worker/bootstrapLearner.js",
-    "ingest-doc": "node dist/worker/docIngester.js"
+    "bootstrap-learn": "node dist/worker/bootstrapLearner.js"
   },
   "engines": {
     "node": "20.x",
@@ -49,7 +47,6 @@
     "dotenv": "^17.2.3",
     "luxon": "^3.7.2",
     "minimatch": "^10.2.4",
-    "ollama": "^0.6.3",
     "pg": "^8.18.0"
   },
   "devDependencies": {

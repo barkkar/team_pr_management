@@ -4,7 +4,7 @@ Orientation for Claude sessions working in this repo. Keep this file short — d
 
 ## What this repo is
 
-A Slack bot + background-worker system that watches team Slack channels for GitHub Enterprise PR links, tracks them in Postgres, sends review reminders during PST business hours, and posts AI-generated code reviews (via Claude) with suggested reviewers (via RAG over past reviews and a deterministic rule ontology).
+A Slack bot + background-worker system that watches team Slack channels for GitHub Enterprise PR links, tracks them in Postgres, sends review reminders during PST business hours, and posts AI-generated code reviews (via Claude) with suggested reviewers (via a deterministic rule ontology plus file-path/code-author scoring).
 
 See `README.md` for end-user setup. This file exists for Claude.
 
@@ -13,7 +13,7 @@ See `README.md` for end-user setup. This file exists for Claude.
 The system is deliberately split in two because GitHub Enterprise (`*.soma.salesforce.com`) is only reachable from the corporate VPN:
 
 1. **Heroku dyno** (`src/`) — Slack Bolt app in Socket Mode + HTTP server exposing `/api/*` endpoints. Owns Postgres. Cannot reach GHE.
-2. **Local VPN worker** (`worker/`) — runs on a laptop on VPN. Pulls work from Heroku via HTTP, calls GHE + Claude + Ollama, posts results back.
+2. **Local VPN worker** (`worker/`) — runs on a laptop on VPN. Pulls work from Heroku via HTTP, calls GHE + Claude, posts results back.
 
 All `worker/*` calls to `${HEROKU_API_URL}/api/*` are authenticated with the `X-Worker-API-Key` header (`src/index.ts:43-53`). The only exception is `scripts/checkReminders.ts`, which runs on Heroku Scheduler.
 
@@ -31,7 +31,7 @@ All `worker/*` calls to `${HEROKU_API_URL}/api/*` are authenticated with the `X-
 Start with the doc that matches the task:
 
 - `docs/architecture.md` — runtime topology, data flow, request/event lifecycles. Read first if unsure where something runs.
-- `docs/database.md` — full schema catalog, pgvector columns, every exported `src/db/client.ts` function.
+- `docs/database.md` — full schema catalog, every exported `src/db/client.ts` function.
 - `docs/services.md` — per-module notes for `src/services/` and `src/utils/`.
 - `docs/api-endpoints.md` — every HTTP route exposed by `src/index.ts`, grouped by function.
 - `docs/workers.md` — what each `worker/*` and `scripts/*` file does, when to run it, how it's idempotent.
@@ -43,8 +43,6 @@ Start with the doc that matches the task:
 - **Don't assume** a change is complete after TypeScript compiles: most runtime behavior requires either Socket Mode connectivity or the worker loop to exercise. Dry-run with `npm run test-review -- <pr-url>` when touching `worker/prAnalyzer.ts` / `worker/testReview.ts`.
 - **Migrations are immutable once numbered.** `src/db/migrate.ts` applies `src/db/migrations/*.sql` in filename order, tracks applied files in `schema_migrations`, and has special seeding logic for 001–006 when upgrading an existing DB (`src/db/migrate.ts:21-47`). Add new migrations with the next sequential prefix.
 - **Claude model** is whatever `CLAUDE_MODEL` env var says; the code default in `src/services/claudeClient.ts:21` is `claude-3-5-sonnet-20241022`, but production env sets a newer Sonnet. When updating model IDs, verify both the default string and the deployed config var.
-- **Ollama stays local, Claude goes remote.** Ollama only does embeddings (768-dim `nomic-embed-text`); Claude does all LLM chat. Do not reintroduce Ollama for generation.
-- **Pgvector dimension is 768 everywhere.** If you swap embedding models, every vector column and IVFFlat index must be migrated.
 - **Channel access control is enforced at module load** (`src/services/channelAccessControl.ts`). The app hard-exits if `ALLOWED_CHANNEL_IDS` is missing or empty. Non-allowlisted channels are silently dropped both in Socket Mode and the slash command.
 - **Worker API auth is required.** If `WORKER_API_KEY` is unset on Heroku, every `/api/*` endpoint returns 401 (`src/index.ts:47-50`). `/health` is public.
 - **Errors should funnel through `notifyError`** (`src/utils/errorNotifier.ts`). It throttles to 1 per minute per source+message and gracefully no-ops if `ERROR_SLACK_CHANNEL_ID` is unset.

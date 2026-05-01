@@ -3,7 +3,6 @@
  * Claude AI Client
  *
  * Shared Anthropic Claude client for all LLM chat/generation tasks.
- * Replaces Ollama for text generation while Ollama remains for embeddings.
  *
  * Supports two modes:
  *   1. Bedrock proxy (preferred) — raw HTTP to /model/{id}/invoke

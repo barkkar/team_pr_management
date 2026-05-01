@@ -332,7 +332,6 @@ export interface RepoKnowledge {
   content_chunk: string;
   chunk_index: number;
   last_commit_sha: string | null;
-  embedding?: number[];
   domain_id?: number | null;
   code_element_type?: string | null;
   code_element_name?: string | null;
@@ -340,19 +339,9 @@ export interface RepoKnowledge {
   updated_at: Date;
 }
 
-export interface EmbeddingRecord {
-  id: number;
-  content_type: string;
-  source_id: number;
-  content_text: string;
-  metadata: Record<string, any>;
-  created_at: Date;
-}
-
 export interface CodeExample extends RepoKnowledge {
   domain_name: string;
   domain_display_name: string;
-  similarity?: number;
 }
 
 // --- PR Reviews ---
@@ -483,71 +472,7 @@ export async function deleteRepoKnowledgeForFile(org: string, repo: string, file
   await pool.query('DELETE FROM repo_knowledge WHERE org = $1 AND repo = $2 AND file_path = $3', [org, repo, filePath]);
 }
 
-// --- Embeddings ---
-
-export async function insertEmbedding(
-  contentType: string, sourceId: number, contentText: string,
-  embedding: number[], metadata: Record<string, any> = {}
-): Promise<number> {
-  const result = await pool.query(`
-    INSERT INTO pr_embeddings (content_type, source_id, content_text, embedding, metadata)
-    VALUES ($1, $2, $3, $4::vector, $5)
-    RETURNING id
-  `, [contentType, sourceId, contentText, `[${embedding.join(',')}]`, JSON.stringify(metadata)]);
-  return result.rows[0]?.id || 0;
-}
-
-export async function updateRepoKnowledgeEmbedding(id: number, embedding: number[]): Promise<void> {
-  await pool.query(
-    'UPDATE repo_knowledge SET embedding = $2::vector, updated_at = NOW() WHERE id = $1',
-    [id, `[${embedding.join(',')}]`],
-  );
-}
-
-export async function getUnembeddedPRReviews(limit: number = 100): Promise<PRReview[]> {
-  const result = await pool.query(`
-    SELECT r.* FROM pr_reviews r
-    LEFT JOIN pr_embeddings e ON e.content_type = 'pr_review' AND e.source_id = r.id
-    WHERE e.id IS NULL
-    ORDER BY r.id ASC
-    LIMIT $1
-  `, [limit]);
-  return result.rows;
-}
-
-export async function getUnembeddedRepoKnowledge(limit: number = 100): Promise<RepoKnowledge[]> {
-  const result = await pool.query(`
-    SELECT * FROM repo_knowledge
-    WHERE embedding IS NULL
-    ORDER BY id ASC
-    LIMIT $1
-  `, [limit]);
-  return result.rows;
-}
-
-// --- Vector Search ---
-
-export async function searchSimilarReviews(embedding: number[], topK: number = 10): Promise<(PRReview & { similarity: number })[]> {
-  const result = await pool.query(`
-    SELECT r.*, 1 - (e.embedding <=> $1::vector) as similarity
-    FROM pr_embeddings e
-    JOIN pr_reviews r ON e.source_id = r.id AND e.content_type = 'pr_review'
-    ORDER BY e.embedding <=> $1::vector
-    LIMIT $2
-  `, [`[${embedding.join(',')}]`, topK]);
-  return result.rows;
-}
-
-export async function searchSimilarCode(embedding: number[], topK: number = 10): Promise<(RepoKnowledge & { similarity: number })[]> {
-  const result = await pool.query(`
-    SELECT rk.*, 1 - (rk.embedding <=> $1::vector) as similarity
-    FROM repo_knowledge rk
-    WHERE rk.embedding IS NOT NULL
-    ORDER BY rk.embedding <=> $1::vector
-    LIMIT $2
-  `, [`[${embedding.join(',')}]`, topK]);
-  return result.rows;
-}
+// --- Reviewer discovery (file + code-history based) ---
 
 export async function findReviewersByFiles(filePaths: string[], topK: number = 10): Promise<{ reviewer_login: string; review_count: number; files: string[] }[]> {
   // Extract unique parent directories for fuzzy matching
@@ -649,24 +574,17 @@ export async function getCommentFeedbackStats(prUrl: string): Promise<{ comment_
 // ---------------------------------------------------------------------------
 
 export async function insertReviewLessons(
-  prUrl: string, aiReview: any, peerComments: any[], lessons: any, embedding?: number[],
+  prUrl: string,
+  aiReview: any,
+  peerComments: any[],
+  lessons: any,
 ): Promise<void> {
-  if (embedding && embedding.length > 0) {
-    const embeddingStr = `[${embedding.join(',')}]`;
-    await pool.query(`
-      INSERT INTO ai_review_lessons (pr_url, ai_review_json, peer_comments_json, lessons_json, embedding, created_at)
-      VALUES ($1, $2, $3, $4, $5::vector, NOW())
-      ON CONFLICT (pr_url) DO UPDATE SET
-        ai_review_json = $2, peer_comments_json = $3, lessons_json = $4, embedding = $5::vector, created_at = NOW()
-    `, [prUrl, JSON.stringify(aiReview), JSON.stringify(peerComments), JSON.stringify(lessons), embeddingStr]);
-  } else {
-    await pool.query(`
-      INSERT INTO ai_review_lessons (pr_url, ai_review_json, peer_comments_json, lessons_json, created_at)
-      VALUES ($1, $2, $3, $4, NOW())
-      ON CONFLICT (pr_url) DO UPDATE SET
-        ai_review_json = $2, peer_comments_json = $3, lessons_json = $4, created_at = NOW()
-    `, [prUrl, JSON.stringify(aiReview), JSON.stringify(peerComments), JSON.stringify(lessons)]);
-  }
+  await pool.query(`
+    INSERT INTO ai_review_lessons (pr_url, ai_review_json, peer_comments_json, lessons_json, created_at)
+    VALUES ($1, $2, $3, $4, NOW())
+    ON CONFLICT (pr_url) DO UPDATE SET
+      ai_review_json = $2, peer_comments_json = $3, lessons_json = $4, created_at = NOW()
+  `, [prUrl, JSON.stringify(aiReview), JSON.stringify(peerComments), JSON.stringify(lessons)]);
 }
 
 export async function getRecentLessons(limit: number = 3): Promise<any[]> {
@@ -679,18 +597,6 @@ export async function getRecentLessons(limit: number = 3): Promise<any[]> {
   return result.rows;
 }
 
-export async function getSimilarLessons(embedding: number[], limit: number = 5): Promise<any[]> {
-  const embeddingStr = `[${embedding.join(',')}]`;
-  const result = await pool.query(`
-    SELECT pr_url, lessons_json, created_at,
-           1 - (embedding <=> $1::vector) AS similarity
-    FROM ai_review_lessons
-    WHERE embedding IS NOT NULL
-    ORDER BY embedding <=> $1::vector
-    LIMIT $2
-  `, [embeddingStr, limit]);
-  return result.rows;
-}
 
 export async function getPRsNeedingLessonExtraction(): Promise<any[]> {
   const result = await pool.query(`
@@ -704,75 +610,6 @@ export async function getPRsNeedingLessonExtraction(): Promise<any[]> {
     LIMIT 20
   `);
   return result.rows;
-}
-
-// --- Team Documents (design docs, requirements) ---
-
-export async function searchSimilarDocs(embedding: number[], topK: number = 3): Promise<any[]> {
-  const embeddingStr = `[${embedding.join(',')}]`;
-  const result = await pool.query(`
-    SELECT id, title, source_url, doc_type, content_chunk, chunk_index,
-           1 - (embedding <=> $1::vector) AS similarity
-    FROM team_documents
-    WHERE embedding IS NOT NULL
-    ORDER BY embedding <=> $1::vector
-    LIMIT $2
-  `, [embeddingStr, topK]);
-  return result.rows;
-}
-
-export async function searchDocsByTitlePattern(
-  embedding: number[], titlePatterns: string[], topK: number = 5,
-): Promise<any[]> {
-  if (titlePatterns.length === 0) return [];
-  const embeddingStr = `[${embedding.join(',')}]`;
-  const result = await pool.query(`
-    SELECT id, title, source_url, doc_type, content_chunk, chunk_index,
-           1 - (embedding <=> $1::vector) AS similarity
-    FROM team_documents
-    WHERE title LIKE ANY($2::text[])
-      AND embedding IS NOT NULL
-    ORDER BY embedding <=> $1::vector
-    LIMIT $3
-  `, [embeddingStr, titlePatterns, topK]);
-  return result.rows;
-}
-
-export async function upsertDocumentChunks(
-  sourceUrl: string, title: string, docType: string,
-  chunks: { content: string; embedding: number[] }[],
-): Promise<number> {
-  // Delete old chunks for this doc
-  await pool.query('DELETE FROM team_documents WHERE source_url = $1', [sourceUrl]);
-
-  let inserted = 0;
-  for (let i = 0; i < chunks.length; i++) {
-    const embeddingStr = `[${chunks[i].embedding.join(',')}]`;
-    await pool.query(`
-      INSERT INTO team_documents (title, source_url, doc_type, content_chunk, chunk_index, embedding, last_fetched_at, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6::vector, NOW(), NOW(), NOW())
-    `, [title, sourceUrl, docType, chunks[i].content, i, embeddingStr]);
-    inserted++;
-  }
-  return inserted;
-}
-
-export async function listDocuments(): Promise<any[]> {
-  const result = await pool.query(`
-    SELECT source_url, title, doc_type,
-           COUNT(*) AS chunk_count,
-           MIN(created_at) AS created_at,
-           MAX(last_fetched_at) AS last_fetched_at
-    FROM team_documents
-    GROUP BY source_url, title, doc_type
-    ORDER BY MAX(created_at) DESC
-  `);
-  return result.rows;
-}
-
-export async function deleteDocument(sourceUrl: string): Promise<number> {
-  const result = await pool.query('DELETE FROM team_documents WHERE source_url = $1', [sourceUrl]);
-  return result.rowCount || 0;
 }
 
 // Re-export code context provider functions

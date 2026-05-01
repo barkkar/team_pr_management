@@ -30,8 +30,6 @@ All `process.env.*` reads in the codebase. Required means the process hard-exits
 | `ANTHROPIC_BEDROCK_BASE_URL` | — | Internal Bedrock gateway URL. If set with `ANTHROPIC_AUTH_TOKEN`, Bedrock mode is used. |
 | `ANTHROPIC_AUTH_TOKEN` | — | Auth token for the Bedrock gateway. |
 | `ANTHROPIC_API_KEY` | — | Direct Anthropic API key. Used only if Bedrock vars are not both set. |
-| `OLLAMA_HOST` | `http://localhost:11434` | Ollama base URL for embeddings. |
-| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Ollama model — must produce 768-dim vectors. |
 | `WORKER_API_KEY` (Heroku side) | — | Optional — if unset, every `/api/*` route returns 401 and logs a warning (`src/index.ts:47-50`). `/health` still works. |
 | `ERROR_SLACK_CHANNEL_ID` | — | Slack channel for errors via `notifyError`. If unset, errors are logged to console only. |
 | `POLL_CHANNEL_IDS` | — | Comma-separated legacy channel IDs to poll (merged with `monitored_channels` table). |
@@ -63,7 +61,6 @@ All `process.env.*` reads in the codebase. Required means the process hard-exits
 | `dotenv` | `src/index.ts:1` etc. | Loads `.env` at startup. |
 | `luxon` | `src/utils/timezone.ts` | Timezone-aware datetime. |
 | `minimatch` | `ontologyEngine.ts` | Glob matching for `domain_file_mappings`. |
-| `ollama` | `embeddingService.ts`, workers | Local embeddings client. |
 | `pg` | `src/db/client.ts`, migrate.ts | Postgres. |
 
 Dev deps: `typescript` 5.7, `ts-node` 10.9, `@types/*` for `luxon`, `minimatch`, `node`, `pg`.

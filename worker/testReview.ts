@@ -14,14 +14,11 @@
 
 import 'dotenv/config';
 import axios from 'axios';
-import { Ollama } from 'ollama';
 import { requireTokenForHost } from '../src/utils/gheTokenResolver';
 import { claudeChat, checkClaudeHealth, getClaudeModel } from '../src/services/claudeClient';
 
 const HEROKU_API_URL = process.env.HEROKU_API_URL;
 const WORKER_API_KEY = process.env.WORKER_API_KEY;
-const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
-const OLLAMA_EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
 
 function log(message: string): void {
   console.log(`[TestReview] ${message}`);
@@ -47,29 +44,6 @@ function separator(title: string): void {
   console.log('\n' + '='.repeat(70));
   console.log(`  ${title}`);
   console.log('='.repeat(70));
-}
-
-// ---------------------------------------------------------------------------
-// Ollama
-// ---------------------------------------------------------------------------
-
-let ollama: Ollama | null = null;
-
-function getOllama(): Ollama {
-  if (!ollama) {
-    ollama = new Ollama({ host: OLLAMA_HOST });
-  }
-  return ollama;
-}
-
-async function generateEmbedding(text: string): Promise<number[]> {
-  const client = getOllama();
-  const truncated = text.substring(0, 2000);
-  const response = await client.embed({
-    model: OLLAMA_EMBED_MODEL,
-    input: truncated,
-  });
-  return response.embeddings[0];
 }
 
 // ---------------------------------------------------------------------------
@@ -188,84 +162,9 @@ async function fetchFileContent(
   }
 }
 
-function buildFileContextSummary(files: { path: string; content: string }[]): string {
-  const parts: string[] = [];
-  for (const file of files) {
-    const lines = file.content.split('\n');
-    const fingerprint: string[] = [`File: ${file.path}`];
-
-    // Extract imports/requires (first 30 lines)
-    const importLines = lines.slice(0, 30).filter(l =>
-      /^\s*(import |from |require\(|#include|using |package |@import)/.test(l),
-    );
-    if (importLines.length > 0) {
-      fingerprint.push('Imports: ' + importLines.slice(0, 10).join('; '));
-    }
-
-    // Extract class/function/component declarations
-    const declLines = lines.filter(l =>
-      /^\s*(export\s+)?(public\s+|private\s+|protected\s+)?(class |interface |function |const \w+ = |def |type |enum |abstract |@api|@wire|@track|@AuraEnabled)/.test(l),
-    ).slice(0, 8);
-    if (declLines.length > 0) {
-      fingerprint.push('Declarations: ' + declLines.map(l => l.trim()).join('; '));
-    }
-
-    parts.push(fingerprint.join('\n'));
-  }
-  // Cap at 2000 chars for embedding model input
-  return parts.join('\n\n').substring(0, 2000);
-}
-
 // ---------------------------------------------------------------------------
 // Heroku API (read-only queries)
 // ---------------------------------------------------------------------------
-
-async function fetchSimilarReviews(embedding: number[], topK: number = 10): Promise<any[]> {
-  const response = await axios.post(
-    `${HEROKU_API_URL}/api/search-similar-reviews`,
-    { embedding, top_k: topK },
-    { headers: herokuHeaders(), timeout: 30000 },
-  );
-  return response.data.reviews || [];
-}
-
-async function fetchSimilarCode(embedding: number[], topK: number = 5): Promise<any[]> {
-  const response = await axios.post(
-    `${HEROKU_API_URL}/api/search-similar-code`,
-    { embedding, top_k: topK },
-    { headers: herokuHeaders(), timeout: 30000 },
-  );
-  return response.data.chunks || [];
-}
-
-async function fetchSimilarDocs(embedding: number[], topK: number = 3): Promise<any[]> {
-  try {
-    const response = await axios.post(
-      `${HEROKU_API_URL}/api/search-similar-docs`,
-      { embedding, top_k: topK },
-      { headers: herokuHeaders(), timeout: 15000 },
-    );
-    return response.data.docs || [];
-  } catch {
-    return [];
-  }
-}
-
-async function fetchDocsByTitlePattern(
-  embedding: number[], patterns: string[], topK: number = 5,
-): Promise<any[]> {
-  try {
-    if (patterns.length === 0) return [];
-    const response = await axios.post(
-      `${HEROKU_API_URL}/api/search-docs-by-title`,
-      { embedding, patterns, top_k: topK },
-      { headers: herokuHeaders(), timeout: 15000 },
-    );
-    return response.data.docs || [];
-  } catch {
-    return [];
-  }
-}
 
 async function fetchOntologyRules(
   changedFiles: string[], diffText: string,
@@ -350,25 +249,17 @@ If no domains apply, respond with {"domain_ids": []}`;
   }
 }
 
-async function fetchSuggestedReviewers(filePaths: string[], prAuthor: string, similarReviews?: any[]): Promise<any[]> {
+async function fetchSuggestedReviewers(filePaths: string[], prAuthor: string): Promise<any[]> {
   const response = await axios.post(
     `${HEROKU_API_URL}/api/suggested-reviewers`,
-    { file_paths: filePaths, pr_author: prAuthor, similar_reviews: similarReviews || [] },
+    { file_paths: filePaths, pr_author: prAuthor },
     { headers: herokuHeaders(), timeout: 30000 },
   );
   return response.data.reviewers || [];
 }
 
-async function fetchLearningContext(embedding?: number[]): Promise<{ lessons: any[]; feedback: any[] }> {
+async function fetchLearningContext(): Promise<{ lessons: any[]; feedback: any[] }> {
   try {
-    if (embedding && embedding.length > 0) {
-      const response = await axios.post(
-        `${HEROKU_API_URL}/api/ai-learning-context?limit=5`,
-        { embedding },
-        { headers: herokuHeaders(), timeout: 15000 },
-      );
-      return { lessons: response.data.lessons || [], feedback: response.data.feedback || [] };
-    }
     const response = await axios.get(
       `${HEROKU_API_URL}/api/ai-learning-context?limit=5`,
       { headers: herokuHeaders(), timeout: 15000 },
@@ -473,7 +364,7 @@ function pass1_systemPrompt(fileCount: number): string {
   const minComments = Math.max(2, Math.min(fileCount, 8));
   return `You are an expert code reviewer reviewing IMPLEMENTATION files only (no test files). Respond with valid JSON only.
 
-{"summary": "1-2 sentence assessment", "comments": [{"file_path": "path/to/file", "line_hint": "line 42", "comment": "your comment", "type": "suggestion", "severity": "high", "reason": "1-sentence why this matters", "suggested_fix": "- if (val) {\n+ if (val != null) {", "source": "Past review on similar code"}]}
+{"summary": "1-2 sentence assessment", "comments": [{"file_path": "path/to/file", "line_hint": "line 42", "comment": "your comment", "type": "suggestion", "severity": "high", "reason": "1-sentence why this matters", "suggested_fix": "- if (val) {\n+ if (val != null) {", "source": "Learning context takeaway"}]}
 
 Severity classification (REQUIRED for every comment):
 - "critical": security hole, crash risk, race condition, data loss
@@ -484,7 +375,7 @@ Severity classification (REQUIRED for every comment):
 Context & evidence (REQUIRED):
 - "reason" (REQUIRED): One sentence explaining what breaks, what risk exists, or what improves. Be specific.
 - "suggested_fix" (optional): Include ONLY for small, self-contained fixes (null check, guard clause, missing import, rename). Format as unified diff: "-" for removed lines, "+" for added lines. Max 6 lines. Do NOT include for architectural concerns or complex refactors.
-- "source" (optional): Cite what informed the comment — e.g. "Past review on similar code" or a learning context takeaway.
+- "source" (optional): Cite what informed the comment — e.g. a learning context takeaway or a coding-rule title.
 
 Rules:
 - type: "comment", "question", or "suggestion"
@@ -502,19 +393,11 @@ Rules:
 
 function pass1_userPrompt(
   prTitle: string, implDiff: string, implFiles: string[],
-  similarReviews: any[], learningContext?: { lessons: any[]; feedback: any[] },
+  learningContext?: { lessons: any[]; feedback: any[] },
 ): string {
   const parts: string[] = [];
   parts.push(`Review these IMPLEMENTATION files from PR: "${prTitle}"`);
   parts.push(`\nFiles: ${implFiles.join(', ')}`);
-
-  if (similarReviews.length > 0) {
-    parts.push('\nPast team review comments on similar code:');
-    for (const r of similarReviews.slice(0, 5)) {
-      parts.push(`- ${r.file_path || 'general'}: "${(r.comment_body || '').substring(0, 300)}"`);
-    }
-  }
-
   parts.push(buildLearningContextBlock(learningContext));
   parts.push(`\nDiff:\n${implDiff.substring(0, 28000)}`);
   parts.push(JSON_SCHEMA);
@@ -968,18 +851,6 @@ async function run(): Promise<void> {
   const [, org, repo, prNumberStr] = urlMatch;
   const prNumber = parseInt(prNumberStr, 10);
 
-  // Verify Ollama (embeddings only)
-  log('Checking Ollama embeddings...');
-  try {
-    const client = getOllama();
-    await client.embed({ model: OLLAMA_EMBED_MODEL, input: 'test' });
-    log(`Embedding model ready: ${OLLAMA_EMBED_MODEL}`);
-  } catch (error: any) {
-    logError(`Ollama not ready: ${error.message}`);
-    logError(`Run: ollama pull ${OLLAMA_EMBED_MODEL}`);
-    process.exit(1);
-  }
-
   // Verify Claude AI
   log('Checking Claude AI...');
   try {
@@ -1019,73 +890,24 @@ async function run(): Promise<void> {
   const prDiff = await fetchPRDiff(hostname, org, repo, prNumber);
   console.log(`  Diff size: ${prDiff.length} chars`);
 
-  // 2. Generate embedding
-  separator('2. EMBEDDING');
-  log('Generating embedding for PR diff...');
-  const fileList = changedFiles.slice(0, 15).join(', ') + (changedFiles.length > 15 ? ` (+${changedFiles.length - 15} more)` : '');
-  const diffSummary = `PR: ${prTitle}\nAuthor: ${prAuthor}\nFiles: ${fileList}\n\n${prDiff.substring(0, 1500)}`;
-  const diffEmbedding = await generateEmbedding(diffSummary);
-  console.log(`  Embedding dimensions: ${diffEmbedding.length}`);
-
-  // 3. Vector search
-  separator('3. SIMILAR PAST REVIEWS');
-  let similarReviews: any[] = [];
-  try {
-    similarReviews = await fetchSimilarReviews(diffEmbedding, 10);
-    console.log(`  Found ${similarReviews.length} similar past reviews:\n`);
-    for (let i = 0; i < similarReviews.length; i++) {
-      const r = similarReviews[i];
-      console.log(`  [${i + 1}] ${r.org}/${r.repo} PR#${r.pr_number} — ${r.file_path || 'general'}`);
-      console.log(`      Reviewer: ${r.reviewer_login}  State: ${r.review_state}`);
-      console.log(`      Comment: ${(r.comment_body || '').substring(0, 200)}`);
-      if (r.similarity !== undefined) {
-        console.log(`      Similarity: ${r.similarity}`);
-      }
-      console.log('');
-    }
-  } catch (error: any) {
-    console.log(`  No similar reviews found: ${error.message}`);
+  // 2. Fetch learning context and ontology rules
+  separator('2. LEARNING CONTEXT');
+  const learningContext = await fetchLearningContext();
+  console.log(`  ${learningContext.lessons.length} relevant lesson(s), ${learningContext.feedback.length} feedback item(s)`);
+  for (const l of learningContext.lessons) {
+    const lj = typeof l.lessons_json === 'string' ? JSON.parse(l.lessons_json) : l.lessons_json;
+    for (const t of (lj.key_takeaways || [])) console.log(`  - Takeaway: ${t}`);
+    if (lj.key_takeaway && !lj.key_takeaways) console.log(`  - Takeaway: ${lj.key_takeaway}`);
+  }
+  for (const f of learningContext.feedback) {
+    console.log(`  - ${f.rating}: "${(f.feedback_text || '').substring(0, 100)}"`);
+  }
+  if (learningContext.lessons.length === 0 && learningContext.feedback.length === 0) {
+    console.log('  No learning context yet — will improve as PRs are reviewed and closed.');
   }
 
-  separator('4. RELATED CODEBASE CONTEXT');
-  let similarCode: any[] = [];
-  try {
-    similarCode = await fetchSimilarCode(diffEmbedding, 5);
-    console.log(`  Found ${similarCode.length} related code chunks:\n`);
-    for (let i = 0; i < similarCode.length; i++) {
-      const c = similarCode[i];
-      console.log(`  [${i + 1}] ${c.file_path}`);
-      console.log(`      ${(c.content_chunk || '').substring(0, 150).replace(/\n/g, '\n      ')}`);
-      console.log('');
-    }
-  } catch (error: any) {
-    console.log(`  No related code found: ${error.message}`);
-  }
-
-  // 4. Learning context
-  separator('5. LEARNING CONTEXT');
-  let learningContext: { lessons: any[]; feedback: any[] } = { lessons: [], feedback: [] };
-  try {
-    learningContext = await fetchLearningContext(diffEmbedding);
-    console.log(`  ${learningContext.lessons.length} relevant lesson(s), ${learningContext.feedback.length} feedback item(s)`);
-    for (const l of learningContext.lessons) {
-      const lj = typeof l.lessons_json === 'string' ? JSON.parse(l.lessons_json) : l.lessons_json;
-      const similarity = l.similarity ? ` (similarity: ${(l.similarity * 100).toFixed(1)}%)` : '';
-      for (const t of (lj.key_takeaways || [])) console.log(`  - Takeaway${similarity}: ${t}`);
-      if (lj.key_takeaway && !lj.key_takeaways) console.log(`  - Takeaway${similarity}: ${lj.key_takeaway}`);
-    }
-    for (const f of learningContext.feedback) {
-      console.log(`  - ${f.rating}: "${(f.feedback_text || '').substring(0, 100)}"`);
-    }
-    if (learningContext.lessons.length === 0 && learningContext.feedback.length === 0) {
-      console.log('  No learning context yet — will improve as PRs are reviewed and closed.');
-    }
-  } catch (error: any) {
-    console.log(`  Could not fetch learning context: ${error.message}`);
-  }
-
-  // 4b. Fetch full file content for context-aware doc matching
-  separator('5b. FILE CONTEXT FOR DOC MATCHING');
+  // 3. Fetch full file content for context-aware doc matching
+  separator('3. FILE CONTEXT FOR DOC MATCHING');
   const headSha = prDetails.head?.sha || '';
   const implPrFiles = prFiles
     .filter((f: any) => !TEST_FILE_PATTERN.test(f.filename) && !SKIP_FILE_PATTERN.test(f.filename))
@@ -1104,22 +926,8 @@ async function run(): Promise<void> {
   }
   console.log(`  Fetched ${fileContents.length}/${implPrFiles.length} file(s)\n`);
 
-  let fileContextEmbedding = diffEmbedding;
-  let fileContextSummary = '';
-  if (fileContents.length > 0) {
-    fileContextSummary = buildFileContextSummary(fileContents);
-    console.log('  File-context summary:');
-    for (const line of fileContextSummary.split('\n')) {
-      console.log(`    ${line}`);
-    }
-    console.log('');
-    log('Generating file-context embedding...');
-    fileContextEmbedding = await generateEmbedding(fileContextSummary);
-    console.log(`  File-context embedding dimensions: ${fileContextEmbedding.length}`);
-  }
-
-  // 4c. Ontology-based rule resolution
-  separator('5c. ONTOLOGY RULE RESOLUTION');
+  // 4. Ontology-based rule resolution
+  separator('4. ONTOLOGY RULE RESOLUTION');
   log('Resolving coding rules via ontology engine...');
   const ontologyResult = await fetchOntologyRules(changedFiles, prDiff);
   console.log(`  Deterministic rules: ${ontologyResult.rules.length}`);
@@ -1142,7 +950,7 @@ async function run(): Promise<void> {
   console.log(`\n  Total applicable rules: ${allRules.length}`);
 
   // 5. Multi-pass LLM review
-  separator('6. AI REVIEW — MULTI-PASS (via Claude)');
+  separator('5. AI REVIEW — MULTI-PASS (via Claude)');
   log(`Generating review with ${getClaudeModel()} (3-pass)...`);
 
   // Split diff into implementation and test files
@@ -1155,12 +963,12 @@ async function run(): Promise<void> {
   const summaries: string[] = [];
 
   // --- Pass 1: Implementation code review ---
-  separator('6a. PASS 1 — Implementation Review');
+  separator('5a. PASS 1 — Implementation Review');
   if (implFiles.length > 0) {
     const p1 = await runReviewPass(
       'Pass 1: Implementation',
       pass1_systemPrompt(implFiles.length),
-      pass1_userPrompt(prTitle, implDiff, implFiles, similarReviews, learningContext),
+      pass1_userPrompt(prTitle, implDiff, implFiles, learningContext),
     );
     allComments.push(...(p1.comments || []));
     if (p1.summary) summaries.push(p1.summary);
@@ -1172,7 +980,7 @@ async function run(): Promise<void> {
   }
 
   // --- Pass 2: Ontology rules compliance ---
-  separator('6b. PASS 2 — Rules Compliance');
+  separator('5b. PASS 2 — Rules Compliance');
   if (implFiles.length > 0 && allRules.length > 0) {
     const p2 = await runReviewPass(
       'Pass 2: Rules Compliance',
@@ -1189,7 +997,7 @@ async function run(): Promise<void> {
   }
 
   // --- Pass 3: Test file review ---
-  separator('6c. PASS 3 — Test Review');
+  separator('5c. PASS 3 — Test Review');
   if (testFiles.length > 0) {
     const p3 = await runReviewPass(
       'Pass 3: Tests',
@@ -1225,7 +1033,7 @@ async function run(): Promise<void> {
   });
 
   const review = mergedReview;
-  separator('6d. MERGED RESULTS');
+  separator('5d. MERGED RESULTS');
   console.log(`  Summary: ${review.summary || 'N/A'}\n`);
   const comments = review.comments || [];
   console.log(`  ${comments.length} review comment(s):\n`);
@@ -1245,11 +1053,11 @@ async function run(): Promise<void> {
     console.log('');
   }
 
-  // 5. Suggested reviewers
-  separator('7. SUGGESTED REVIEWERS');
+  // 6. Suggested reviewers
+  separator('6. SUGGESTED REVIEWERS');
   let reviewers: any[] = [];
   try {
-    reviewers = await fetchSuggestedReviewers(changedFiles, prAuthor, similarReviews);
+    reviewers = await fetchSuggestedReviewers(changedFiles, prAuthor);
     if (reviewers.length === 0) {
       console.log('  No reviewer suggestions (not enough review history yet)');
     } else {
@@ -1263,9 +1071,9 @@ async function run(): Promise<void> {
     console.log(`  Could not fetch reviewer suggestions: ${error.message}`);
   }
 
-  // 6. Slack message preview
+  // 7. Slack message preview
   const noMention = process.argv.includes('--no-mention');
-  separator('8. SLACK MESSAGE PREVIEW');
+  separator('7. SLACK MESSAGE PREVIEW');
   const slackMessage = formatSlackMessage(review, reviewers, noMention, prUrl);
   if (noMention) log('Reviewer @mentions suppressed (--no-mention)');
   console.log('  Below is what would be posted as a Slack thread reply:\n');
@@ -1291,7 +1099,7 @@ async function run(): Promise<void> {
   const postChannel = process.argv.find(a => a.startsWith('--channel='))?.split('=')[1];
 
   if (shouldPost) {
-    separator('9. POSTING TO SLACK');
+    separator('8. POSTING TO SLACK');
     const slackToken = process.env.SLACK_BOT_TOKEN;
     if (!slackToken) {
       logError('SLACK_BOT_TOKEN is required to post. Skipping Slack post.');

@@ -2,16 +2,14 @@
 /**
  * Bootstrap Learner
  *
- * Batch processes all closed tracked PRs through the full RAG pipeline:
+ * Batch processes all closed tracked PRs for learning:
  *   1. Fetches PR details, diff, files from GHE
- *   2. Generates embeddings via nomic-embed-text
- *   3. Vector search for similar reviews + codebase context
- *   4. Fetches learning context from past lessons/feedback
- *   5. Generates AI review via Ollama LLM (full RAG prompt)
- *   6. Stores AI review in pr_analysis_results
- *   7. Fetches peer review comments from GHE
- *   8. Compares AI vs peer via LLM → structured lessons
- *   9. Stores lessons in ai_review_lessons
+ *   2. Fetches learning context from past lessons/feedback
+ *   3. Generates AI review via Claude (with learning context)
+ *   4. Stores AI review in pr_analysis_results
+ *   5. Fetches peer review comments from GHE
+ *   6. Compares AI vs peer via LLM → structured lessons
+ *   7. Stores lessons in ai_review_lessons
  *
  * Usage:
  *   npm run bootstrap-learn              # Process all (default limit: 50)
@@ -21,14 +19,11 @@
 import 'dotenv/config';
 import { notifyError } from '../src/utils/errorNotifier';
 import axios from 'axios';
-import { Ollama } from 'ollama';
 import { requireTokenForHost } from '../src/utils/gheTokenResolver';
 import { claudeChat, checkClaudeHealth, getClaudeModel } from '../src/services/claudeClient';
 
 const HEROKU_API_URL = process.env.HEROKU_API_URL;
 const WORKER_API_KEY = process.env.WORKER_API_KEY;
-const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
-const OLLAMA_EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
 
 function log(msg: string): void {
   console.log(`[${new Date().toISOString()}] [BootstrapLearner] ${msg}`);
@@ -46,23 +41,6 @@ function herokuHeaders(): Record<string, string> {
 function extractHostname(prUrl: string): string | null {
   const match = prUrl.match(/https:\/\/([a-zA-Z0-9-]+\.soma\.salesforce\.com)/);
   return match ? match[1] : null;
-}
-
-// ---------------------------------------------------------------------------
-// Ollama helpers
-// ---------------------------------------------------------------------------
-
-let ollama: Ollama | null = null;
-function getOllama(): Ollama {
-  if (!ollama) ollama = new Ollama({ host: OLLAMA_HOST });
-  return ollama;
-}
-
-async function generateEmbedding(text: string): Promise<number[]> {
-  const client = getOllama();
-  const truncated = text.substring(0, 2000);
-  const response = await client.embed({ model: OLLAMA_EMBED_MODEL, input: truncated });
-  return response.embeddings[0];
 }
 
 // ---------------------------------------------------------------------------
@@ -136,180 +114,11 @@ async function fetchPeerComments(hostname: string, org: string, repo: string, pr
 }
 
 // ---------------------------------------------------------------------------
-// Skill-based routing: keyword → doc title patterns (derived from skill.md)
+// Heroku API helpers (store results)
 // ---------------------------------------------------------------------------
 
-const SKILL_ROUTING: { keywords: RegExp; docPattern: string; area: string }[] = [
-  { keywords: /\b(UDD|EntityObject|EntityFunctions|EntityDef|EntityRecord|SOQL|entity[.\-_]xml|object[.\-_]definition|field[.\-_]label|shared[.\-_]labels|CustomObject|CustomField|StandardEntity)\b/i,
-    docPattern: 'core-engineer/entity-engineer/%', area: 'Entity/UDD' },
-  { keywords: /\b(SDB|SFSQL|PLSQL|psql|db[.\-_]schema|stored[.\-_]procedure|database[.\-_]migration|\.sql)\b/i,
-    docPattern: 'core-engineer/db-engineer/%', area: 'Database' },
-  { keywords: /\b(ftest|functional[.\-_]test|EntityEnabler|PublicEntityTest|AccessBasedEntityEnablerList|OldTestSuiteEntityAllowList|CRUD[.\-_]test)\b/i,
-    docPattern: 'core-engineer/test-engineer/%', area: 'Testing' },
-  { keywords: /\b(bazel|buildifier|BUILD\.bazel|db[.\-_]schema[.\-_]update|app[.\-_]server|graph[.\-_]tool)\b/i,
-    docPattern: 'core-engineer/infra-engineer/%', area: 'Infrastructure' },
-  { keywords: /\b(message[.\-_]queue|MQ[.\-_]handler|async[.\-_]handler|background[.\-_]processing|cron[.\-_]job|scheduled[.\-_]task|QueueableJob|BatchableJob)\b/i,
-    docPattern: 'core-engineer/async-engineer/%', area: 'Async/Scheduled' },
-  { keywords: /\b(org[.\-_]permission|user[.\-_]permission|feature[.\-_]flag|pilot[.\-_]gate|license[.\-_]check|SKU|access[.\-_]control|PLD)\b/i,
-    docPattern: 'core-engineer/permission-engineer/%', area: 'Permissions' },
-  { keywords: /\b(LogRecordType|structured[.\-_]logging|app[.\-_]logging[.\-_]format)\b/i,
-    docPattern: 'core-engineer/logrecord-engineer/%', area: 'Logging' },
-  { keywords: /\b(SpringConfiguration|@Configuration|@Bean|@Import|dependency[.\-_]injection|API[.\-_]Impl|module[.\-_]descriptor)\b/i,
-    docPattern: 'core-engineer/module-engineer/%', area: 'Modules' },
-  { keywords: /\b(git[.\-_]commit|git[.\-_]push|create[.\-_]PR|p4[.\-_]submit|check[.\-_]in[.\-_]code|submit[.\-_]for[.\-_]review)\b/i,
-    docPattern: 'core-engineer/git-engineer/%', area: 'Git' },
-];
-
-function matchSkillRoutes(text: string): { patterns: string[]; areas: string[] } {
-  const patterns: string[] = [];
-  const areas: string[] = [];
-  for (const route of SKILL_ROUTING) {
-    if (route.keywords.test(text)) {
-      patterns.push(route.docPattern);
-      areas.push(route.area);
-    }
-  }
-  return { patterns, areas };
-}
-
-// ---------------------------------------------------------------------------
-// GHE: fetch full file content for context
-// ---------------------------------------------------------------------------
-
-async function fetchFileContent(
-  hostname: string, org: string, repo: string, filePath: string, ref: string,
-): Promise<string | null> {
+async function fetchLearningContext(): Promise<{ lessons: any[]; feedback: any[] }> {
   try {
-    const token = requireTokenForHost(hostname);
-    const response = await axios.get(
-      `https://${hostname}/api/v3/repos/${org}/${repo}/contents/${filePath}`,
-      {
-        params: { ref },
-        headers: {
-          Authorization: `token ${token}`,
-          Accept: 'application/vnd.github.v3+json',
-        },
-        timeout: 10000,
-      },
-    );
-    if (response.data.encoding === 'base64') {
-      return Buffer.from(response.data.content, 'base64').toString('utf-8');
-    }
-    return response.data.content || null;
-  } catch {
-    return null;
-  }
-}
-
-function buildFileContextSummary(files: { path: string; content: string }[]): string {
-  const parts: string[] = [];
-  for (const file of files) {
-    const lines = file.content.split('\n');
-    const fingerprint: string[] = [`File: ${file.path}`];
-
-    // Extract imports/requires (first 30 lines)
-    const importLines = lines.slice(0, 30).filter(l =>
-      /^\s*(import |from |require\(|#include|using |package |@import)/.test(l),
-    );
-    if (importLines.length > 0) {
-      fingerprint.push('Imports: ' + importLines.slice(0, 10).join('; '));
-    }
-
-    // Extract class/function/component declarations
-    const declLines = lines.filter(l =>
-      /^\s*(export\s+)?(public\s+|private\s+|protected\s+)?(class |interface |function |const \w+ = |def |type |enum |abstract |@api|@wire|@track|@AuraEnabled)/.test(l),
-    ).slice(0, 8);
-    if (declLines.length > 0) {
-      fingerprint.push('Declarations: ' + declLines.map(l => l.trim()).join('; '));
-    }
-
-    parts.push(fingerprint.join('\n'));
-  }
-  // Cap at 2000 chars for embedding model input
-  return parts.join('\n\n').substring(0, 2000);
-}
-
-// ---------------------------------------------------------------------------
-// Heroku API helpers (vector search, store results)
-// ---------------------------------------------------------------------------
-
-async function fetchSimilarReviews(embedding: number[], topK: number = 10): Promise<any[]> {
-  const response = await axios.post(
-    `${HEROKU_API_URL}/api/search-similar-reviews`,
-    { embedding, top_k: topK },
-    { headers: herokuHeaders(), timeout: 30000 },
-  );
-  return response.data.reviews || [];
-}
-
-async function fetchSimilarCode(embedding: number[], topK: number = 5): Promise<any[]> {
-  const response = await axios.post(
-    `${HEROKU_API_URL}/api/search-similar-code`,
-    { embedding, top_k: topK },
-    { headers: herokuHeaders(), timeout: 30000 },
-  );
-  return response.data.chunks || [];
-}
-
-async function fetchSimilarDocs(embedding: number[], topK: number = 3): Promise<any[]> {
-  try {
-    const response = await axios.post(
-      `${HEROKU_API_URL}/api/search-similar-docs`,
-      { embedding, top_k: topK },
-      { headers: herokuHeaders(), timeout: 15000 },
-    );
-    return response.data.docs || [];
-  } catch {
-    return [];
-  }
-}
-
-async function fetchDocsByTitlePattern(
-  embedding: number[], patterns: string[], topK: number = 5,
-): Promise<any[]> {
-  try {
-    if (patterns.length === 0) return [];
-    const response = await axios.post(
-      `${HEROKU_API_URL}/api/search-docs-by-title`,
-      { embedding, patterns, top_k: topK },
-      { headers: herokuHeaders(), timeout: 15000 },
-    );
-    return response.data.docs || [];
-  } catch {
-    return [];
-  }
-}
-
-async function fetchOntologyRules(
-  changedFiles: string[], diffText: string,
-): Promise<{ rules: any[]; taxonomy: any[]; unmatched_files: string[] }> {
-  try {
-    const response = await axios.post(
-      `${HEROKU_API_URL}/api/resolve-rules`,
-      { changed_files: changedFiles, diff_text: diffText.substring(0, 50000) },
-      { headers: herokuHeaders(), timeout: 30000 },
-    );
-    return {
-      rules: response.data.rules || [],
-      taxonomy: response.data.taxonomy || [],
-      unmatched_files: response.data.unmatched_files || [],
-    };
-  } catch (error: any) {
-    log(`  Ontology rule resolution failed: ${error.message}`);
-    return { rules: [], taxonomy: [], unmatched_files: changedFiles };
-  }
-}
-
-async function fetchLearningContext(embedding?: number[]): Promise<{ lessons: any[]; feedback: any[] }> {
-  try {
-    if (embedding && embedding.length > 0) {
-      const response = await axios.post(
-        `${HEROKU_API_URL}/api/ai-learning-context?limit=5`,
-        { embedding },
-        { headers: herokuHeaders(), timeout: 15000 },
-      );
-      return { lessons: response.data.lessons || [], feedback: response.data.feedback || [] };
-    }
     const response = await axios.get(
       `${HEROKU_API_URL}/api/ai-learning-context?limit=5`,
       { headers: herokuHeaders(), timeout: 15000 },
@@ -328,9 +137,9 @@ async function reportAnalysisResults(data: {
   });
 }
 
-async function reportLessons(prUrl: string, aiReview: any, peerComments: any[], lessons: any, embedding?: number[]): Promise<void> {
+async function reportLessons(prUrl: string, aiReview: any, peerComments: any[], lessons: any): Promise<void> {
   await axios.post(`${HEROKU_API_URL}/api/ai-lessons`, {
-    pr_url: prUrl, ai_review: aiReview, peer_comments: peerComments, lessons, embedding,
+    pr_url: prUrl, ai_review: aiReview, peer_comments: peerComments, lessons,
   }, { headers: herokuHeaders(), timeout: 30000 });
 }
 
@@ -379,37 +188,14 @@ Rules:
 
 function buildUserPrompt(
   prTitle: string, prDiff: string, changedFiles: string[],
-  similarReviews: any[], similarCode: any[],
   learningContext?: { lessons: any[]; feedback: any[] },
-  similarDocs?: any[],
 ): string {
   const parts: string[] = [];
 
   parts.push(`Review this PR: "${prTitle}"`);
   parts.push(`\nChanged files: ${changedFiles.join(', ')}`);
 
-  if (similarReviews.length > 0) {
-    parts.push('\nPast team review comments on similar code:');
-    for (const review of similarReviews.slice(0, 5)) {
-      parts.push(`- ${review.file_path || 'general'}: "${(review.comment_body || '').substring(0, 300)}"`);
-    }
-  }
-
-  // Include ontology rules (exact deterministic matches)
-  const relevantRules = (similarDocs || []);
-  if (relevantRules.length > 0) {
-    parts.push('\nCODING RULES — You MUST check this PR against these exact rules. If the PR violates or misses any rule below, produce a comment citing the rule:');
-    for (const rule of relevantRules.slice(0, 10)) {
-      if (rule.rule_key) {
-        // Ontology rule format
-        const severityTag = rule.severity ? `[${rule.severity.toUpperCase()}]` : '';
-        parts.push(`--- [${rule.title}] (${rule.rule_key}) ${severityTag} ---\n${(rule.description || '').substring(0, 1000)}\n---`);
-      } else if (rule.content_chunk) {
-        // Legacy doc chunk format (fallback)
-        parts.push(`--- [${rule.title}] ---\n${rule.content_chunk.substring(0, 1500)}\n---`);
-      }
-    }
-  }
+  // Semantic vector search removed — domain-scoped code examples only.
 
   if (learningContext) {
     const { lessons, feedback } = learningContext;
@@ -594,7 +380,7 @@ For EACH peer comment above, determine: did the AI catch this issue? If not, add
 }
 
 // ---------------------------------------------------------------------------
-// Process a single PR: full RAG review + lesson extraction
+// Process a single PR: AI review + lesson extraction
 // ---------------------------------------------------------------------------
 
 async function processPR(pr: any): Promise<boolean> {
@@ -610,74 +396,29 @@ async function processPR(pr: any): Promise<boolean> {
 
   try {
     // 1. Fetch PR details, diff, files
-    log('  [1/9] Fetching PR details...');
+    log('  [1/8] Fetching PR details...');
     const prDetails = await fetchPRDetails(hostname, org, repo, pr_number);
     const prTitle = prDetails.title || `PR #${pr_number}`;
     const prAuthor = prDetails.user?.login || '';
 
-    log('  [2/9] Fetching PR diff...');
+    log('  [2/8] Fetching PR diff...');
     const prDiff = await fetchPRDiff(hostname, org, repo, pr_number);
 
-    log('  [3/9] Fetching changed files...');
+    log('  [3/8] Fetching changed files...');
     const prFiles = await fetchPRFiles(hostname, org, repo, pr_number);
     const changedFiles = prFiles.map((f: any) => f.filename);
     log(`         "${prTitle}" by ${prAuthor}: ${changedFiles.length} files, ${prDiff.length} chars diff`);
 
-    // 2. Generate embedding
-    log('  [4/9] Generating embedding...');
-    const fileList = changedFiles.slice(0, 15).join(', ') + (changedFiles.length > 15 ? ` (+${changedFiles.length - 15} more)` : '');
-    const diffSummary = `PR: ${prTitle}\nAuthor: ${prAuthor}\nFiles: ${fileList}\n\n${prDiff.substring(0, 1500)}`;
-    const diffEmbedding = await generateEmbedding(diffSummary);
+    // Semantic vector search removed — domain-scoped code examples only.
 
-    // 3. Vector search
-    log('  [5/9] Searching similar reviews + code...');
-    let similarReviews: any[] = [];
-    try {
-      similarReviews = await fetchSimilarReviews(diffEmbedding, 10);
-    } catch { /* no results */ }
-
-    let similarCode: any[] = [];
-    try {
-      similarCode = await fetchSimilarCode(diffEmbedding, 5);
-    } catch { /* no results */ }
-    log(`         ${similarReviews.length} similar reviews, ${similarCode.length} code chunks`);
-
-    // 4. Fetch full file content for context-aware doc matching
-    log('  [5b/9] Fetching full file content for doc matching...');
-    const headSha = prDetails.head?.sha || '';
-    const implPrFiles = prFiles
-      .filter((f: any) => !(/(__tests__|test\.js|test\.ts|\.test\.|Test\.java|\/test\/func\/)/i.test(f.filename))
-        && !(/(\.utam\.json|\.stories\.js|-meta\.xml)$/i.test(f.filename)))
-      .sort((a: any, b: any) => (b.additions || 0) - (a.additions || 0))
-      .slice(0, 8);
-
-    const fileContents: { path: string; content: string }[] = [];
-    for (const f of implPrFiles) {
-      const content = await fetchFileContent(hostname, org, repo, f.filename, headSha);
-      if (content) {
-        fileContents.push({ path: f.filename, content });
-      }
-    }
-    log(`         Fetched ${fileContents.length}/${implPrFiles.length} file(s) for context`);
-
-    let fileContextEmbedding = diffEmbedding;
-    if (fileContents.length > 0) {
-      const fileContextSummary = buildFileContextSummary(fileContents);
-      fileContextEmbedding = await generateEmbedding(fileContextSummary);
-    }
-
-    // 4b. Ontology-based rule resolution
-    const ontologyResult = await fetchOntologyRules(changedFiles, prDiff);
-    const cappedDocs = ontologyResult.rules;
-    log(`         Ontology resolved ${ontologyResult.rules.length} rules (${ontologyResult.unmatched_files.length} unmatched files)`);
-
-    // 4c. Fetch learning context
-    const learningContext = await fetchLearningContext(diffEmbedding);
+    // 4. Fetch learning context
+    log('  [4/8] Fetching learning context...');
+    const learningContext = await fetchLearningContext();
 
     // 5. Generate AI review via LLM
-    log('  [6/9] Generating AI review via Claude...');
+    log('  [5/8] Generating AI review via Claude...');
     const systemPrompt = buildSystemPrompt(changedFiles.length);
-    const userPrompt = buildUserPrompt(prTitle, prDiff, changedFiles, similarReviews, similarCode, learningContext, cappedDocs);
+    const userPrompt = buildUserPrompt(prTitle, prDiff, changedFiles, learningContext);
 
     let review: any;
     try {
@@ -694,24 +435,24 @@ async function processPR(pr: any): Promise<boolean> {
     }
 
     // 6. Store AI review
-    log('  [7/9] Storing AI review...');
+    log('  [6/8] Storing AI review...');
     await reportAnalysisResults({
       pr_url, channel_id: channel_id || 'bootstrap', message_ts: message_ts || '0',
       review, reviewers: [],
     });
 
     // 7. Fetch peer review comments
-    log('  [8/9] Fetching peer review comments...');
+    log('  [7/8] Fetching peer review comments...');
     const peerComments = await fetchPeerComments(hostname, org, repo, pr_number);
     log(`         ${peerComments.length} peer comment(s)`);
 
     // 8-9. Compare AI vs peer + store lessons
     let lessons: any;
     if (peerComments.length === 0) {
-      log('  [9/9] No peer comments — storing placeholder lesson...');
+      log('  [8/8] No peer comments — storing placeholder lesson...');
       lessons = { missed_issues: [], wrong_calls: [], correct_calls: [], patterns: [], review_blind_spots: [], key_takeaways: ['No peer comments available for comparison'] };
     } else {
-      log('  [9/9] Comparing AI vs peer reviews via LLM...');
+      log('  [8/8] Comparing AI vs peer reviews via LLM...');
       lessons = await generateLessonsViaLLM(review, peerComments, prDiff);
       log(`         Missed: ${lessons.missed_issues.length} | Wrong: ${lessons.wrong_calls.length} | Correct: ${lessons.correct_calls.length}`);
       log(`         Patterns: ${(lessons.patterns || []).join('; ')}`);
@@ -719,7 +460,7 @@ async function processPR(pr: any): Promise<boolean> {
       for (const t of lessons.key_takeaways || []) log(`         Takeaway: ${t}`);
     }
 
-    await reportLessons(pr_url, review, peerComments, lessons, diffEmbedding);
+    await reportLessons(pr_url, review, peerComments, lessons);
     log('  ✅ Complete!');
     return true;
   } catch (error: any) {
@@ -766,18 +507,6 @@ async function run(): Promise<void> {
   const force = process.argv.includes('--force');
   if (force) {
     log('⚠️  Force mode: re-processing PRs that already have lessons');
-  }
-
-  // Verify Ollama (embeddings only)
-  log('Verifying Ollama embedding model...');
-  try {
-    const client = getOllama();
-    await client.embed({ model: OLLAMA_EMBED_MODEL, input: 'test' });
-    log(`  ✓ Embedding model ready: ${OLLAMA_EMBED_MODEL}`);
-  } catch (error: any) {
-    logError(`Ollama not ready: ${error.message}`);
-    logError(`Run: ollama pull ${OLLAMA_EMBED_MODEL}`);
-    process.exit(1);
   }
 
   // Verify Claude AI

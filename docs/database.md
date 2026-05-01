@@ -1,8 +1,6 @@
 # Database
 
-Postgres (Heroku-managed) with the `vector` extension (pgvector, enabled by migration 007). Single connection pool at `src/db/client.ts:3-6` — uses `ssl: { rejectUnauthorized: false }` when `NODE_ENV=production`, otherwise SSL is disabled.
-
-All embedding columns are **`vector(768)`**. The embedding model is Ollama `nomic-embed-text` — if that changes, the column type and every IVFFlat index must be rebuilt.
+Postgres (Heroku-managed). The `vector` extension is still enabled (migration 007) but no vector columns remain after migration 018. Single connection pool at `src/db/client.ts:3-6` — uses `ssl: { rejectUnauthorized: false }` when `NODE_ENV=production`, otherwise SSL is disabled.
 
 ## Migrations
 
@@ -52,15 +50,15 @@ Inline review comments pulled from GHE. Keys: `pr_url`, `reviewer_login`, `file_
 
 Changed files per PR. Columns include `file_path`, `change_type`, `additions`, `deletions`, `patch_snippet`, `author_login`. Indexed on `repo`, `file`, `author`.
 
-### `pr_embeddings` (008) — vector(768)
+### `pr_embeddings`
 
-Generic embeddings table. Row per embedded content item with `content_type` + `source_id` discriminators and JSONB `metadata`. IVFFlat index `lists=100` on cosine ops.
+Removed in migration 018.
 
 ### `user_mappings` (008)
 
 `ghe_login UNIQUE`, `slack_user_id`, `display_name`, `email`, `discovered_via` ('email'|'name'|'manual'). Indexed on `slack_user_id`.
 
-### `repo_knowledge` (008, extended by 017) — vector(768)
+### `repo_knowledge` (008, extended by 017)
 
 Chunked source code for RAG.
 
@@ -70,14 +68,13 @@ Chunked source code for RAG.
 | `org`, `repo`, `file_path` | TEXT | Natural key with `chunk_index` |
 | `content_chunk` | TEXT | ~1500 chars |
 | `chunk_index` | INT | |
-| `embedding` | vector(768) | |
 | `last_commit_sha` | TEXT | |
 | `domain_id` | INT FK → `code_domains` | Added in 017 |
 | `code_element_type` | TEXT CHECK IN ('class','function','interface','test','config','unknown') | Added in 017 |
 | `code_element_name` | TEXT | Added in 017 |
 | `created_at`, `updated_at` | TIMESTAMP | |
 
-Indexes: repo, file, IVFFlat `lists=100`, domain, element, domain+element composite.
+Indexes: repo, file, domain, element, domain+element composite.
 
 Natural key: `(org, repo, file_path, chunk_index)` — `upsertRepoKnowledge` does `ON CONFLICT ... DO UPDATE` on that combo.
 
@@ -93,13 +90,13 @@ Natural key: `(org, repo, file_path, chunk_index)` — `upsertRepoKnowledge` doe
 
 UNIQUE(`pr_url`, `user_id`). `rating` CHECK IN ('helpful', 'not_helpful'). Optional `feedback_text`. Written from the overall 👍/👎 + modal.
 
-### `ai_review_lessons` (011, extended by 012) — vector(768)
+### `ai_review_lessons` (011, extended by 012)
 
-`pr_url UNIQUE`, `ai_review_json`, `peer_comments_json`, `lessons_json`, `embedding vector(768)` (added 012). IVFFlat `lists=10`. Consumed by `/api/ai-learning-context`.
+`pr_url UNIQUE`, `ai_review_json`, `peer_comments_json`, `lessons_json`. Consumed by `/api/ai-learning-context`.
 
-### `team_documents` (013) — vector(768)
+### `team_documents`
 
-`title`, `source_url`, `doc_type DEFAULT 'design'`, `content_chunk`, `chunk_index`, `embedding`, `last_fetched_at`. IVFFlat `lists=10`. Populated by `worker/docIngester.ts`. `upsertDocumentChunks` deletes-then-inserts by `source_url`.
+Removed in migration 018.
 
 ### `ai_comment_feedback` (014)
 
@@ -137,33 +134,20 @@ See `src/db/client.ts` for signatures; this is a map of what touches which table
 - `getHarvestState`, `upsertHarvestState`, `upsertRepoHarvestState`. (`client.ts:428, 433, 443`)
 - `upsertRepoKnowledge(chunk)` — upserts on `(org, repo, file_path, chunk_index)`, also stores `domain_id` + `code_element_type` + `code_element_name`. (`client.ts:455`)
 - `deleteRepoKnowledgeForFile(org, repo, filePath)`. (`client.ts:482`)
-- `getUnembeddedPRReviews(limit=100)` / `getUnembeddedRepoKnowledge(limit=100)`. (`client.ts:507, 518`)
-
-### Embeddings + vector search
-- `insertEmbedding(contentType, sourceId, contentText, embedding, metadata)`. (`client.ts:488`)
-- `updateRepoKnowledgeEmbedding(id, embedding)`. (`client.ts:500`)
-- `searchSimilarReviews(embedding, topK=10)` and `searchSimilarCode(embedding, topK=10)` — both compute `1 - (embedding <=> $1::vector)` as `similarity` and order by `<=>`. (`client.ts:530, 541`)
 - `findReviewersByFiles(filePaths, topK=10)` / `findCodeTouchersByFiles(filePaths, topK=10)` — aggregate over `pr_reviews`/`pr_files`, match exact path or `LIKE` dir prefix, excluding NULL authors for touchers. (`client.ts:552, 570`)
 
 ### AI feedback + lessons
 - `insertOrUpdateFeedback(prUrl, userId, rating, feedbackText?)` / `getRecentFeedback(limit=5)`. (`client.ts:596, 607`)
 - `insertOrUpdateCommentFeedback(prUrl, commentIndex, userId, rating, commentSnapshot?)` / `getCommentFeedbackStats(prUrl)`. (`client.ts:623, 634`)
-- `insertReviewLessons(prUrl, aiReview, peerComments, lessons, embedding?)` — embedding optional; when provided, stored as `::vector`. (`client.ts:651`)
-- `getRecentLessons(limit=3)` / `getSimilarLessons(embedding, limit=5)` / `getPRsNeedingLessonExtraction()` — last one joins `pr_analysis_results`, `tracked_prs`, `ai_review_lessons` to find closed PRs that have an AI review stored but no lessons yet (LIMIT 20). (`client.ts:672, 682, 695`)
-
-### Team documents (pgvector)
-- `searchSimilarDocs(embedding, topK=3)`, `searchDocsByTitlePattern(embedding, patterns, topK=5)`, `upsertDocumentChunks(sourceUrl, title, docType, chunks)`, `listDocuments()`, `deleteDocument(sourceUrl)`. (`client.ts:711, 724, 741, 760, 773`)
+- `insertReviewLessons(prUrl, aiReview, peerComments, lessons)` — 4-arg signature. (`client.ts:651`)
+- `getRecentLessons(limit=3)` / `getPRsNeedingLessonExtraction()` — last one joins `pr_analysis_results`, `tracked_prs`, `ai_review_lessons` to find closed PRs that have an AI review stored but no lessons yet (LIMIT 20). (`client.ts:672, 682, 695`)
 
 ### Re-exports
 `fetchDomainScopedCodeExamples`, `formatCodeExamplesForPrompt` re-exported from `../services/codeContextProvider` for consumers that import only from `client.ts`. (`client.ts:779`)
 
 ## pgvector patterns
 
-- Dimension: 768 everywhere (`pr_embeddings`, `repo_knowledge`, `ai_review_lessons`, `team_documents`).
-- Distance operator: `<=>` (cosine distance).
-- Similarity formula in all SELECTs: `1 - (embedding <=> $1::vector) AS similarity`.
-- IVFFlat `lists=100` for large tables (`pr_embeddings`, `repo_knowledge`); `lists=10` for smaller ones (`ai_review_lessons`, `team_documents`).
-- Always cast: `$N::vector` in SQL, and the TypeScript-side value is passed as a JS array (pgvector-accepted format).
+pgvector is no longer used in application code; see migration 018.
 
 ## Debug SQL cheats
 

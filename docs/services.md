@@ -25,7 +25,7 @@ Routes every Claude chat call. Two modes decided at import time by env vars:
 1. **Bedrock proxy** (preferred): raw axios POST to `{BEDROCK_BASE_URL}/v1/messages` with `x-api-key: {AUTH_TOKEN}` + `anthropic-version: 2023-06-01`. The code strips a trailing `/bedrock` from the base URL (so `.../bedrock` and `.../bedrock/` both work). 120s timeout.
 2. **Direct Anthropic API**: uses `@anthropic-ai/sdk`.
 
-The default model is `claude-3-5-sonnet-20241022` (`claudeClient.ts:21`). `jsonMode` appends a hard instruction telling Claude to respond with valid JSON only, no code fences.
+The default model is `claude-3-5-sonnet-20241022` (`claudeClient.ts:21`). `jsonMode` appends a hard instruction telling Claude to respond with valid JSON only, no code fences. Claude handles all AI tasks.
 
 - `claudeChat(systemPrompt | undefined, userPrompt, { temperature?=0.3, maxTokens?=4096, jsonMode?=false })`
 - `checkClaudeHealth()` — sends "Respond with exactly: ok" and verifies the response contains "ok"
@@ -45,16 +45,6 @@ Fetches domain-scoped code examples from `repo_knowledge` for the review pipelin
 
 - `fetchDomainScopedCodeExamples(options: CodeContextOptions): Promise<CodeExample[]>`
 - `formatCodeExamplesForPrompt(examples): string`
-
-### `embeddingService.ts`
-
-Thin wrapper over the `ollama` client.
-
-- `generateEmbedding(text): Promise<number[]>` — 768-dim via `OLLAMA_EMBED_MODEL` (default `nomic-embed-text`) against `OLLAMA_HOST` (default `http://localhost:11434`).
-- `generateBatchEmbeddings(texts)` — batches of 10.
-- `truncateForEmbedding(text, maxChars=30000)` — guards context windows.
-- `formatReviewForEmbedding({...})` — formats a review as `Repo / File / State / Diff / Comment`.
-- `checkOllamaHealth()`
 
 ### `github.ts`
 
@@ -102,21 +92,6 @@ Runs inside `scripts/checkReminders.ts`. Gated by `isWithinBusinessHours()`. For
 
 - `processPendingReminders(app: App): Promise<void>`
 
-### `reviewerSuggester.ts`
-
-Legacy entry point that defers to `vectorSearch.findSuggestedReviewers` and resolves Slack IDs via `getUserMapping`. The live prAnalyzer flow uses `/api/suggested-reviewers` in `src/index.ts:749-843` instead, which composes file-based + code-touch + semantic signals directly. Keep both in sync if you change scoring.
-
-- `getSuggestedReviewers(changedFiles, prAuthor?, topK=5)`
-- `formatReviewerSuggestions(reviewers)`
-
-### `reviewGenerator.ts`
-
-Single-pass AI review generator. Superseded by the 3-pass flow in `worker/prAnalyzer.ts` for production, but still used as a building block (e.g., by `bootstrapLearner`). Calls `claudeChat` with `temperature=0.3, maxTokens=4096, jsonMode=true`. Prompts include up to 5 similar reviews (500-char snippets) + 3 similar code chunks (1000-char snippets) + PR diff truncated to 16K. Parses Claude's output with progressive fallbacks: direct JSON → strip markdown fences → brace-match the first `{...}` block. Validates shape and rejects invalid responses.
-
-- `generateReview(prTitle, prDiff, changedFiles, similarReviews, similarCode): Promise<GeneratedReview>`
-- `checkLLMHealth()`
-- `interface ReviewComment`, `interface GeneratedReview`
-
 ### `ruleClassifier.ts`
 
 The LLM fallback for `resolveRulesForPR`'s unmatched files. Sends a file path + truncated diff (4K chars) and the entire taxonomy; Claude returns an array of domain IDs (accepts `parsed[]`, `{domains:[...]}`, or `{domain_ids:[...]}`). IDs are validated against the loaded taxonomy; `getRulesForDomains` fetches rules. Called with `temperature=0.1, maxTokens=100, jsonMode=true`.
@@ -124,14 +99,6 @@ The LLM fallback for `resolveRulesForPR`'s unmatched files. Sends a file path + 
 - `classifyDiffIntoDomains(filePath, diffSnippet, taxonomy?)`
 - `classifyAndResolveRules(filePath, diffSnippet, taxonomy?)`
 - `classifyUnmatchedFiles(unmatchedFiles): Promise<ResolvedRule[]>` — dedupes rules across files.
-
-### `vectorSearch.ts`
-
-Thin wrapper around the vector-search functions in `client.ts` plus the legacy three-signal reviewer scorer (past reviewers ×2 weight, code authors ×1, semantic similarity ×3; counts capped at 20; reason sentence is assembled from which signals fired).
-
-- `findSimilarReviews(embedding, topK=10, minSimilarity=0.3)`
-- `findSimilarCodeChunks(embedding, topK=10, minSimilarity=0.3)`
-- `findSuggestedReviewers(filePaths, excludeAuthor?, topK=5, similarReviews?)`
 
 ## `src/utils/`
 

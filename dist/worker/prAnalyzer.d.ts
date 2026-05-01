@@ -2,13 +2,12 @@
 /**
  * PR Analyzer
  *
- * Analyzes a single PR using RAG + Ollama LLM:
+ * Analyzes a single PR using Claude AI:
  *   1. Fetches PR diff + changed files from GHE
- *   2. Generates embeddings for the diff
- *   3. Queries vector DB for similar past reviews and codebase context
- *   4. Calls Ollama LLM to generate review comments
- *   5. Identifies suggested reviewers
- *   6. Reports results back to Heroku for Slack posting
+ *   2. Resolves domain-scoped code examples via ontology engine
+ *   3. Calls Claude AI to generate review comments (3-pass)
+ *   4. Identifies suggested reviewers
+ *   5. Reports results back to Heroku for Slack posting
  *
  * Can be run standalone:
  *   npm run analyze-pr -- --pr-url <url>
