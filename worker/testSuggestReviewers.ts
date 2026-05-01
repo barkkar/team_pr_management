@@ -16,6 +16,7 @@ import {
   claudeToolLoop,
   checkClaudeHealth,
   getClaudeModel,
+  extractJsonFromClaudeText,
   ClaudeTool,
   ClaudeToolCall,
   ClaudeToolResult,
@@ -39,7 +40,7 @@ const TOOLS: ClaudeTool[] = [
   { name: 'get_past_authors', description: 'Past authors of these files', input_schema: { type: 'object', properties: { file_paths: { type: 'array', items: { type: 'string' } } }, required: ['file_paths'] } },
 ];
 
-const SYSTEM_PROMPT = `You are a reviewer recommender. Call fetch_pr_files first, then get_past_reviewers and get_past_authors on those files. Optionally call fetch_pr_diff. Return up to 5 suggestions as JSON: {"suggestions":[{"ghe_login":"...","reason":"..."}]}. Exclude the PR author.`;
+const SYSTEM_PROMPT = `You are a reviewer recommender. Call fetch_pr_files first, then get_past_reviewers and get_past_authors on those files. Optionally call fetch_pr_diff. Exclude the PR author. CRITICAL: the FINAL message MUST be ONLY a raw JSON object starting with { and ending with }. No markdown fences, no prose, no code blocks. Exactly: {"suggestions":[{"ghe_login":"...","reason":"..."}]}`;
 
 async function main() {
   const prUrl = process.argv.find(a => a.startsWith('https://'));
@@ -105,7 +106,8 @@ async function main() {
 
   if (shouldPost && channelId) {
     if (!SLACK_BOT_TOKEN) { console.error('SLACK_BOT_TOKEN needed for --post'); return; }
-    const parsed = JSON.parse(result.finalText);
+    const parsed = extractJsonFromClaudeText<{ suggestions?: any[] }>(result.finalText);
+    if (!parsed) { console.error('Could not extract JSON from Claude output; nothing posted.'); return; }
     await axios.post(`${HEROKU_API_URL}/api/pr-reviewers`, { pr_url: prUrl, channel_id: channelId, message_ts: '0', suggestions: parsed.suggestions || [] }, { headers: { 'X-Worker-API-Key': WORKER_API_KEY!, 'Content-Type': 'application/json' } });
     log('Posted to Slack via /api/pr-reviewers.');
   }

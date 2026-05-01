@@ -25,6 +25,7 @@ import {
   claudeToolLoop,
   checkClaudeHealth,
   getClaudeModel,
+  extractJsonFromClaudeText,
   ClaudeTool,
   ClaudeToolCall,
   ClaudeToolResult,
@@ -187,12 +188,8 @@ Procedure:
 4. Exclude the PR author. Prefer candidates who both reviewed and authored related code.
 5. Return up to 5 suggestions, ordered best-first, with a short human-readable reason per candidate.
 
-Output format (final message — JSON only, no prose):
-{
-  "suggestions": [
-    { "ghe_login": "...", "reason": "<one short sentence>" }
-  ]
-}`;
+CRITICAL OUTPUT FORMAT — the FINAL assistant message MUST be ONLY a raw JSON object starting with { and ending with }. No markdown fences. No prose before or after. No code blocks. Just the JSON object itself:
+{"suggestions":[{"ghe_login":"...","reason":"<one short sentence>"}]}`;
 
 function buildUserPrompt(prUrl: string, channelId: string): string {
   return `PR URL: ${prUrl}\nSlack channel: ${channelId}\n\nSuggest up to 5 reviewers.`;
@@ -247,14 +244,15 @@ async function suggestReviewers(prUrl: string, channelId: string, messageTs: str
 
   log(`  Claude made ${result.toolCalls.length} tool call(s) over ${result.iterations} round(s)`);
 
-  // Parse JSON — on failure, fall back to empty suggestions and still report.
-  // This marks suggestions_sent=TRUE so we don't loop forever on a bad response.
+  // Parse JSON — handles plain JSON, ```json fences, and prose+JSON.
+  // On failure, fall back to empty suggestions and still report, which marks
+  // suggestions_sent=TRUE so we don't loop forever on a bad response.
   let suggestions: { ghe_login: string; reason: string }[] = [];
-  try {
-    const parsed = JSON.parse(result.finalText);
-    suggestions = Array.isArray(parsed?.suggestions) ? parsed.suggestions : [];
-  } catch (e: any) {
-    logError(`  Failed to parse Claude JSON output: ${e.message}. Raw: ${result.finalText.substring(0, 300)}`);
+  const parsed = extractJsonFromClaudeText<{ suggestions?: { ghe_login: string; reason: string }[] }>(result.finalText);
+  if (parsed && Array.isArray(parsed.suggestions)) {
+    suggestions = parsed.suggestions;
+  } else {
+    logError(`  Failed to extract JSON from Claude output. Raw: ${result.finalText.substring(0, 300)}`);
     // Fall through to POST with empty suggestions — keeps the PR from being retried forever.
   }
 

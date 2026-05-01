@@ -77,4 +77,13 @@ export interface ToolLoopResult {
  *   4. repeat 2–3 until stop_reason === 'end_turn'
  */
 export declare function claudeToolLoop(systemPrompt: string | undefined, userPrompt: string, tools: ClaudeTool[], options: ToolLoopOptions): Promise<ToolLoopResult>;
+/**
+ * Extract a JSON object from a Claude text response. Handles:
+ *   - Plain JSON ("{...}")
+ *   - Markdown-fenced JSON ("```json\n{...}\n```" or "```\n{...}\n```")
+ *   - JSON with leading/trailing prose
+ *
+ * Returns the parsed object on success, or null if no valid JSON is found.
+ */
+export declare function extractJsonFromClaudeText<T = any>(text: string): T | null;
 //# sourceMappingURL=claudeClient.d.ts.map
