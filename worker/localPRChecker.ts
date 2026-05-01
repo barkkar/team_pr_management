@@ -20,6 +20,7 @@ import 'dotenv/config';
 import { notifyError } from '../src/utils/errorNotifier';
 import axios from 'axios';
 import { requireTokenForHost } from '../src/utils/gheTokenResolver';
+import { runSuggestReviewersLoop } from './prAnalyzer';
 
 function log(message: string): void {
   console.log(`[${new Date().toISOString()}] ${message}`);
@@ -216,6 +217,14 @@ async function runWorker(): Promise<void> {
       log(`Updated ${updated} PRs`);
     } else {
       log('No PRs need status checking.');
+    }
+
+    // Reviewer-suggestion polling: handled in the same loop so we only manage
+    // one laptop process. Errors here are logged but do NOT fail the worker.
+    try {
+      await runSuggestReviewersLoop();
+    } catch (e: any) {
+      logError(`Reviewer-suggestion step failed: ${e.message}`, 'warn');
     }
 
     log('Worker completed successfully!');

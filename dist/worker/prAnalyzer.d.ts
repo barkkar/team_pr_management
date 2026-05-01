@@ -17,4 +17,10 @@
  *   (or the polling loop picks PRs from /api/prs-needing-reviewer-suggestions)
  */
 import 'dotenv/config';
+/**
+ * One-shot polling pass: fetch PRs needing reviewer suggestions from Heroku,
+ * run the tool-loop for each. Safe to call from other workers — errors on a
+ * single PR are logged and swallowed so the caller isn't disrupted.
+ */
+export declare function runSuggestReviewersLoop(): Promise<void>;
 //# sourceMappingURL=prAnalyzer.d.ts.map

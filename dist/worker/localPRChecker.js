@@ -24,6 +24,7 @@ require("dotenv/config");
 const errorNotifier_1 = require("../src/utils/errorNotifier");
 const axios_1 = __importDefault(require("axios"));
 const gheTokenResolver_1 = require("../src/utils/gheTokenResolver");
+const prAnalyzer_1 = require("./prAnalyzer");
 function log(message) {
     console.log(`[${new Date().toISOString()}] ${message}`);
 }
@@ -168,6 +169,14 @@ async function runWorker() {
         }
         else {
             log('No PRs need status checking.');
+        }
+        // Reviewer-suggestion polling: handled in the same loop so we only manage
+        // one laptop process. Errors here are logged but do NOT fail the worker.
+        try {
+            await (0, prAnalyzer_1.runSuggestReviewersLoop)();
+        }
+        catch (e) {
+            logError(`Reviewer-suggestion step failed: ${e.message}`, 'warn');
         }
         log('Worker completed successfully!');
     }

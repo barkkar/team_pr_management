@@ -292,7 +292,12 @@ async function fetchPrsNeedingSuggestions(): Promise<any[]> {
   return resp.data.prs || [];
 }
 
-async function runLoop(): Promise<void> {
+/**
+ * One-shot polling pass: fetch PRs needing reviewer suggestions from Heroku,
+ * run the tool-loop for each. Safe to call from other workers — errors on a
+ * single PR are logged and swallowed so the caller isn't disrupted.
+ */
+export async function runSuggestReviewersLoop(): Promise<void> {
   log('Checking for PRs needing reviewer suggestions...');
   const prs = await fetchPrsNeedingSuggestions();
   if (prs.length === 0) {
@@ -339,10 +344,14 @@ async function run(): Promise<void> {
     await suggestReviewers(prUrlArg, 'manual', '0');
     return;
   }
-  await runLoop();
+  await runSuggestReviewersLoop();
 }
 
-run().then(() => process.exit(0)).catch((err: any) => {
-  logError(`Fatal: ${err.message}`);
-  process.exit(1);
-});
+// Only run as a standalone script when executed directly (not when imported
+// as a module by another worker such as localPRChecker).
+if (require.main === module) {
+  run().then(() => process.exit(0)).catch((err: any) => {
+    logError(`Fatal: ${err.message}`);
+    process.exit(1);
+  });
+}
