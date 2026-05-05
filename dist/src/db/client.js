@@ -26,6 +26,9 @@ exports.upsertHarvestState = upsertHarvestState;
 exports.findReviewersByFiles = findReviewersByFiles;
 exports.findCodeTouchersByFiles = findCodeTouchersByFiles;
 exports.getDistinctRepos = getDistinctRepos;
+exports.insertBootstrapMembers = insertBootstrapMembers;
+exports.claimPendingBootstrap = claimPendingBootstrap;
+exports.updateBootstrapResults = updateBootstrapResults;
 const pg_1 = require("pg");
 const pool = new pg_1.Pool({
     connectionString: process.env.DATABASE_URL,
@@ -239,7 +242,7 @@ async function insertPRFile(file) {
     return result.rows[0] || null;
 }
 // --- User Mappings ---
-async function upsertUserMapping(mapping) {
+async function upsertUserMapping(mapping, client = pool) {
     const query = `
     INSERT INTO user_mappings (ghe_login, slack_user_id, display_name, email, discovered_via)
     VALUES ($1, $2, $3, $4, $5)
@@ -251,7 +254,7 @@ async function upsertUserMapping(mapping) {
       updated_at = NOW()
     RETURNING *
   `;
-    const result = await pool.query(query, [
+    const result = await client.query(query, [
         mapping.ghe_login, mapping.slack_user_id, mapping.display_name,
         mapping.email, mapping.discovered_via,
     ]);
@@ -315,5 +318,102 @@ async function findCodeTouchersByFiles(filePaths, topK = 10) {
 async function getDistinctRepos() {
     const result = await pool.query('SELECT DISTINCT org, repo FROM tracked_prs ORDER BY org, repo');
     return result.rows;
+}
+// ========== Channel Bootstrap Queue ==========
+/**
+ * Insert a batch of channel bootstrap member rows. Duplicates (same
+ * channel_id + slack_user_id) are silently skipped. Returns the number of
+ * freshly inserted rows.
+ */
+async function insertBootstrapMembers(rows) {
+    if (rows.length === 0) {
+        return 0;
+    }
+    const values = [];
+    const placeholders = [];
+    rows.forEach((row, idx) => {
+        const base = idx * 3;
+        placeholders.push(`($${base + 1}, $${base + 2}, $${base + 3})`);
+        values.push(row.channel_id, row.slack_user_id, row.email);
+    });
+    const query = `
+    INSERT INTO channel_bootstrap_members (channel_id, slack_user_id, email)
+    VALUES ${placeholders.join(', ')}
+    ON CONFLICT (channel_id, slack_user_id) DO NOTHING
+  `;
+    const result = await pool.query(query, values);
+    return result.rowCount ?? 0;
+}
+/**
+ * Atomically claim up to `limit` pending bootstrap rows (and re-claim stale
+ * in-progress rows whose claim has expired). Uses SELECT ... FOR UPDATE SKIP
+ * LOCKED so multiple workers never double-claim the same row.
+ */
+async function claimPendingBootstrap(limit) {
+    const query = `
+    WITH claimed AS (
+      SELECT id FROM channel_bootstrap_members
+      WHERE (status = 'pending' AND attempts < 3)
+         OR (status = 'in_progress' AND claimed_at < NOW() - INTERVAL '15 minutes')
+      ORDER BY enqueued_at ASC
+      FOR UPDATE SKIP LOCKED
+      LIMIT $1
+    )
+    UPDATE channel_bootstrap_members c
+    SET status = 'in_progress', claimed_at = NOW()
+    FROM claimed WHERE c.id = claimed.id
+    RETURNING c.id, c.channel_id, c.slack_user_id, c.email;
+  `;
+    const result = await pool.query(query, [limit]);
+    return result.rows;
+}
+/**
+ * Apply a batch of bootstrap resolution results inside a single transaction.
+ * - `resolved`: marks row resolved and upserts into user_mappings.
+ * - `unresolved`: marks row unresolved (permanent miss).
+ * - `pending`: increments attempts, clears the claim, and ages out to
+ *   'aged_out' once the attempt count reaches 3.
+ */
+async function updateBootstrapResults(results) {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        for (const result of results) {
+            if (result.status === 'resolved') {
+                await client.query(`UPDATE channel_bootstrap_members
+           SET status = 'resolved', resolved_at = NOW()
+           WHERE id = $1`, [result.id]);
+                await upsertUserMapping({
+                    ghe_login: result.ghe_login,
+                    slack_user_id: result.slack_user_id,
+                    display_name: result.display_name,
+                    email: result.email,
+                    discovered_via: 'bootstrap_search',
+                }, client);
+            }
+            else if (result.status === 'unresolved') {
+                await client.query(`UPDATE channel_bootstrap_members
+           SET status = 'unresolved', resolved_at = NOW()
+           WHERE id = $1`, [result.id]);
+            }
+            else {
+                // pending — increment attempts, clear claim, age out if >= 3.
+                await client.query(`UPDATE channel_bootstrap_members
+           SET attempts = attempts + 1,
+               last_error = $2,
+               claimed_at = NULL,
+               status = CASE WHEN attempts + 1 >= 3 THEN 'aged_out' ELSE 'pending' END
+           WHERE id = $1`, [result.id, result.last_error]);
+            }
+        }
+        await client.query('COMMIT');
+    }
+    catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+    }
+    finally {
+        client.release();
+    }
 }
 //# sourceMappingURL=client.js.map

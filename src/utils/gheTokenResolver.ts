@@ -67,3 +67,11 @@ export function requireTokenForHost(hostname: string): string {
   }
   return token;
 }
+
+/**
+ * Returns configured GHE hostnames in insertion order.
+ * Insertion order = search priority (see design doc §5.3).
+ */
+export function listConfiguredHosts(): string[] {
+  return [...loadTokenMap().keys()];
+}

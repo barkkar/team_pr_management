@@ -21,4 +21,9 @@ export declare function getTokenForHost(hostname: string): string | null;
  * Returns the GHE token for the given hostname, or throws if none is configured.
  */
 export declare function requireTokenForHost(hostname: string): string;
+/**
+ * Returns configured GHE hostnames in insertion order.
+ * Insertion order = search priority (see design doc §5.3).
+ */
+export declare function listConfiguredHosts(): string[];
 //# sourceMappingURL=gheTokenResolver.d.ts.map

@@ -1,4 +1,5 @@
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
+import { BootstrapClaim, BootstrapResult } from '../types/channelBootstrap';
 declare const pool: Pool;
 export interface TrackedPR {
     id: number;
@@ -136,7 +137,7 @@ export interface HarvestState {
 export declare function insertPRReview(review: Omit<PRReview, 'id' | 'created_at'>): Promise<PRReview | null>;
 export declare function getPRReviewCount(prUrl: string): Promise<number>;
 export declare function insertPRFile(file: Omit<PRFile, 'id' | 'created_at'>): Promise<PRFile | null>;
-export declare function upsertUserMapping(mapping: Omit<UserMapping, 'id' | 'updated_at'>): Promise<UserMapping | null>;
+export declare function upsertUserMapping(mapping: Omit<UserMapping, 'id' | 'updated_at'>, client?: Pool | PoolClient): Promise<UserMapping | null>;
 export declare function getUserMapping(gheLogin: string): Promise<UserMapping | null>;
 export declare function getAllUserMappings(): Promise<UserMapping[]>;
 export declare function getHarvestState(org: string, repo: string): Promise<HarvestState | null>;
@@ -155,5 +156,29 @@ export declare function getDistinctRepos(): Promise<{
     org: string;
     repo: string;
 }[]>;
+/**
+ * Insert a batch of channel bootstrap member rows. Duplicates (same
+ * channel_id + slack_user_id) are silently skipped. Returns the number of
+ * freshly inserted rows.
+ */
+export declare function insertBootstrapMembers(rows: {
+    channel_id: string;
+    slack_user_id: string;
+    email: string;
+}[]): Promise<number>;
+/**
+ * Atomically claim up to `limit` pending bootstrap rows (and re-claim stale
+ * in-progress rows whose claim has expired). Uses SELECT ... FOR UPDATE SKIP
+ * LOCKED so multiple workers never double-claim the same row.
+ */
+export declare function claimPendingBootstrap(limit: number): Promise<BootstrapClaim[]>;
+/**
+ * Apply a batch of bootstrap resolution results inside a single transaction.
+ * - `resolved`: marks row resolved and upserts into user_mappings.
+ * - `unresolved`: marks row unresolved (permanent miss).
+ * - `pending`: increments attempts, clears the claim, and ages out to
+ *   'aged_out' once the attempt count reaches 3.
+ */
+export declare function updateBootstrapResults(results: BootstrapResult[]): Promise<void>;
 export { pool };
 //# sourceMappingURL=client.d.ts.map

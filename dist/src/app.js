@@ -8,6 +8,7 @@ const prParser_1 = require("./utils/prParser");
 const client_1 = require("./db/client");
 const errorNotifier_1 = require("./utils/errorNotifier");
 const channelAccessControl_1 = require("./services/channelAccessControl");
+const channelBootstrap_1 = require("./services/channelBootstrap");
 function formatWaitTime(postedAt) {
     const waitMs = Date.now() - new Date(postedAt).getTime();
     const days = Math.floor(waitMs / (1000 * 60 * 60 * 24));
@@ -129,17 +130,49 @@ function createApp() {
                         // Ignore - channel name is optional
                     }
                     const added = await (0, client_1.addMonitoredChannel)(channelId, channelName, userId);
-                    if (added) {
-                        await respond({
-                            response_type: 'in_channel',
-                            text: `✅ This channel is now being monitored for PR review requests. I'll track PRs and send reminders when they need reviews.`,
-                        });
-                    }
-                    else {
-                        await respond({
-                            text: `This channel is already being monitored.`,
-                        });
-                    }
+                    // Unified reply — no branching on `added`. See spec §5.1 step 5.
+                    await respond({
+                        response_type: 'in_channel',
+                        text: '✅ This channel is now being monitored for PR review requests. ' +
+                            "Queuing members for reviewer mapping — I'll follow up here with the count.",
+                    });
+                    // setImmediate lets the slash-command ack return <1s. Bolt's `respond`
+                    // closure wraps Slack's signed `response_url`, which is valid for 30 min
+                    // and 5 follow-ups — ample for a single delayed reply.
+                    //
+                    // SAFETY: the outer try/catch is MANDATORY. Any throw that escapes a
+                    // setImmediate callback is uncaught at the Bolt layer and would crash
+                    // the dyno process. Do not remove it.
+                    setImmediate(async () => {
+                        try {
+                            const { queued } = await (0, channelBootstrap_1.enqueueChannelBootstrap)(channelId, client);
+                            await respond({
+                                response_type: 'ephemeral',
+                                replace_original: false,
+                                text: `Queued ${queued} member(s) for reviewer mapping.`,
+                            });
+                        }
+                        catch (err) {
+                            // Distinguish scope failures (non-retryable, operator action needed)
+                            // from transient Slack/DB blips (retryable on next /pr-monitor add).
+                            const isScopeError = err?.data?.error === 'missing_scope' ||
+                                /missing_scope|not_in_channel|not_authed/.test(String(err?.message || ''));
+                            const userMessage = isScopeError
+                                ? 'Member bootstrap skipped — Slack bot is missing required scope. Contact the workspace admin.'
+                                : 'Member bootstrap failed — will retry when members post PRs.';
+                            try {
+                                await respond({
+                                    response_type: 'ephemeral',
+                                    replace_original: false,
+                                    text: userMessage,
+                                });
+                            }
+                            catch (_respondErr) {
+                                // response_url may have expired; fall through to notifyError below.
+                            }
+                            (0, errorNotifier_1.notifyError)('ChannelBootstrap', `enqueueChannelBootstrap failed for ${channelId}: ${err.message}`, isScopeError ? 'error' : 'warn');
+                        }
+                    });
                     break;
                 }
                 case 'remove': {
@@ -307,6 +340,29 @@ function createApp() {
         catch (error) {
             console.error('Error publishing home view:', error);
             (0, errorNotifier_1.notifyError)('SlackApp', `Error publishing home view: ${error.message || error}`, 'warn');
+        }
+    });
+    app.event('member_joined_channel', async ({ event, client }) => {
+        try {
+            const { channel: channelId, user: userId } = event;
+            if (!channelId || !userId)
+                return;
+            // Respect the same allowlist + monitored-channels gates as the rest of the app.
+            if (!(0, channelAccessControl_1.isChannelAllowed)(channelId))
+                return;
+            if (!(await (0, client_1.isChannelMonitored)(channelId)))
+                return;
+            const info = await client.users.info({ user: userId });
+            const u = info.user;
+            if (!u || u.is_bot || u.deleted)
+                return;
+            const email = u.profile?.email;
+            if (!email)
+                return;
+            await (0, client_1.insertBootstrapMembers)([{ channel_id: channelId, slack_user_id: userId, email }]);
+        }
+        catch (err) {
+            (0, errorNotifier_1.notifyError)('ChannelBootstrap', `member_joined_channel handler failed: ${err?.message || String(err)}`, 'warn');
         }
     });
     return app;

@@ -65,6 +65,7 @@ function validateApiKey(req) {
     return apiKey === expectedKey;
 }
 const SLACK_SECTION_LIMIT = 2900;
+const VALID_BOOTSTRAP_STATUSES = new Set(['resolved', 'unresolved', 'pending']);
 function formatReviewerMessage(suggestions, prUrl) {
     const blocks = [];
     blocks.push({
@@ -494,6 +495,88 @@ async function main() {
                 }
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ ok: true, resolved_count: resolved.length }));
+                return;
+            }
+            // Bootstrap claim: worker pulls up to N pending bootstrap rows
+            if (url === '/api/bootstrap-claim' && method === 'POST') {
+                if (!validateApiKey(req)) {
+                    res.writeHead(401, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Unauthorized' }));
+                    return;
+                }
+                const body = await parseJsonBody(req);
+                if (body.limit !== undefined && (typeof body.limit !== 'number' || !Number.isFinite(body.limit))) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'limit must be a number' }));
+                    return;
+                }
+                const rawLimit = body.limit === undefined ? 50 : body.limit;
+                const limit = Math.min(Math.max(1, Math.floor(rawLimit)), 50);
+                const rows = await (0, client_1.claimPendingBootstrap)(limit);
+                console.log(`[bootstrap-claim] returned ${rows.length} rows`);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ rows }));
+                return;
+            }
+            // Bootstrap complete: worker posts back per-row resolution results
+            if (url === '/api/bootstrap-complete' && method === 'POST') {
+                if (!validateApiKey(req)) {
+                    res.writeHead(401, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Unauthorized' }));
+                    return;
+                }
+                const body = await parseJsonBody(req);
+                if (!Array.isArray(body.results)) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'results must be an array' }));
+                    return;
+                }
+                const results = body.results;
+                for (let i = 0; i < results.length; i++) {
+                    const entry = results[i];
+                    if (!entry ||
+                        typeof entry.id !== 'number' ||
+                        !VALID_BOOTSTRAP_STATUSES.has(entry.status)) {
+                        res.writeHead(400, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ error: `invalid result entry at index ${i}` }));
+                        return;
+                    }
+                    if (entry.status === 'resolved') {
+                        if (typeof entry.ghe_login !== 'string' ||
+                            entry.ghe_login.length === 0 ||
+                            typeof entry.email !== 'string' ||
+                            entry.email.length === 0 ||
+                            typeof entry.slack_user_id !== 'string' ||
+                            entry.slack_user_id.length === 0 ||
+                            !(entry.display_name === null || typeof entry.display_name === 'string')) {
+                            res.writeHead(400, { 'Content-Type': 'application/json' });
+                            res.end(JSON.stringify({ error: `invalid resolved entry at index ${i}` }));
+                            return;
+                        }
+                    }
+                    else if (entry.status === 'pending') {
+                        if (entry.attempts_delta !== 1 || typeof entry.last_error !== 'string') {
+                            res.writeHead(400, { 'Content-Type': 'application/json' });
+                            res.end(JSON.stringify({ error: `invalid pending entry at index ${i}` }));
+                            return;
+                        }
+                    }
+                }
+                await (0, client_1.updateBootstrapResults)(results);
+                let resolvedCount = 0;
+                let unresolvedCount = 0;
+                let pendingCount = 0;
+                for (const entry of results) {
+                    if (entry.status === 'resolved')
+                        resolvedCount++;
+                    else if (entry.status === 'unresolved')
+                        unresolvedCount++;
+                    else if (entry.status === 'pending')
+                        pendingCount++;
+                }
+                console.log(`[bootstrap-complete] applied ${results.length} results (${resolvedCount} resolved, ${unresolvedCount} unresolved, ${pendingCount} pending)`);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: true, updated: results.length }));
                 return;
             }
             // Not found

@@ -219,6 +219,15 @@ async function runWorker(): Promise<void> {
       log('No PRs need status checking.');
     }
 
+    // Bootstrap drain: fills user_mappings for newly onboarded channel members.
+    // Isolated try/catch so failures here don't block the reviewer loop.
+    try {
+      const { runBootstrapDrainLoop } = await import('./channelBootstrap');
+      await runBootstrapDrainLoop();
+    } catch (e: any) {
+      logError(`Bootstrap drain step failed: ${e.message}`, 'warn');
+    }
+
     // Reviewer-suggestion polling: handled in the same loop so we only manage
     // one laptop process. Errors here are logged but do NOT fail the worker.
     try {
