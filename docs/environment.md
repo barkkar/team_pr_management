@@ -6,12 +6,12 @@ All `process.env.*` reads in the codebase. Required means the process hard-exits
 
 | Var | Read at | Purpose |
 |---|---|---|
-| `SLACK_BOT_TOKEN` | `src/app.ts:28` | Slack bot auth (`xoxb-…`). Hard-required by `main()` (`src/index.ts:290`). |
-| `SLACK_SIGNING_SECRET` | `src/app.ts:29` | Slack signing secret. Hard-required. |
-| `SLACK_APP_TOKEN` | `src/app.ts:31` | App-level token for Socket Mode (`xapp-…`). Hard-required. |
-| `ALLOWED_CHANNEL_IDS` | `src/services/channelAccessControl.ts` | Comma-separated Slack channel IDs the bot may read. Module hard-exits on load if unset/empty. Also checked in `main()`. |
-| `GHE_TOKEN` **or** `GHE_TOKENS` | `src/utils/gheTokenResolver.ts` | GitHub Enterprise PAT(s). `GHE_TOKENS` is a JSON map `{host: token}` (preferred). At least one must be set (`src/index.ts:298`). |
-| `DATABASE_URL` | `src/db/client.ts:4` | Postgres connection string. Auto-set by Heroku Postgres addon. |
+| `SLACK_BOT_TOKEN` | `src/app.ts:29` | Slack bot auth (`xoxb-…`). Hard-required by `main()` (`src/index.ts:96-102`). Also read by `src/utils/errorNotifier.ts:5`, `scripts/checkReminders.ts`, and several workers. |
+| `SLACK_SIGNING_SECRET` | `src/app.ts:30` | Slack signing secret. Hard-required. |
+| `SLACK_APP_TOKEN` | `src/app.ts:32` | App-level token for Socket Mode (`xapp-…`). Hard-required. |
+| `ALLOWED_CHANNEL_IDS` | `src/services/channelAccessControl.ts:18` | Comma-separated Slack channel IDs the bot may read. When unset or empty, enforcement is **disabled** — a warning is logged and `isChannelAllowed` returns `true` for every channel (see commit `f40897d`). Set this to re-enable enforcement. |
+| `GHE_TOKEN` **or** `GHE_TOKENS` | `src/utils/gheTokenResolver.ts:22, 54` | GitHub Enterprise PAT(s). `GHE_TOKENS` is a JSON map `{host: token}` (preferred). At least one must be set — Heroku dyno checks at `src/index.ts:104-107`; workers re-check at their own startup. |
+| `DATABASE_URL` | `src/db/client.ts:5` | Postgres connection string. Auto-set by Heroku Postgres addon. |
 
 ## Required — local VPN worker
 
@@ -30,16 +30,18 @@ All `process.env.*` reads in the codebase. Required means the process hard-exits
 | `ANTHROPIC_BEDROCK_BASE_URL` | — | Internal Bedrock gateway URL. If set with `ANTHROPIC_AUTH_TOKEN`, Bedrock mode is used. |
 | `ANTHROPIC_AUTH_TOKEN` | — | Auth token for the Bedrock gateway. |
 | `ANTHROPIC_API_KEY` | — | Direct Anthropic API key. Used only if Bedrock vars are not both set. |
-| `WORKER_API_KEY` (Heroku side) | — | Optional — if unset, every `/api/*` route returns 401 and logs a warning (`src/index.ts:47-50`). `/health` still works. |
-| `ERROR_SLACK_CHANNEL_ID` | — | Slack channel for errors via `notifyError`. If unset, errors are logged to console only. |
-| `POLL_CHANNEL_IDS` | — | Comma-separated legacy channel IDs to poll (merged with `monitored_channels` table). |
-| `PORT` | `3000` | HTTP server port. Heroku sets this automatically. |
-| `NODE_ENV` | — | If `production`, Postgres SSL uses `rejectUnauthorized: false` (`src/db/client.ts:5`). |
-| `TZ` | — | Recommended `America/Los_Angeles`. Business-hours math uses Luxon with an explicit zone so this is defensive. |
-| `HARVEST_ALL` | — | Set to `'1'` to make `prHarvester` re-process all tracked PRs. |
-| `USER_MAPPINGS_JSON` | — | JSON map for manual GHE → Slack overrides in `userMapper`. |
-| `TEST_PR_URL` | — | Optional PR URL for `testGheConnectivity` to exercise an authenticated fetch. |
-| `CHANNEL_ID` | — | Used by `scripts/deleteBotMessages.ts` as the target channel when no CLI arg is given. |
+| `WORKER_API_KEY` (Heroku side) | — | Optional — if unset, `validateApiKey` (`src/index.ts:33-43`) returns false and every `/api/*` route returns 401. `/health` and `/` still work. |
+| `ERROR_SLACK_CHANNEL_ID` | — | Slack channel for errors via `notifyError` (`src/utils/errorNotifier.ts:6`). If unset, errors are logged to console only. |
+| `POLL_CHANNEL_IDS` | — | Comma-separated legacy channel IDs to poll (`src/services/channelPoller.ts:35`), merged with `monitored_channels` table. |
+| `PORT` | `3000` | HTTP server port (`src/index.ts:141`). Heroku sets this automatically. |
+| `NODE_ENV` | — | If `production`, Postgres SSL uses `rejectUnauthorized: false` (`src/db/client.ts:6`). |
+| `CHANNEL_BOOTSTRAP_PACE_MS` | `2100` | Milliseconds to sleep between rows in the bootstrap drain loop (`worker/channelBootstrap.ts:33`). Keeps GHE search well under the secondary-rate-limit threshold. Ignored if non-numeric. |
+| `HARVEST_ALL` | — | Set to `'1'` to make `worker/prHarvester.ts` re-process all tracked PRs (`worker/prHarvester.ts:21`). Otherwise runs incrementally. |
+| `USER_MAPPINGS_JSON` | — | JSON map for manual GHE → Slack overrides in `worker/userMapper.ts:331`. |
+| `TEST_PR_URL` | — | Optional PR URL for `scripts/testGheConnectivity.ts:193` to exercise an authenticated fetch. |
+| `CHANNEL_ID` | — | Used by `scripts/deleteBotMessages.ts:16` as the target channel when no CLI arg is given. |
+
+Note: `TZ` is **not** read by the code. The America/Los_Angeles timezone is hardcoded in `src/utils/timezone.ts:3` and Luxon's `.setZone()` uses that literal. Setting `TZ` affects only `console.log` timestamps and any shell-level tooling, not the business-hours math.
 
 ## Config files at a glance
 

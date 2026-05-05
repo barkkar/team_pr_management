@@ -6,11 +6,23 @@ Per-module reference for `src/services/` and `src/utils/`. Citations point into 
 
 ### `channelAccessControl.ts`
 
-Module-load enforcement of the `ALLOWED_CHANNEL_IDS` env var. If it's missing or empty the process exits — this is intentional, because `groups:history`/`channels:history` Slack scopes are broader than we want. Every message handler and slash command checks `isChannelAllowed(channelId)` before doing anything.
+Module-load enforcement of the `ALLOWED_CHANNEL_IDS` env var. If it's unset or empty, enforcement is **disabled** — a warning is logged (`channelAccessControl.ts:31-36`) and `isChannelAllowed` always returns true. When the env var is a non-empty comma-separated list, `isChannelAllowed` checks membership against the parsed set. Every message handler and slash command calls `isChannelAllowed(channelId)` before doing anything.
 
-- `isChannelAllowed(channelId): boolean`
-- `assertChannelAllowed(channelId, context)` — throws
-- `getAllowedChannelIds(): string[]`
+- `isChannelAllowed(channelId): boolean` — short-circuits to `true` when enforcement is disabled (`channelAccessControl.ts:51`).
+- `assertChannelAllowed(channelId, context)` — throws on denial; logs to console.error first.
+- `getAllowedChannelIds(): string[]` — returns the allowlist as an array (empty when enforcement is disabled).
+
+### `channelBootstrap.ts`
+
+Proactive user-mapping bootstrap. When a channel is onboarded or a user joins, this module enqueues every real (non-bot, non-deleted, has-email) member into `channel_bootstrap_members` so the VPN worker can resolve their GHE logins ahead of their first PR. Callers: `/pr-monitor add` (via `setImmediate` in `src/app.ts:160-192`) and `member_joined_channel` (via `insertBootstrapMembers` directly in `src/app.ts:389`).
+
+Implementation notes:
+- Paginates `conversations.members` (1000/page) to get channel membership.
+- Module-level 5-minute TTL cache on `users.list` with a single-flight mutex — concurrent callers share one fetch to keep Slack's Tier 2 rate limit happy (`channelBootstrap.ts:18-24`). Paginated at 200/page with a 200ms pause between pages.
+- Filters out bots, deleted users, and members with no profile email before inserting.
+
+Exports:
+- `enqueueChannelBootstrap(channelId, slackClient): Promise<{ queued: number }>` — returns the count of freshly inserted rows (`insertBootstrapMembers` dedupes on `(channel_id, slack_user_id)`).
 
 ### `channelPoller.ts`
 
@@ -29,7 +41,7 @@ The code default model is `claude-3-5-sonnet-20241022` (`claudeClient.ts:20`); H
 
 Exports:
 - `claudeChat(systemPrompt?, userPrompt, { temperature?, maxTokens?, jsonMode? })` — single-turn chat.
-- `claudeToolLoop(systemPrompt?, userPrompt, tools, { temperature?, maxTokens?, maxIterations?=6, onToolCall })` — multi-turn conversation with tool use. Caller supplies tool schemas (`ClaudeTool[]`) and an `onToolCall` handler; the loop feeds tool results back to Claude until it returns `end_turn` / `stop_sequence` or hits `maxIterations`. Returns `{ finalText, iterations, toolCalls }`.
+- `claudeToolLoop(systemPrompt?, userPrompt, tools, options)` — multi-turn conversation with tool use. `tools` is a required `ClaudeTool[]`; `options` is a required `ToolLoopOptions` containing at least `onToolCall` plus optional `temperature`, `maxTokens`, `maxIterations` (default 6). The loop feeds tool results back to Claude until it returns `end_turn` / `stop_sequence` or hits `maxIterations`, then returns `{ finalText, iterations, toolCalls }`. Throws on unexpected `stop_reason` or iteration overrun.
 - `extractJsonFromClaudeText<T>(text): T | null` — tolerant JSON parser for Claude final messages. Tries plain `JSON.parse`, then strips ` ```json ``` ` fences, then grabs the outermost `{...}` block. Used by the reviewer-suggestion workers because Claude Opus 4.x sometimes adds a preamble.
 - `checkClaudeHealth()` — sends "Respond with exactly: ok" and verifies the reply contains "ok".
 - `getClaudeModel(): string` — returns the model ID currently in effect.
