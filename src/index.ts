@@ -93,7 +93,7 @@ function formatReviewerMessage(
 
 async function main(): Promise<void> {
   // Validate required environment variables
-  const required = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'SLACK_APP_TOKEN', 'ALLOWED_CHANNEL_IDS'];
+  const required = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'SLACK_APP_TOKEN'];
   const missing = required.filter((key) => !process.env[key]);
 
   if (missing.length > 0) {

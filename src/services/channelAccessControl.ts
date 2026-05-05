@@ -24,18 +24,21 @@ const ALLOWED_CHANNEL_IDS: ReadonlySet<string> = new Set(
     .filter(Boolean),
 );
 
-if (ALLOWED_CHANNEL_IDS.size === 0) {
-  console.error(
-    '[Channel Access Control] FATAL: ALLOWED_CHANNEL_IDS environment variable is not set or empty. ' +
-      'The bot cannot start without an explicit channel allowlist. ' +
-      'Set ALLOWED_CHANNEL_IDS to a comma-separated list of Slack channel IDs.',
-  );
-  process.exit(1);
-}
+// TEMPORARY: when ALLOWED_CHANNEL_IDS is unset/empty, the allowlist is disabled
+// and every channel is permitted. Set ALLOWED_CHANNEL_IDS to re-enable enforcement.
+const ENFORCEMENT_ENABLED = ALLOWED_CHANNEL_IDS.size > 0;
 
-console.log(
-  `[Channel Access Control] Loaded allowlist with ${ALLOWED_CHANNEL_IDS.size} channel(s): ${[...ALLOWED_CHANNEL_IDS].join(', ')}`,
-);
+if (!ENFORCEMENT_ENABLED) {
+  console.warn(
+    '[Channel Access Control] WARNING: ALLOWED_CHANNEL_IDS is not set or empty. ' +
+      'Channel allowlist enforcement is DISABLED — the bot will read any channel it is invited to. ' +
+      'Set ALLOWED_CHANNEL_IDS to a comma-separated list of Slack channel IDs to re-enable enforcement.',
+  );
+} else {
+  console.log(
+    `[Channel Access Control] Loaded allowlist with ${ALLOWED_CHANNEL_IDS.size} channel(s): ${[...ALLOWED_CHANNEL_IDS].join(', ')}`,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -45,6 +48,7 @@ console.log(
  * Returns true if the given channel ID is in the allowlist.
  */
 export function isChannelAllowed(channelId: string): boolean {
+  if (!ENFORCEMENT_ENABLED) return true;
   return ALLOWED_CHANNEL_IDS.has(channelId);
 }
 

@@ -17,7 +17,7 @@ async function main(): Promise<void> {
   console.log(`Time: ${new Date().toISOString()}`);
 
   // Validate required environment variables
-  const required = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'DATABASE_URL', 'ALLOWED_CHANNEL_IDS'];
+  const required = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'DATABASE_URL'];
   const missing = required.filter((key) => !process.env[key]);
 
   if (missing.length > 0) {
