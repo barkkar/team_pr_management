@@ -68,12 +68,18 @@ async function processReminder(app: App, pr: TrackedPR): Promise<void> {
   const timeAgo = formatTimeAgo(pr.posted_at);
   const message = buildReminderMessage(pr, timeAgo, false);
   
-  await app.client.chat.postMessage({
+  const base = {
     channel: pr.channel_id,
     text: message.text,
     blocks: message.blocks,
     unfurl_links: false,
-  });
+  };
+  const threadable = pr.message_ts && pr.message_ts !== '0';
+  await app.client.chat.postMessage(
+    threadable
+      ? { ...base, thread_ts: pr.message_ts, reply_broadcast: true }
+      : base,
+  );
   
   const nextAt = getNextReminderEligibleTime();
   await scheduleNextReminder(pr.id, nextAt);
