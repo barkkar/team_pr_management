@@ -15,7 +15,7 @@ The system is deliberately split in two because GitHub Enterprise (`*.soma.sales
 1. **Heroku dyno** (`src/`) — Slack Bolt app in Socket Mode + HTTP server exposing `/api/*` endpoints. Owns Postgres. Cannot reach GHE.
 2. **Local VPN worker** (`worker/`) — runs on a laptop on VPN. Pulls work from Heroku via HTTP, calls GHE + Claude, posts results back.
 
-All `worker/*` calls to `${HEROKU_API_URL}/api/*` are authenticated with the `X-Worker-API-Key` header (`src/index.ts:43-53`). The only exception is `scripts/checkReminders.ts`, which runs on Heroku Scheduler.
+All `worker/*` calls to `${HEROKU_API_URL}/api/*` are authenticated with the `X-Worker-API-Key` header (`src/index.ts:33-43`; `Authorization: Bearer <token>` is also accepted). The only exception is `scripts/checkReminders.ts`, which runs on Heroku Scheduler.
 
 ## Entry points
 
@@ -24,8 +24,12 @@ All `worker/*` calls to `${HEROKU_API_URL}/api/*` are authenticated with the `X-
 | `src/index.ts` | Boots Slack app (Socket Mode) + HTTP server on `PORT`. Defines every `/api/*` endpoint and the Slack message-block formatter. |
 | `src/app.ts` | Slack Bolt app: message handler, `/pr-monitor` slash command, app_home. |
 | `scripts/checkReminders.ts` | Heroku Scheduler job: `pollChannelsForPRs` + `processPendingReminders`. |
-| `worker/localPRChecker.ts` | Main VPN worker loop (default / `--watch` every 5 min). Each tick: poll PR status, then call `runSuggestReviewersLoop()` from `prAnalyzer`. |
+| `worker/localPRChecker.ts` | Main VPN worker loop (default / `--watch` every 5 min). Each tick: poll PR status, drain bootstrap queue, then call `runSuggestReviewersLoop()` from `prAnalyzer`. |
 | `worker/prAnalyzer.ts` | Exports `runSuggestReviewersLoop()` (called by `localPRChecker`) and a CLI entry for standalone runs. Invokes Claude via `claudeToolLoop` with four tools. |
+| `worker/channelBootstrap.ts` | Exports `runBootstrapDrainLoop()` (called by `localPRChecker`). Claims rows from `channel_bootstrap_members`, resolves Slack emails to GHE logins via configured GHE hosts, posts results to `/api/bootstrap-complete`. |
+| `worker/prHarvester.ts` | Batch job (`npm run harvest` / `harvest:incremental` / `HARVEST_ALL=1`). Pulls review comments, reviews, and changed files for tracked PRs and uploads to `/api/harvest-data`. |
+| `worker/userMapper.ts` | Batch job (`npm run map-users`). Discovers GHE↔Slack mappings by email lookup + name fuzzy-match + `USER_MAPPINGS_JSON` overrides. |
+| `worker/testSuggestReviewers.ts` | Dry-run harness for the reviewer-suggestion tool-loop (`npm run test-suggest-reviewers -- <pr-url>`). Same four tools; no DB writes unless `--post --channel=C123` is passed. |
 
 ## Documentation layout
 
@@ -41,10 +45,10 @@ Start with the doc that matches the task:
 ## House rules when editing
 
 - **Don't assume** a change is complete after TypeScript compiles: most runtime behavior requires either Socket Mode connectivity or the worker loop to exercise. Dry-run with `npm run test-suggest-reviewers -- <pr-url>` when touching `worker/prAnalyzer.ts` / `worker/testSuggestReviewers.ts`.
-- **Migrations are immutable once numbered.** `src/db/migrate.ts` applies `src/db/migrations/*.sql` in filename order, tracks applied files in `schema_migrations`, and has special seeding logic for 001–006 when upgrading an existing DB (`src/db/migrate.ts:21-47`). Add new migrations with the next sequential prefix.
+- **Migrations are immutable once numbered.** `src/db/migrate.ts` applies `src/db/migrations/*.sql` in filename order, tracks applied files in `schema_migrations`, and has special seeding logic for 001–006 when upgrading an existing DB (`src/db/migrate.ts:20-47`). Add new migrations with the next sequential prefix.
 - **Claude model** is whatever `CLAUDE_MODEL` env var says; the code default in `src/services/claudeClient.ts:20` is `claude-3-5-sonnet-20241022`, but production env currently runs `claude-opus-4-6-v1`. When updating model IDs, verify both the default string and the deployed Heroku config var.
-- **Channel access control is enforced at module load** (`src/services/channelAccessControl.ts`). The app hard-exits if `ALLOWED_CHANNEL_IDS` is missing or empty. Non-allowlisted channels are silently dropped both in Socket Mode and the slash command.
-- **Worker API auth is required.** If `WORKER_API_KEY` is unset on Heroku, every `/api/*` endpoint returns 401 (`src/index.ts:47-50`). `/health` is public.
+- **Channel access control is enforced at module load** (`src/services/channelAccessControl.ts`). When `ALLOWED_CHANNEL_IDS` is unset or empty, enforcement is **disabled** (a warning is logged and every channel is permitted). Set the env var to a comma-separated list to re-enable enforcement; non-allowlisted channels are then silently dropped both in Socket Mode and the slash command.
+- **Worker API auth is required.** If `WORKER_API_KEY` is unset on Heroku, `validateApiKey` (`src/index.ts:33-43`) always returns false and every `/api/*` endpoint returns 401. `/health` and `/` are public.
 - **Errors should funnel through `notifyError`** (`src/utils/errorNotifier.ts`). It throttles to 1 per minute per source+message and gracefully no-ops if `ERROR_SLACK_CHANNEL_ID` is unset.
 - **Claude has tool-use access via `claudeToolLoop`** (`src/services/claudeClient.ts`). The worker executes tools; Claude never makes HTTP calls itself.
 
@@ -53,10 +57,11 @@ Start with the doc that matches the task:
 - The `pr_url` column is the de-facto primary key across `tracked_prs` and related tables. Joins assume string-equality on the full URL — never substring-match.
 - The Heroku dyno cannot resolve GHE hostnames. If you add a feature that needs a live GHE call, route it through the worker.
 - Some DB migrations touch the same table (`tracked_prs` 001/003/005/006/020). When reading schema, consult `docs/database.md` for the merged view, not a single migration file.
+- The channel bootstrap queue (`channel_bootstrap_members`, migration 021) spans `src/` and `worker/`: the Heroku side enqueues members (`src/services/channelBootstrap.ts`, `src/app.ts` `/pr-monitor add` handler + `member_joined_channel` event), and the VPN worker drains them via `/api/bootstrap-claim` + `/api/bootstrap-complete`.
 
 ## Tooling
 
-- Node 20.x, npm 10.x (`package.json:29-32`).
+- Node 20.x, npm 10.x (`package.json:23-26`).
 - TypeScript compiles to `dist/`. `npm run compile` also copies `src/db/migrations/*.sql` into `dist/src/db/migrations/` so the release script can find them.
 - `Procfile` has two process types: `release: npm run migrate`, `web: node dist/src/index.js`. No `worker:` entry — worker runs on the laptop.
 - `.claude/settings.local.json` pre-allows `git add/commit`, `heroku pg:psql`, `heroku config:get`, `heroku run`, `heroku info`, `curl`, `jq`, `grep`, `head`, `tee`.

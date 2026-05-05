@@ -11,14 +11,15 @@ All workers authenticate with `X-Worker-API-Key` against `WORKER_API_KEY`. Base 
 ### `worker/localPRChecker.ts`
 
 - **CLI**: `npm run worker` (once), `npm run worker:watch` / `node ... --watch` (5-min loop).
-- **Env**: `HEROKU_API_URL`, `WORKER_API_KEY`, `GHE_TOKEN` or `GHE_TOKENS`, plus anything `prAnalyzer` needs (Claude vars) since it runs the reviewer-suggestion loop in-process.
+- **Env**: `HEROKU_API_URL`, `WORKER_API_KEY`, `GHE_TOKEN` or `GHE_TOKENS`, plus anything `prAnalyzer` + `channelBootstrap` need (Claude vars for prAnalyzer; `CHANNEL_BOOTSTRAP_PACE_MS` optional for bootstrap).
 - **Loop (each tick)**:
   1. `GET /api/pending-prs` → list of PRs to check.
-  2. For each: GHE call for PR + reviews via `GitHubEnterpriseClient`.
+  2. For each: GHE call for PR + reviews (via `axios`, per-hostname token from `gheTokenResolver`).
   3. `POST /api/pr-status` with `{ results: [...] }`.
-  4. `await runSuggestReviewersLoop()` — imported from `./prAnalyzer`. Runs the reviewer-suggestion loop for any PRs in `tracked_prs` with `suggestions_sent=FALSE` from the last 24h. Errors here are logged but do NOT fail the status-polling step.
+  4. `await runBootstrapDrainLoop()` — dynamically imported from `./channelBootstrap` (`localPRChecker.ts:225`). Drains `channel_bootstrap_members` by searching each configured GHE host for the member email and posts results to `/api/bootstrap-complete`. Errors here are logged but do NOT fail later steps.
+  5. `await runSuggestReviewersLoop()` — imported from `./prAnalyzer`. Runs the reviewer-suggestion loop for any PRs in `tracked_prs` with `suggestions_sent=FALSE` from the last 24h. Errors here are logged but do NOT fail the earlier steps.
 - **Constants**: `POLL_INTERVAL_MS = 5 * 60 * 1000`; GHE timeout 10s.
-- **Idempotency**: driven by Heroku-side `status_checked_at` (status poll) + `suggestions_sent` flag on `tracked_prs` (reviewer suggestions). Safe to re-run.
+- **Idempotency**: driven by Heroku-side `status_checked_at` (status poll), `channel_bootstrap_members.status` (bootstrap), and `suggestions_sent` flag on `tracked_prs` (reviewer suggestions). Safe to re-run.
 
 ### `worker/prAnalyzer.ts`
 
@@ -34,7 +35,26 @@ All workers authenticate with `X-Worker-API-Key` against `WORKER_API_KEY`. Base 
   6. On parse failure, the worker POSTs `suggestions=[]` anyway to prevent infinite retries.
 
 
+### `worker/channelBootstrap.ts`
+
+- **CLI**: `npx ts-node worker/channelBootstrap.ts` (one-shot drain; exits when the claimed batch is done). Normal operation is via `localPRChecker`'s tick loop, not standalone.
+- **Primary consumer**: `localPRChecker.ts` dynamically imports `runBootstrapDrainLoop()` every tick.
+- **Env**: `HEROKU_API_URL`, `WORKER_API_KEY`, `GHE_TOKEN` or `GHE_TOKENS` (at least one GHE host must be configured), optional `CHANNEL_BOOTSTRAP_PACE_MS` (default 2100).
+- **Flow (one batch per call)**:
+  1. `POST /api/bootstrap-claim` with `{ limit: 50 }` → up to 50 claimed rows (pending or stale in_progress).
+  2. For each row: iterate configured GHE hosts in priority order (`listConfiguredHosts()`), call `GET /api/v3/search/users?q=<email>+in:email`, then `GET /api/v3/users/{login}` to confirm the returned user's email matches. First match wins. Rate-limit headers from the first call per host per tick are logged.
+  3. Classification per row: `resolved` (found + email match), `unresolved` (no host returned a match), or `pending` with `attempts_delta=1` + `last_error` on transient HTTP errors (ECONNRESET/ETIMEDOUT/429/403/5xx). Non-transient errors bubble up to abort the batch.
+  4. Pace `CHANNEL_BOOTSTRAP_PACE_MS` ms between rows (not after the last).
+  5. If `rows.length ≥ 4` and `unresolved/claimed > 0.5`, emit a `notifyError('ChannelBootstrap', 'High unresolved ratio on bootstrap drain', 'warn')` with throttling.
+  6. `POST /api/bootstrap-complete` with the per-row results.
+
 ## Batch / harvest workers
+
+### `worker/prHarvester.ts`
+
+- **CLI**: `npm run harvest` (incremental — skips PRs already in `pr_reviews`), `npm run harvest:incremental` (alias via `--incremental` flag), `HARVEST_ALL=1 npm run harvest` (re-harvest every tracked PR).
+- **Env**: `HEROKU_API_URL`, `WORKER_API_KEY`, `GHE_TOKEN` or `GHE_TOKENS`, optional `HARVEST_ALL=1`.
+- Pulls PR details, review comments (`/pulls/{n}/comments`), top-level reviews (`/pulls/{n}/reviews`, only those with a body), and changed files (`/pulls/{n}/files`) for each tracked PR. `diff_hunk` truncated to 2000 chars, `patch_snippet` to 3000. Uploads via `POST /api/harvest-data`. 300ms between PRs.
 
 ### `worker/userMapper.ts`
 
@@ -44,9 +64,9 @@ All workers authenticate with `X-Worker-API-Key` against `WORKER_API_KEY`. Base 
 
 ### `worker/testSuggestReviewers.ts`
 
-- **CLI**: `npm run test-suggest-reviewers -- <pr-url>` (dry-run with detailed logging).
-- **Env**: GHE + Claude only.
-- Runs the same pipeline as `prAnalyzer` but with detailed logging and no DB writes. Use this before shipping any prAnalyzer changes.
+- **CLI**: `npm run test-suggest-reviewers -- <pr-url>` (dry-run with detailed logging); append `--post --channel=C123` to actually post via `/api/pr-reviewers`.
+- **Env**: GHE + Claude for the dry-run; also `SLACK_BOT_TOKEN` if `--post` is used.
+- **Pipeline**: same tool-use flow as `prAnalyzer` — `claudeToolLoop` with the four tools `fetch_pr_files`, `fetch_pr_diff`, `get_past_reviewers`, `get_past_authors` — but inline (no DB writes) and with detailed logging. Use this before shipping any prAnalyzer changes.
 
 ## Scripts
 
@@ -70,16 +90,35 @@ Diagnostic for GHE reachability.
 - For each known GHE hostname: DNS resolve → HTTPS GET `/api/v3` → authenticated GET `/api/v3/user`. If `TEST_PR_URL` is set, also fetches that PR.
 - Exits 0 on all-pass, 1 otherwise.
 
+### `scripts/testChannelBootstrapEnqueue.ts`
+
+Diagnostic for the channel-bootstrap enqueue path.
+
+- **CLI**: `npx ts-node scripts/testChannelBootstrapEnqueue.ts <channel-id>`.
+- **Env**: `SLACK_BOT_TOKEN`, `DATABASE_URL`.
+- Calls `enqueueChannelBootstrap(channelId, slackClient)` for the given channel and prints the most recent 50 rows from `channel_bootstrap_members`.
+
+### `scripts/testListConfiguredHosts.ts`
+
+Diagnostic for GHE host configuration.
+
+- **CLI**: `npx ts-node scripts/testListConfiguredHosts.ts`.
+- Prints the configured GHE hostnames in the search-priority order used by `worker/channelBootstrap.ts` (`listConfiguredHosts()` from `src/utils/gheTokenResolver.ts`).
+
 ## Deployment matrix
 
 | File | Runs on Heroku | Runs on VPN laptop |
 |---|---|---|
 | `scripts/checkReminders.ts` | ✅ (Scheduler) | — |
 | `scripts/testGheConnectivity.ts` | ✅ (diagnostic) | — |
+| `scripts/testChannelBootstrapEnqueue.ts` | — | ✅ (diagnostic, needs Slack) |
+| `scripts/testListConfiguredHosts.ts` | — | ✅ (diagnostic) |
 | `scripts/deleteBotMessages.ts` | — | ✅ (manual) |
-| `worker/localPRChecker.ts` | — | ✅ (needs GHE) |
+| `worker/localPRChecker.ts` | — | ✅ (needs GHE; orchestrates bootstrap + reviewer loops) |
 | `worker/prAnalyzer.ts` | — | ✅ (needs GHE + Claude) |
-| `worker/testSuggestReviewers.ts` | — | ✅ |
+| `worker/channelBootstrap.ts` | — | ✅ (needs GHE) |
+| `worker/prHarvester.ts` | — | ✅ (needs GHE) |
 | `worker/userMapper.ts` | — | ✅ (Slack + GHE) |
+| `worker/testSuggestReviewers.ts` | — | ✅ (needs GHE + Claude) |
 
 Heroku's `Procfile` has no `worker:` process type. All continuous workers are laptop-resident.
