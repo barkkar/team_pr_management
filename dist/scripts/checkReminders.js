@@ -17,7 +17,7 @@ async function main() {
     console.log('Starting scheduled job...');
     console.log(`Time: ${new Date().toISOString()}`);
     // Validate required environment variables
-    const required = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'DATABASE_URL', 'ALLOWED_CHANNEL_IDS'];
+    const required = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'DATABASE_URL'];
     const missing = required.filter((key) => !process.env[key]);
     if (missing.length > 0) {
         console.error(`Missing required environment variables: ${missing.join(', ')}`);
