@@ -212,3 +212,202 @@ export async function checkClaudeHealth(): Promise<{ ok: boolean; error?: string
 export function getClaudeModel(): string {
   return CLAUDE_MODEL;
 }
+
+// ---------------------------------------------------------------------------
+// Tool-use loop
+// ---------------------------------------------------------------------------
+
+export interface ClaudeTool {
+  name: string;
+  description: string;
+  input_schema: {
+    type: 'object';
+    properties: Record<string, any>;
+    required?: string[];
+  };
+}
+
+export interface ClaudeToolCall {
+  id: string;
+  name: string;
+  input: Record<string, any>;
+}
+
+export interface ClaudeToolResult {
+  tool_use_id: string;
+  content: string;
+  is_error?: boolean;
+}
+
+export interface ToolLoopOptions {
+  temperature?: number;
+  maxTokens?: number;
+  maxIterations?: number; // hard cap on tool-use rounds (default 6)
+  onToolCall: (call: ClaudeToolCall) => Promise<ClaudeToolResult>;
+}
+
+export interface ToolLoopResult {
+  finalText: string;
+  iterations: number;
+  toolCalls: { name: string; input: any }[];
+}
+
+async function rawMessagesCall(body: any): Promise<any> {
+  if (USE_BEDROCK) {
+    const baseUrl = BEDROCK_BASE_URL!.replace(/\/bedrock\/?$/, '');
+    const url = `${baseUrl}/v1/messages`;
+    try {
+      const response = await axios.post(url, body, {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': AUTH_TOKEN!,
+          'anthropic-version': '2023-06-01',
+        },
+        timeout: 120000,
+      });
+      return response.data;
+    } catch (err: any) {
+      const detail = err.response?.data
+        ? JSON.stringify(err.response.data).substring(0, 500)
+        : err.message;
+      throw new Error(`Bedrock proxy failed (${err.response?.status || 'unknown'}): ${detail}`);
+    }
+  }
+  if (ANTHROPIC_API_KEY) {
+    // Direct SDK supports tools via messages.create
+    const client = getDirectClient();
+    const response = await client.messages.create(body);
+    return response;
+  }
+  throw new Error(
+    'Claude AI requires either ANTHROPIC_BEDROCK_BASE_URL + ANTHROPIC_AUTH_TOKEN (Bedrock proxy) '
+    + 'or ANTHROPIC_API_KEY (direct API)',
+  );
+}
+
+/**
+ * Run a Claude conversation with tool use until the model returns end_turn or
+ * we hit maxIterations. The caller provides tool definitions and an executor.
+ *
+ * Conversation shape:
+ *   1. user: <userPrompt>
+ *   2. assistant: [text] + [tool_use]  ← Claude decides to call a tool
+ *   3. user: [tool_result]              ← we run the tool and send back the result
+ *   4. repeat 2–3 until stop_reason === 'end_turn'
+ */
+export async function claudeToolLoop(
+  systemPrompt: string | undefined,
+  userPrompt: string,
+  tools: ClaudeTool[],
+  options: ToolLoopOptions,
+): Promise<ToolLoopResult> {
+  const {
+    temperature = 0.2,
+    maxTokens = 2048,
+    maxIterations = 6,
+    onToolCall,
+  } = options;
+
+  const messages: any[] = [{ role: 'user', content: userPrompt }];
+  const toolCallLog: { name: string; input: any }[] = [];
+
+  for (let iteration = 0; iteration < maxIterations; iteration++) {
+    const body: any = {
+      model: CLAUDE_MODEL,
+      max_tokens: maxTokens,
+      temperature,
+      messages,
+      tools,
+    };
+    if (systemPrompt) body.system = systemPrompt;
+
+    const response = await rawMessagesCall(body);
+
+    const stopReason = response.stop_reason;
+    const contentBlocks = Array.isArray(response.content) ? response.content : [];
+
+    // Append assistant turn verbatim so Claude keeps context on subsequent calls
+    messages.push({ role: 'assistant', content: contentBlocks });
+
+    if (stopReason === 'end_turn' || stopReason === 'stop_sequence') {
+      const finalText = contentBlocks
+        .filter((b: any) => b.type === 'text')
+        .map((b: any) => b.text)
+        .join('')
+        .trim();
+      return { finalText, iterations: iteration + 1, toolCalls: toolCallLog };
+    }
+
+    if (stopReason !== 'tool_use') {
+      throw new Error(`Claude returned unexpected stop_reason=${stopReason}`);
+    }
+
+    // Find tool_use blocks and execute them
+    const toolUseBlocks = contentBlocks.filter((b: any) => b.type === 'tool_use');
+    if (toolUseBlocks.length === 0) {
+      throw new Error('stop_reason=tool_use but no tool_use blocks present');
+    }
+
+    const toolResultBlocks: any[] = [];
+    for (const block of toolUseBlocks) {
+      const call: ClaudeToolCall = { id: block.id, name: block.name, input: block.input || {} };
+      toolCallLog.push({ name: call.name, input: call.input });
+      try {
+        const result = await onToolCall(call);
+        toolResultBlocks.push({
+          type: 'tool_result',
+          tool_use_id: result.tool_use_id,
+          content: result.content,
+          ...(result.is_error ? { is_error: true } : {}),
+        });
+      } catch (err: any) {
+        toolResultBlocks.push({
+          type: 'tool_result',
+          tool_use_id: call.id,
+          content: `Tool execution failed: ${err.message}`,
+          is_error: true,
+        });
+      }
+    }
+
+    messages.push({ role: 'user', content: toolResultBlocks });
+  }
+
+  throw new Error(`claudeToolLoop exceeded maxIterations=${maxIterations}`);
+}
+
+// ---------------------------------------------------------------------------
+// JSON extraction — Claude sometimes wraps JSON in ```json fences or adds a
+// preamble like "Here are the suggestions:" before the object. Strip those.
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract a JSON object from a Claude text response. Handles:
+ *   - Plain JSON ("{...}")
+ *   - Markdown-fenced JSON ("```json\n{...}\n```" or "```\n{...}\n```")
+ *   - JSON with leading/trailing prose
+ *
+ * Returns the parsed object on success, or null if no valid JSON is found.
+ */
+export function extractJsonFromClaudeText<T = any>(text: string): T | null {
+  if (!text) return null;
+
+  // 1. Try as-is.
+  const trimmed = text.trim();
+  try { return JSON.parse(trimmed) as T; } catch { /* fall through */ }
+
+  // 2. Strip a ```json ... ``` or ``` ... ``` fence if present.
+  const fenceMatch = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+  if (fenceMatch) {
+    try { return JSON.parse(fenceMatch[1].trim()) as T; } catch { /* fall through */ }
+  }
+
+  // 3. Grab the first balanced {...} block in the text.
+  const firstBrace = trimmed.indexOf('{');
+  const lastBrace = trimmed.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    try { return JSON.parse(trimmed.substring(firstBrace, lastBrace + 1)) as T; } catch { /* fall through */ }
+  }
+
+  return null;
+}

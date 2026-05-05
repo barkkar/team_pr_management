@@ -8,6 +8,7 @@ const prParser_1 = require("./utils/prParser");
 const client_1 = require("./db/client");
 const errorNotifier_1 = require("./utils/errorNotifier");
 const channelAccessControl_1 = require("./services/channelAccessControl");
+const channelBootstrap_1 = require("./services/channelBootstrap");
 function formatWaitTime(postedAt) {
     const waitMs = Date.now() - new Date(postedAt).getTime();
     const days = Math.floor(waitMs / (1000 * 60 * 60 * 24));
@@ -129,17 +130,49 @@ function createApp() {
                         // Ignore - channel name is optional
                     }
                     const added = await (0, client_1.addMonitoredChannel)(channelId, channelName, userId);
-                    if (added) {
-                        await respond({
-                            response_type: 'in_channel',
-                            text: `✅ This channel is now being monitored for PR review requests. I'll track PRs and send reminders when they need reviews.`,
-                        });
-                    }
-                    else {
-                        await respond({
-                            text: `This channel is already being monitored.`,
-                        });
-                    }
+                    // Unified reply — no branching on `added`. See spec §5.1 step 5.
+                    await respond({
+                        response_type: 'in_channel',
+                        text: '✅ This channel is now being monitored for PR review requests. ' +
+                            "Queuing members for reviewer mapping — I'll follow up here with the count.",
+                    });
+                    // setImmediate lets the slash-command ack return <1s. Bolt's `respond`
+                    // closure wraps Slack's signed `response_url`, which is valid for 30 min
+                    // and 5 follow-ups — ample for a single delayed reply.
+                    //
+                    // SAFETY: the outer try/catch is MANDATORY. Any throw that escapes a
+                    // setImmediate callback is uncaught at the Bolt layer and would crash
+                    // the dyno process. Do not remove it.
+                    setImmediate(async () => {
+                        try {
+                            const { queued } = await (0, channelBootstrap_1.enqueueChannelBootstrap)(channelId, client);
+                            await respond({
+                                response_type: 'ephemeral',
+                                replace_original: false,
+                                text: `Queued ${queued} member(s) for reviewer mapping.`,
+                            });
+                        }
+                        catch (err) {
+                            // Distinguish scope failures (non-retryable, operator action needed)
+                            // from transient Slack/DB blips (retryable on next /pr-monitor add).
+                            const isScopeError = err?.data?.error === 'missing_scope' ||
+                                /missing_scope|not_in_channel|not_authed/.test(String(err?.message || ''));
+                            const userMessage = isScopeError
+                                ? 'Member bootstrap skipped — Slack bot is missing required scope. Contact the workspace admin.'
+                                : 'Member bootstrap failed — will retry when members post PRs.';
+                            try {
+                                await respond({
+                                    response_type: 'ephemeral',
+                                    replace_original: false,
+                                    text: userMessage,
+                                });
+                            }
+                            catch (_respondErr) {
+                                // response_url may have expired; fall through to notifyError below.
+                            }
+                            (0, errorNotifier_1.notifyError)('ChannelBootstrap', `enqueueChannelBootstrap failed for ${channelId}: ${err.message}`, isScopeError ? 'error' : 'warn');
+                        }
+                    });
                     break;
                 }
                 case 'remove': {
@@ -244,40 +277,6 @@ function createApp() {
                     });
                     break;
                 }
-                case 'harvest-status': {
-                    // Show AI knowledge base harvest status
-                    try {
-                        const harvestRows = await client_1.pool.query('SELECT org, repo, last_harvested_pr_number, last_repo_harvest_sha, last_harvested_at, last_repo_harvested_at FROM harvest_state ORDER BY org, repo');
-                        const reviewCount = await client_1.pool.query('SELECT COUNT(*) as count FROM pr_reviews');
-                        const fileCount = await client_1.pool.query('SELECT COUNT(*) as count FROM pr_files');
-                        const repoKnowledgeCount = await client_1.pool.query('SELECT COUNT(*) as count FROM repo_knowledge');
-                        const userMappingCount = await client_1.pool.query('SELECT COUNT(*) as count FROM user_mappings');
-                        const mappedCount = await client_1.pool.query('SELECT COUNT(*) as count FROM user_mappings WHERE slack_user_id IS NOT NULL');
-                        let repoLines = '_No repos harvested yet._';
-                        if (harvestRows.rows.length > 0) {
-                            repoLines = harvestRows.rows.map((r) => {
-                                const prInfo = r.last_harvested_pr_number ? `PR #${r.last_harvested_pr_number}` : 'not started';
-                                const repoInfo = r.last_repo_harvest_sha ? `SHA ${r.last_repo_harvest_sha.substring(0, 8)}` : 'not started';
-                                return `• \`${r.org}/${r.repo}\` — PRs: ${prInfo}, Code: ${repoInfo}`;
-                            }).join('\n');
-                        }
-                        await respond({
-                            text: `*:brain: AI Knowledge Base Status*\n\n` +
-                                `*Data:*\n` +
-                                `• PR review comments: ${reviewCount.rows[0].count}\n` +
-                                `• PR files tracked: ${fileCount.rows[0].count}\n` +
-                                `• Codebase chunks: ${repoKnowledgeCount.rows[0].count}\n` +
-                                `• User mappings: ${userMappingCount.rows[0].count} (${mappedCount.rows[0].count} with Slack ID)\n\n` +
-                                `*Repos:*\n${repoLines}`,
-                        });
-                    }
-                    catch (harvestError) {
-                        await respond({
-                            text: `*:brain: AI Knowledge Base Status*\n\n_Tables not yet created. Run migrations first._`,
-                        });
-                    }
-                    break;
-                }
                 case 'help':
                 default: {
                     await respond({
@@ -288,7 +287,6 @@ function createApp() {
                             `• \`/pr-monitor pending\` - Show PRs awaiting review with wait times\n` +
                             `• \`/pr-monitor stats\` - Show review statistics and reminder counts\n` +
                             `• \`/pr-monitor status\` - Show current status\n` +
-                            `• \`/pr-monitor harvest-status\` - Show AI knowledge base harvest status\n` +
                             `• \`/pr-monitor help\` - Show this help message`,
                     });
                     break;
@@ -344,139 +342,27 @@ function createApp() {
             (0, errorNotifier_1.notifyError)('SlackApp', `Error publishing home view: ${error.message || error}`, 'warn');
         }
     });
-    // ---------------------------------------------------------------------------
-    // AI Review Feedback — button action handlers
-    // ---------------------------------------------------------------------------
-    app.action('ai_review_helpful', async ({ action, ack, body, client }) => {
-        await ack();
-        const prUrl = action.value || '';
-        const userId = body.user.id;
-        console.log(`[Feedback] 👍 Helpful from ${userId} for ${prUrl}`);
+    app.event('member_joined_channel', async ({ event, client }) => {
         try {
-            await (0, client_1.insertOrUpdateFeedback)(prUrl, userId, 'helpful');
+            const { channel: channelId, user: userId } = event;
+            if (!channelId || !userId)
+                return;
+            // Respect the same allowlist + monitored-channels gates as the rest of the app.
+            if (!(0, channelAccessControl_1.isChannelAllowed)(channelId))
+                return;
+            if (!(await (0, client_1.isChannelMonitored)(channelId)))
+                return;
+            const info = await client.users.info({ user: userId });
+            const u = info.user;
+            if (!u || u.is_bot || u.deleted)
+                return;
+            const email = u.profile?.email;
+            if (!email)
+                return;
+            await (0, client_1.insertBootstrapMembers)([{ channel_id: channelId, slack_user_id: userId, email }]);
         }
-        catch (e) {
-            console.error(`[Feedback] DB error: ${e.message}`);
-            (0, errorNotifier_1.notifyError)('Feedback', `DB error: ${e.message}`, 'warn');
-        }
-        try {
-            await client.views.open({
-                trigger_id: body.trigger_id,
-                view: {
-                    type: 'modal',
-                    callback_id: 'ai_review_feedback_modal',
-                    private_metadata: JSON.stringify({ pr_url: prUrl, rating: 'helpful' }),
-                    title: { type: 'plain_text', text: 'Thanks for the feedback!' },
-                    submit: { type: 'plain_text', text: 'Submit' },
-                    close: { type: 'plain_text', text: 'Skip' },
-                    blocks: [
-                        {
-                            type: 'input',
-                            block_id: 'feedback_block',
-                            optional: true,
-                            element: {
-                                type: 'plain_text_input',
-                                action_id: 'feedback_text',
-                                multiline: true,
-                                placeholder: { type: 'plain_text', text: 'What was most helpful? (optional)' },
-                            },
-                            label: { type: 'plain_text', text: 'Any details to share?' },
-                        },
-                    ],
-                },
-            });
-        }
-        catch (e) {
-            console.error(`[Feedback] Modal error: ${e.message}`);
-        }
-    });
-    app.action('ai_review_not_helpful', async ({ action, ack, body, client }) => {
-        await ack();
-        const prUrl = action.value || '';
-        const userId = body.user.id;
-        console.log(`[Feedback] 👎 Not helpful from ${userId} for ${prUrl}`);
-        try {
-            await (0, client_1.insertOrUpdateFeedback)(prUrl, userId, 'not_helpful');
-        }
-        catch (e) {
-            console.error(`[Feedback] DB error: ${e.message}`);
-            (0, errorNotifier_1.notifyError)('Feedback', `DB error: ${e.message}`, 'warn');
-        }
-        try {
-            await client.views.open({
-                trigger_id: body.trigger_id,
-                view: {
-                    type: 'modal',
-                    callback_id: 'ai_review_feedback_modal',
-                    private_metadata: JSON.stringify({ pr_url: prUrl, rating: 'not_helpful' }),
-                    title: { type: 'plain_text', text: 'Help us improve' },
-                    submit: { type: 'plain_text', text: 'Submit' },
-                    close: { type: 'plain_text', text: 'Skip' },
-                    blocks: [
-                        {
-                            type: 'input',
-                            block_id: 'feedback_block',
-                            optional: true,
-                            element: {
-                                type: 'plain_text_input',
-                                action_id: 'feedback_text',
-                                multiline: true,
-                                placeholder: { type: 'plain_text', text: 'What went wrong or was inaccurate?' },
-                            },
-                            label: { type: 'plain_text', text: 'What could be improved?' },
-                        },
-                    ],
-                },
-            });
-        }
-        catch (e) {
-            console.error(`[Feedback] Modal error: ${e.message}`);
-        }
-    });
-    app.view('ai_review_feedback_modal', async ({ ack, view, body }) => {
-        await ack();
-        const userId = body.user.id;
-        const metadata = JSON.parse(view.private_metadata || '{}');
-        const prUrl = metadata.pr_url || '';
-        const rating = metadata.rating || 'helpful';
-        const feedbackText = view.state?.values?.feedback_block?.feedback_text?.value || '';
-        if (feedbackText) {
-            console.log(`[Feedback] Text from ${userId}: "${feedbackText.substring(0, 100)}"`);
-            try {
-                await (0, client_1.insertOrUpdateFeedback)(prUrl, userId, rating, feedbackText);
-            }
-            catch (e) {
-                console.error(`[Feedback] DB error saving text: ${e.message}`);
-            }
-        }
-    });
-    // ---------------------------------------------------------------------------
-    // Per-Comment AI Feedback — lightweight 👍/👎 on individual suggestions
-    // ---------------------------------------------------------------------------
-    app.action('comment_helpful', async ({ action, ack, body, respond }) => {
-        await ack();
-        const userId = body.user.id;
-        try {
-            const { pr_url, idx } = JSON.parse(action.value || '{}');
-            console.log(`[Comment Feedback] 👍 from ${userId} on comment #${idx} for ${pr_url}`);
-            await (0, client_1.insertOrUpdateCommentFeedback)(pr_url, idx, userId, 'helpful');
-            await respond({ text: ':thumbsup: Thanks for the feedback!', response_type: 'ephemeral', replace_original: false });
-        }
-        catch (e) {
-            console.error(`[Comment Feedback] Error: ${e.message}`);
-        }
-    });
-    app.action('comment_not_helpful', async ({ action, ack, body, respond }) => {
-        await ack();
-        const userId = body.user.id;
-        try {
-            const { pr_url, idx } = JSON.parse(action.value || '{}');
-            console.log(`[Comment Feedback] 👎 from ${userId} on comment #${idx} for ${pr_url}`);
-            await (0, client_1.insertOrUpdateCommentFeedback)(pr_url, idx, userId, 'not_helpful');
-            await respond({ text: ':thumbsdown: Got it — we\'ll work on improving this.', response_type: 'ephemeral', replace_original: false });
-        }
-        catch (e) {
-            console.error(`[Comment Feedback] Error: ${e.message}`);
+        catch (err) {
+            (0, errorNotifier_1.notifyError)('ChannelBootstrap', `member_joined_channel handler failed: ${err?.message || String(err)}`, 'warn');
         }
     });
     return app;

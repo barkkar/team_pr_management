@@ -20,31 +20,24 @@ Heroku Scheduler's fallback path for PRs missed by Socket Mode. Pulls channels f
 
 ### `claudeClient.ts`
 
-Routes every Claude chat call. Two modes decided at import time by env vars:
+Routes every Claude chat and tool-use call. Two modes decided at import time by env vars:
 
 1. **Bedrock proxy** (preferred): raw axios POST to `{BEDROCK_BASE_URL}/v1/messages` with `x-api-key: {AUTH_TOKEN}` + `anthropic-version: 2023-06-01`. The code strips a trailing `/bedrock` from the base URL (so `.../bedrock` and `.../bedrock/` both work). 120s timeout.
 2. **Direct Anthropic API**: uses `@anthropic-ai/sdk`.
 
-The default model is `claude-3-5-sonnet-20241022` (`claudeClient.ts:21`). `jsonMode` appends a hard instruction telling Claude to respond with valid JSON only, no code fences. Claude handles all AI tasks.
+The code default model is `claude-3-5-sonnet-20241022` (`claudeClient.ts:20`); Heroku production overrides via `CLAUDE_MODEL` env var. `jsonMode` on `claudeChat` appends a hard instruction telling Claude to respond with valid JSON only, no code fences.
 
-- `claudeChat(systemPrompt | undefined, userPrompt, { temperature?=0.3, maxTokens?=4096, jsonMode?=false })`
-- `checkClaudeHealth()` — sends "Respond with exactly: ok" and verifies the response contains "ok"
-- `getClaudeModel(): string`
-- `interface ClaudeChatOptions`
+Exports:
+- `claudeChat(systemPrompt?, userPrompt, { temperature?, maxTokens?, jsonMode? })` — single-turn chat.
+- `claudeToolLoop(systemPrompt?, userPrompt, tools, { temperature?, maxTokens?, maxIterations?=6, onToolCall })` — multi-turn conversation with tool use. Caller supplies tool schemas (`ClaudeTool[]`) and an `onToolCall` handler; the loop feeds tool results back to Claude until it returns `end_turn` / `stop_sequence` or hits `maxIterations`. Returns `{ finalText, iterations, toolCalls }`.
+- `extractJsonFromClaudeText<T>(text): T | null` — tolerant JSON parser for Claude final messages. Tries plain `JSON.parse`, then strips ` ```json ``` ` fences, then grabs the outermost `{...}` block. Used by the reviewer-suggestion workers because Claude Opus 4.x sometimes adds a preamble.
+- `checkClaudeHealth()` — sends "Respond with exactly: ok" and verifies the reply contains "ok".
+- `getClaudeModel(): string` — returns the model ID currently in effect.
+
+Type exports: `ClaudeChatOptions`, `ClaudeTool`, `ClaudeToolCall`, `ClaudeToolResult`, `ToolLoopOptions`, `ToolLoopResult`.
 
 Env vars read: `ANTHROPIC_BEDROCK_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `CLAUDE_MODEL`.
 
-### `codeContextProvider.ts`
-
-Fetches domain-scoped code examples from `repo_knowledge` for the review pipeline. `worker/prAnalyzer.ts` calls it for all three passes (implementation, rules, tests) with pass-specific `element_types` filters. Given a set of `domainIds` + the changed files, it:
-
-1. Queries `repo_knowledge` joined to `code_domains` with `domain_id = ANY($domainIds)`, filtering out rows whose `file_path` is in the PR diff.
-2. Can filter by `element_types` (e.g., `['class', 'function']`) and scope by `org`/`repo`.
-3. Fetches `3x limit`, then diversifies: max 1 example per file, skip a domain when its count exceeds 1.5× the average across domains.
-4. `formatCodeExamplesForPrompt` renders each as a 500-char snippet with domain/file header.
-
-- `fetchDomainScopedCodeExamples(options: CodeContextOptions): Promise<CodeExample[]>`
-- `formatCodeExamplesForPrompt(examples): string`
 
 ### `github.ts`
 
@@ -56,24 +49,6 @@ Per-hostname-cached Axios client for GitHub Enterprise. Base URL: `https://{host
   - `hasReviews(...)` — excludes PENDING reviews *and* the PR author's own reviews.
   - `isPROpen(...)` — returns `state === 'open' && !merged`.
 
-### `ontologyEngine.ts`
-
-The core of the deterministic rule system. See `docs/ontology.md` for the broader design. Exports:
-
-- Resolution:
-  - `resolveRulesForPR(changedFiles, diffText): Promise<ResolvedRule[]>` — combines file-path match + code-pattern match + annotation match.
-  - `matchFilePathsToDomains`, `matchFilePathsToRules`, `matchCodePatterns` — building blocks.
-  - `getRulesForDomains(domainIds)` — uses a recursive CTE to include ancestors of each domain in the lookup.
-  - `getRulesByIds(ruleIds)`.
-- CRUD for domains, rules, matchers, and file mappings: `createDomain`, `createRule`, `createRuleMatcher`, `createDomainFileMapping`, `updateRule`, `deleteRule`, `listRules`.
-- Taxonomy: `getDomainTaxonomy()`, `getAllDomains()`.
-
-Matchers:
-- `file_path` via `minimatch(path, pattern, { dot: true, nocase: true })`.
-- `code_pattern` — supports regex (`is_regex=true`) or case-insensitive substring.
-- `annotation` — word-boundary regex.
-
-`ResolvedRule` is sorted by severity critical → high → medium → low (no secondary sort).
 
 ### `prTracker.ts`
 
@@ -92,13 +67,6 @@ Runs inside `scripts/checkReminders.ts`. Gated by `isWithinBusinessHours()`. For
 
 - `processPendingReminders(app: App): Promise<void>`
 
-### `ruleClassifier.ts`
-
-The LLM fallback for `resolveRulesForPR`'s unmatched files. Sends a file path + truncated diff (4K chars) and the entire taxonomy; Claude returns an array of domain IDs (accepts `parsed[]`, `{domains:[...]}`, or `{domain_ids:[...]}`). IDs are validated against the loaded taxonomy; `getRulesForDomains` fetches rules. Called with `temperature=0.1, maxTokens=100, jsonMode=true`.
-
-- `classifyDiffIntoDomains(filePath, diffSnippet, taxonomy?)`
-- `classifyAndResolveRules(filePath, diffSnippet, taxonomy?)`
-- `classifyUnmatchedFiles(unmatchedFiles): Promise<ResolvedRule[]>` — dedupes rules across files.
 
 ## `src/utils/`
 

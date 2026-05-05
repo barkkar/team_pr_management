@@ -1,4 +1,5 @@
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
+import { BootstrapClaim, BootstrapResult } from '../types/channelBootstrap';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -22,6 +23,7 @@ export interface TrackedPR {
   is_open?: boolean;
   status_checked_at?: Date;
   reminder_count?: number;
+  suggestions_sent?: boolean;
 }
 
 export interface PRStatusUpdate {
@@ -324,26 +326,6 @@ export interface HarvestState {
   last_repo_harvested_at: Date | null;
 }
 
-export interface RepoKnowledge {
-  id: number;
-  org: string;
-  repo: string;
-  file_path: string;
-  content_chunk: string;
-  chunk_index: number;
-  last_commit_sha: string | null;
-  domain_id?: number | null;
-  code_element_type?: string | null;
-  code_element_name?: string | null;
-  created_at: Date;
-  updated_at: Date;
-}
-
-export interface CodeExample extends RepoKnowledge {
-  domain_name: string;
-  domain_display_name: string;
-}
-
 // --- PR Reviews ---
 
 export async function insertPRReview(review: Omit<PRReview, 'id' | 'created_at'>): Promise<PRReview | null> {
@@ -383,7 +365,10 @@ export async function insertPRFile(file: Omit<PRFile, 'id' | 'created_at'>): Pro
 
 // --- User Mappings ---
 
-export async function upsertUserMapping(mapping: Omit<UserMapping, 'id' | 'updated_at'>): Promise<UserMapping | null> {
+export async function upsertUserMapping(
+  mapping: Omit<UserMapping, 'id' | 'updated_at'>,
+  client: Pool | PoolClient = pool,
+): Promise<UserMapping | null> {
   const query = `
     INSERT INTO user_mappings (ghe_login, slack_user_id, display_name, email, discovered_via)
     VALUES ($1, $2, $3, $4, $5)
@@ -395,7 +380,7 @@ export async function upsertUserMapping(mapping: Omit<UserMapping, 'id' | 'updat
       updated_at = NOW()
     RETURNING *
   `;
-  const result = await pool.query(query, [
+  const result = await client.query(query, [
     mapping.ghe_login, mapping.slack_user_id, mapping.display_name,
     mapping.email, mapping.discovered_via,
   ]);
@@ -429,48 +414,9 @@ export async function upsertHarvestState(org: string, repo: string, lastPrNumber
   `, [org, repo, lastPrNumber]);
 }
 
-export async function upsertRepoHarvestState(org: string, repo: string, sha: string): Promise<void> {
-  await pool.query(`
-    INSERT INTO harvest_state (org, repo, last_repo_harvest_sha, last_repo_harvested_at)
-    VALUES ($1, $2, $3, NOW())
-    ON CONFLICT (org, repo) DO UPDATE SET
-      last_repo_harvest_sha = $3,
-      last_repo_harvested_at = NOW()
-  `, [org, repo, sha]);
-}
 
 // --- Repo Knowledge ---
 
-export async function upsertRepoKnowledge(chunk: Omit<RepoKnowledge, 'id' | 'created_at' | 'updated_at'>): Promise<number> {
-  const result = await pool.query(`
-    INSERT INTO repo_knowledge (org, repo, file_path, content_chunk, chunk_index, last_commit_sha, domain_id, code_element_type, code_element_name)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-    ON CONFLICT (org, repo, file_path, chunk_index)
-    DO UPDATE SET
-      content_chunk = EXCLUDED.content_chunk,
-      last_commit_sha = EXCLUDED.last_commit_sha,
-      domain_id = EXCLUDED.domain_id,
-      code_element_type = EXCLUDED.code_element_type,
-      code_element_name = EXCLUDED.code_element_name,
-      updated_at = NOW()
-    RETURNING id
-  `, [
-    chunk.org,
-    chunk.repo,
-    chunk.file_path,
-    chunk.content_chunk,
-    chunk.chunk_index,
-    chunk.last_commit_sha,
-    chunk.domain_id || null,
-    chunk.code_element_type || null,
-    chunk.code_element_name || null,
-  ]);
-  return result.rows[0]?.id || 0;
-}
-
-export async function deleteRepoKnowledgeForFile(org: string, repo: string, filePath: string): Promise<void> {
-  await pool.query('DELETE FROM repo_knowledge WHERE org = $1 AND repo = $2 AND file_path = $3', [org, repo, filePath]);
-}
 
 // --- Reviewer discovery (file + code-history based) ---
 
@@ -514,105 +460,117 @@ export async function getDistinctRepos(): Promise<{ org: string; repo: string }[
   return result.rows;
 }
 
-// ---------------------------------------------------------------------------
-// AI Review Feedback (manual 👍/👎 from Slack)
-// ---------------------------------------------------------------------------
+// ========== Channel Bootstrap Queue ==========
 
-export async function insertOrUpdateFeedback(
-  prUrl: string, userId: string, rating: string, feedbackText?: string,
-): Promise<void> {
-  await pool.query(`
-    INSERT INTO ai_review_feedback (pr_url, user_id, rating, feedback_text, created_at)
-    VALUES ($1, $2, $3, $4, NOW())
-    ON CONFLICT (pr_url, user_id) DO UPDATE SET
-      rating = $3, feedback_text = COALESCE($4, ai_review_feedback.feedback_text), created_at = NOW()
-  `, [prUrl, userId, rating, feedbackText || null]);
+/**
+ * Insert a batch of channel bootstrap member rows. Duplicates (same
+ * channel_id + slack_user_id) are silently skipped. Returns the number of
+ * freshly inserted rows.
+ */
+export async function insertBootstrapMembers(
+  rows: { channel_id: string; slack_user_id: string; email: string }[],
+): Promise<number> {
+  if (rows.length === 0) {
+    return 0;
+  }
+
+  const values: (string)[] = [];
+  const placeholders: string[] = [];
+  rows.forEach((row, idx) => {
+    const base = idx * 3;
+    placeholders.push(`($${base + 1}, $${base + 2}, $${base + 3})`);
+    values.push(row.channel_id, row.slack_user_id, row.email);
+  });
+
+  const query = `
+    INSERT INTO channel_bootstrap_members (channel_id, slack_user_id, email)
+    VALUES ${placeholders.join(', ')}
+    ON CONFLICT (channel_id, slack_user_id) DO NOTHING
+  `;
+  const result = await pool.query(query, values);
+  return result.rowCount ?? 0;
 }
 
-export async function getRecentFeedback(limit: number = 5): Promise<any[]> {
-  const result = await pool.query(`
-    SELECT f.pr_url, f.rating, f.feedback_text, ar.review_json
-    FROM ai_review_feedback f
-    LEFT JOIN pr_analysis_results ar ON f.pr_url = ar.pr_url
-    WHERE f.feedback_text IS NOT NULL AND f.feedback_text != ''
-    ORDER BY f.created_at DESC
-    LIMIT $1
-  `, [limit]);
-  return result.rows;
+/**
+ * Atomically claim up to `limit` pending bootstrap rows (and re-claim stale
+ * in-progress rows whose claim has expired). Uses SELECT ... FOR UPDATE SKIP
+ * LOCKED so multiple workers never double-claim the same row.
+ */
+export async function claimPendingBootstrap(limit: number): Promise<BootstrapClaim[]> {
+  const query = `
+    WITH claimed AS (
+      SELECT id FROM channel_bootstrap_members
+      WHERE (status = 'pending' AND attempts < 3)
+         OR (status = 'in_progress' AND claimed_at < NOW() - INTERVAL '15 minutes')
+      ORDER BY enqueued_at ASC
+      FOR UPDATE SKIP LOCKED
+      LIMIT $1
+    )
+    UPDATE channel_bootstrap_members c
+    SET status = 'in_progress', claimed_at = NOW()
+    FROM claimed WHERE c.id = claimed.id
+    RETURNING c.id, c.channel_id, c.slack_user_id, c.email;
+  `;
+  const result = await pool.query(query, [limit]);
+  return result.rows as BootstrapClaim[];
 }
 
-// ---------------------------------------------------------------------------
-// Per-Comment AI Feedback (👍/👎 on individual suggestions)
-// ---------------------------------------------------------------------------
-
-export async function insertOrUpdateCommentFeedback(
-  prUrl: string, commentIndex: number, userId: string, rating: string, commentSnapshot?: any,
-): Promise<void> {
-  await pool.query(`
-    INSERT INTO ai_comment_feedback (pr_url, comment_index, user_id, rating, comment_snapshot, created_at)
-    VALUES ($1, $2, $3, $4, $5, NOW())
-    ON CONFLICT (pr_url, comment_index, user_id) DO UPDATE SET
-      rating = $4, created_at = NOW()
-  `, [prUrl, commentIndex, userId, rating, commentSnapshot ? JSON.stringify(commentSnapshot) : null]);
+/**
+ * Apply a batch of bootstrap resolution results inside a single transaction.
+ * - `resolved`: marks row resolved and upserts into user_mappings.
+ * - `unresolved`: marks row unresolved (permanent miss).
+ * - `pending`: increments attempts, clears the claim, and ages out to
+ *   'aged_out' once the attempt count reaches 3.
+ */
+export async function updateBootstrapResults(results: BootstrapResult[]): Promise<void> {
+  const client: PoolClient = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const result of results) {
+      if (result.status === 'resolved') {
+        await client.query(
+          `UPDATE channel_bootstrap_members
+           SET status = 'resolved', resolved_at = NOW()
+           WHERE id = $1`,
+          [result.id],
+        );
+        await upsertUserMapping(
+          {
+            ghe_login: result.ghe_login,
+            slack_user_id: result.slack_user_id,
+            display_name: result.display_name,
+            email: result.email,
+            discovered_via: 'bootstrap_search',
+          },
+          client,
+        );
+      } else if (result.status === 'unresolved') {
+        await client.query(
+          `UPDATE channel_bootstrap_members
+           SET status = 'unresolved', resolved_at = NOW()
+           WHERE id = $1`,
+          [result.id],
+        );
+      } else {
+        // pending — increment attempts, clear claim, age out if >= 3.
+        await client.query(
+          `UPDATE channel_bootstrap_members
+           SET attempts = attempts + 1,
+               last_error = $2,
+               claimed_at = NULL,
+               status = CASE WHEN attempts + 1 >= 3 THEN 'aged_out' ELSE 'pending' END
+           WHERE id = $1`,
+          [result.id, result.last_error],
+        );
+      }
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
-
-export async function getCommentFeedbackStats(prUrl: string): Promise<{ comment_index: number; helpful: number; not_helpful: number }[]> {
-  const result = await pool.query(`
-    SELECT comment_index,
-           COUNT(*) FILTER (WHERE rating = 'helpful') AS helpful,
-           COUNT(*) FILTER (WHERE rating = 'not_helpful') AS not_helpful
-    FROM ai_comment_feedback
-    WHERE pr_url = $1
-    GROUP BY comment_index
-    ORDER BY comment_index
-  `, [prUrl]);
-  return result.rows;
-}
-
-// ---------------------------------------------------------------------------
-// AI Review Lessons (automated post-merge comparison)
-// ---------------------------------------------------------------------------
-
-export async function insertReviewLessons(
-  prUrl: string,
-  aiReview: any,
-  peerComments: any[],
-  lessons: any,
-): Promise<void> {
-  await pool.query(`
-    INSERT INTO ai_review_lessons (pr_url, ai_review_json, peer_comments_json, lessons_json, created_at)
-    VALUES ($1, $2, $3, $4, NOW())
-    ON CONFLICT (pr_url) DO UPDATE SET
-      ai_review_json = $2, peer_comments_json = $3, lessons_json = $4, created_at = NOW()
-  `, [prUrl, JSON.stringify(aiReview), JSON.stringify(peerComments), JSON.stringify(lessons)]);
-}
-
-export async function getRecentLessons(limit: number = 3): Promise<any[]> {
-  const result = await pool.query(`
-    SELECT pr_url, lessons_json, created_at
-    FROM ai_review_lessons
-    ORDER BY created_at DESC
-    LIMIT $1
-  `, [limit]);
-  return result.rows;
-}
-
-
-export async function getPRsNeedingLessonExtraction(): Promise<any[]> {
-  const result = await pool.query(`
-    SELECT ar.pr_url, ar.review_json, tp.org, tp.repo, tp.pr_number
-    FROM pr_analysis_results ar
-    JOIN tracked_prs tp ON ar.pr_url = tp.pr_url
-    LEFT JOIN ai_review_lessons al ON ar.pr_url = al.pr_url
-    WHERE tp.is_open = FALSE
-      AND al.id IS NULL
-    ORDER BY ar.created_at DESC
-    LIMIT 20
-  `);
-  return result.rows;
-}
-
-// Re-export code context provider functions
-export { fetchDomainScopedCodeExamples, formatCodeExamplesForPrompt } from '../services/codeContextProvider';
 
 export { pool };

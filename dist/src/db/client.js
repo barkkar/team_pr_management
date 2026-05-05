@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.pool = exports.formatCodeExamplesForPrompt = exports.fetchDomainScopedCodeExamples = void 0;
+exports.pool = void 0;
 exports.insertTrackedPR = insertTrackedPR;
 exports.getPendingReminders = getPendingReminders;
 exports.markReminderSent = markReminderSent;
@@ -23,19 +23,12 @@ exports.getUserMapping = getUserMapping;
 exports.getAllUserMappings = getAllUserMappings;
 exports.getHarvestState = getHarvestState;
 exports.upsertHarvestState = upsertHarvestState;
-exports.upsertRepoHarvestState = upsertRepoHarvestState;
-exports.upsertRepoKnowledge = upsertRepoKnowledge;
-exports.deleteRepoKnowledgeForFile = deleteRepoKnowledgeForFile;
 exports.findReviewersByFiles = findReviewersByFiles;
 exports.findCodeTouchersByFiles = findCodeTouchersByFiles;
 exports.getDistinctRepos = getDistinctRepos;
-exports.insertOrUpdateFeedback = insertOrUpdateFeedback;
-exports.getRecentFeedback = getRecentFeedback;
-exports.insertOrUpdateCommentFeedback = insertOrUpdateCommentFeedback;
-exports.getCommentFeedbackStats = getCommentFeedbackStats;
-exports.insertReviewLessons = insertReviewLessons;
-exports.getRecentLessons = getRecentLessons;
-exports.getPRsNeedingLessonExtraction = getPRsNeedingLessonExtraction;
+exports.insertBootstrapMembers = insertBootstrapMembers;
+exports.claimPendingBootstrap = claimPendingBootstrap;
+exports.updateBootstrapResults = updateBootstrapResults;
 const pg_1 = require("pg");
 const pool = new pg_1.Pool({
     connectionString: process.env.DATABASE_URL,
@@ -249,7 +242,7 @@ async function insertPRFile(file) {
     return result.rows[0] || null;
 }
 // --- User Mappings ---
-async function upsertUserMapping(mapping) {
+async function upsertUserMapping(mapping, client = pool) {
     const query = `
     INSERT INTO user_mappings (ghe_login, slack_user_id, display_name, email, discovered_via)
     VALUES ($1, $2, $3, $4, $5)
@@ -261,7 +254,7 @@ async function upsertUserMapping(mapping) {
       updated_at = NOW()
     RETURNING *
   `;
-    const result = await pool.query(query, [
+    const result = await client.query(query, [
         mapping.ghe_login, mapping.slack_user_id, mapping.display_name,
         mapping.email, mapping.discovered_via,
     ]);
@@ -289,45 +282,7 @@ async function upsertHarvestState(org, repo, lastPrNumber) {
       last_harvested_at = NOW()
   `, [org, repo, lastPrNumber]);
 }
-async function upsertRepoHarvestState(org, repo, sha) {
-    await pool.query(`
-    INSERT INTO harvest_state (org, repo, last_repo_harvest_sha, last_repo_harvested_at)
-    VALUES ($1, $2, $3, NOW())
-    ON CONFLICT (org, repo) DO UPDATE SET
-      last_repo_harvest_sha = $3,
-      last_repo_harvested_at = NOW()
-  `, [org, repo, sha]);
-}
 // --- Repo Knowledge ---
-async function upsertRepoKnowledge(chunk) {
-    const result = await pool.query(`
-    INSERT INTO repo_knowledge (org, repo, file_path, content_chunk, chunk_index, last_commit_sha, domain_id, code_element_type, code_element_name)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-    ON CONFLICT (org, repo, file_path, chunk_index)
-    DO UPDATE SET
-      content_chunk = EXCLUDED.content_chunk,
-      last_commit_sha = EXCLUDED.last_commit_sha,
-      domain_id = EXCLUDED.domain_id,
-      code_element_type = EXCLUDED.code_element_type,
-      code_element_name = EXCLUDED.code_element_name,
-      updated_at = NOW()
-    RETURNING id
-  `, [
-        chunk.org,
-        chunk.repo,
-        chunk.file_path,
-        chunk.content_chunk,
-        chunk.chunk_index,
-        chunk.last_commit_sha,
-        chunk.domain_id || null,
-        chunk.code_element_type || null,
-        chunk.code_element_name || null,
-    ]);
-    return result.rows[0]?.id || 0;
-}
-async function deleteRepoKnowledgeForFile(org, repo, filePath) {
-    await pool.query('DELETE FROM repo_knowledge WHERE org = $1 AND repo = $2 AND file_path = $3', [org, repo, filePath]);
-}
 // --- Reviewer discovery (file + code-history based) ---
 async function findReviewersByFiles(filePaths, topK = 10) {
     // Extract unique parent directories for fuzzy matching
@@ -364,86 +319,101 @@ async function getDistinctRepos() {
     const result = await pool.query('SELECT DISTINCT org, repo FROM tracked_prs ORDER BY org, repo');
     return result.rows;
 }
-// ---------------------------------------------------------------------------
-// AI Review Feedback (manual 👍/👎 from Slack)
-// ---------------------------------------------------------------------------
-async function insertOrUpdateFeedback(prUrl, userId, rating, feedbackText) {
-    await pool.query(`
-    INSERT INTO ai_review_feedback (pr_url, user_id, rating, feedback_text, created_at)
-    VALUES ($1, $2, $3, $4, NOW())
-    ON CONFLICT (pr_url, user_id) DO UPDATE SET
-      rating = $3, feedback_text = COALESCE($4, ai_review_feedback.feedback_text), created_at = NOW()
-  `, [prUrl, userId, rating, feedbackText || null]);
+// ========== Channel Bootstrap Queue ==========
+/**
+ * Insert a batch of channel bootstrap member rows. Duplicates (same
+ * channel_id + slack_user_id) are silently skipped. Returns the number of
+ * freshly inserted rows.
+ */
+async function insertBootstrapMembers(rows) {
+    if (rows.length === 0) {
+        return 0;
+    }
+    const values = [];
+    const placeholders = [];
+    rows.forEach((row, idx) => {
+        const base = idx * 3;
+        placeholders.push(`($${base + 1}, $${base + 2}, $${base + 3})`);
+        values.push(row.channel_id, row.slack_user_id, row.email);
+    });
+    const query = `
+    INSERT INTO channel_bootstrap_members (channel_id, slack_user_id, email)
+    VALUES ${placeholders.join(', ')}
+    ON CONFLICT (channel_id, slack_user_id) DO NOTHING
+  `;
+    const result = await pool.query(query, values);
+    return result.rowCount ?? 0;
 }
-async function getRecentFeedback(limit = 5) {
-    const result = await pool.query(`
-    SELECT f.pr_url, f.rating, f.feedback_text, ar.review_json
-    FROM ai_review_feedback f
-    LEFT JOIN pr_analysis_results ar ON f.pr_url = ar.pr_url
-    WHERE f.feedback_text IS NOT NULL AND f.feedback_text != ''
-    ORDER BY f.created_at DESC
-    LIMIT $1
-  `, [limit]);
+/**
+ * Atomically claim up to `limit` pending bootstrap rows (and re-claim stale
+ * in-progress rows whose claim has expired). Uses SELECT ... FOR UPDATE SKIP
+ * LOCKED so multiple workers never double-claim the same row.
+ */
+async function claimPendingBootstrap(limit) {
+    const query = `
+    WITH claimed AS (
+      SELECT id FROM channel_bootstrap_members
+      WHERE (status = 'pending' AND attempts < 3)
+         OR (status = 'in_progress' AND claimed_at < NOW() - INTERVAL '15 minutes')
+      ORDER BY enqueued_at ASC
+      FOR UPDATE SKIP LOCKED
+      LIMIT $1
+    )
+    UPDATE channel_bootstrap_members c
+    SET status = 'in_progress', claimed_at = NOW()
+    FROM claimed WHERE c.id = claimed.id
+    RETURNING c.id, c.channel_id, c.slack_user_id, c.email;
+  `;
+    const result = await pool.query(query, [limit]);
     return result.rows;
 }
-// ---------------------------------------------------------------------------
-// Per-Comment AI Feedback (👍/👎 on individual suggestions)
-// ---------------------------------------------------------------------------
-async function insertOrUpdateCommentFeedback(prUrl, commentIndex, userId, rating, commentSnapshot) {
-    await pool.query(`
-    INSERT INTO ai_comment_feedback (pr_url, comment_index, user_id, rating, comment_snapshot, created_at)
-    VALUES ($1, $2, $3, $4, $5, NOW())
-    ON CONFLICT (pr_url, comment_index, user_id) DO UPDATE SET
-      rating = $4, created_at = NOW()
-  `, [prUrl, commentIndex, userId, rating, commentSnapshot ? JSON.stringify(commentSnapshot) : null]);
+/**
+ * Apply a batch of bootstrap resolution results inside a single transaction.
+ * - `resolved`: marks row resolved and upserts into user_mappings.
+ * - `unresolved`: marks row unresolved (permanent miss).
+ * - `pending`: increments attempts, clears the claim, and ages out to
+ *   'aged_out' once the attempt count reaches 3.
+ */
+async function updateBootstrapResults(results) {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        for (const result of results) {
+            if (result.status === 'resolved') {
+                await client.query(`UPDATE channel_bootstrap_members
+           SET status = 'resolved', resolved_at = NOW()
+           WHERE id = $1`, [result.id]);
+                await upsertUserMapping({
+                    ghe_login: result.ghe_login,
+                    slack_user_id: result.slack_user_id,
+                    display_name: result.display_name,
+                    email: result.email,
+                    discovered_via: 'bootstrap_search',
+                }, client);
+            }
+            else if (result.status === 'unresolved') {
+                await client.query(`UPDATE channel_bootstrap_members
+           SET status = 'unresolved', resolved_at = NOW()
+           WHERE id = $1`, [result.id]);
+            }
+            else {
+                // pending — increment attempts, clear claim, age out if >= 3.
+                await client.query(`UPDATE channel_bootstrap_members
+           SET attempts = attempts + 1,
+               last_error = $2,
+               claimed_at = NULL,
+               status = CASE WHEN attempts + 1 >= 3 THEN 'aged_out' ELSE 'pending' END
+           WHERE id = $1`, [result.id, result.last_error]);
+            }
+        }
+        await client.query('COMMIT');
+    }
+    catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+    }
+    finally {
+        client.release();
+    }
 }
-async function getCommentFeedbackStats(prUrl) {
-    const result = await pool.query(`
-    SELECT comment_index,
-           COUNT(*) FILTER (WHERE rating = 'helpful') AS helpful,
-           COUNT(*) FILTER (WHERE rating = 'not_helpful') AS not_helpful
-    FROM ai_comment_feedback
-    WHERE pr_url = $1
-    GROUP BY comment_index
-    ORDER BY comment_index
-  `, [prUrl]);
-    return result.rows;
-}
-// ---------------------------------------------------------------------------
-// AI Review Lessons (automated post-merge comparison)
-// ---------------------------------------------------------------------------
-async function insertReviewLessons(prUrl, aiReview, peerComments, lessons) {
-    await pool.query(`
-    INSERT INTO ai_review_lessons (pr_url, ai_review_json, peer_comments_json, lessons_json, created_at)
-    VALUES ($1, $2, $3, $4, NOW())
-    ON CONFLICT (pr_url) DO UPDATE SET
-      ai_review_json = $2, peer_comments_json = $3, lessons_json = $4, created_at = NOW()
-  `, [prUrl, JSON.stringify(aiReview), JSON.stringify(peerComments), JSON.stringify(lessons)]);
-}
-async function getRecentLessons(limit = 3) {
-    const result = await pool.query(`
-    SELECT pr_url, lessons_json, created_at
-    FROM ai_review_lessons
-    ORDER BY created_at DESC
-    LIMIT $1
-  `, [limit]);
-    return result.rows;
-}
-async function getPRsNeedingLessonExtraction() {
-    const result = await pool.query(`
-    SELECT ar.pr_url, ar.review_json, tp.org, tp.repo, tp.pr_number
-    FROM pr_analysis_results ar
-    JOIN tracked_prs tp ON ar.pr_url = tp.pr_url
-    LEFT JOIN ai_review_lessons al ON ar.pr_url = al.pr_url
-    WHERE tp.is_open = FALSE
-      AND al.id IS NULL
-    ORDER BY ar.created_at DESC
-    LIMIT 20
-  `);
-    return result.rows;
-}
-// Re-export code context provider functions
-var codeContextProvider_1 = require("../services/codeContextProvider");
-Object.defineProperty(exports, "fetchDomainScopedCodeExamples", { enumerable: true, get: function () { return codeContextProvider_1.fetchDomainScopedCodeExamples; } });
-Object.defineProperty(exports, "formatCodeExamplesForPrompt", { enumerable: true, get: function () { return codeContextProvider_1.formatCodeExamplesForPrompt; } });
 //# sourceMappingURL=client.js.map

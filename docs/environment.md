@@ -20,13 +20,13 @@ All `process.env.*` reads in the codebase. Required means the process hard-exits
 | `HEROKU_API_URL` | Base URL to the Heroku app (e.g., `https://pr-manager.herokuapp.com`). Every worker reads this. |
 | `WORKER_API_KEY` | Shared secret — must match Heroku's `WORKER_API_KEY` Heroku config var. Every worker sets this as `X-Worker-API-Key`. |
 | `GHE_TOKEN` **or** `GHE_TOKENS` | Same as Heroku; workers call GHE directly. |
-| For Claude: `ANTHROPIC_BEDROCK_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` (preferred) or `ANTHROPIC_API_KEY` (fallback). `claudeChat` throws at call-time if neither pair is set (`src/services/claudeClient.ts:184-187`). |
+| For Claude: `ANTHROPIC_BEDROCK_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` (preferred) or `ANTHROPIC_API_KEY` (fallback). `claudeChat` and `claudeToolLoop` throw at call-time if neither pair is set (`src/services/claudeClient.ts`). |
 
 ## Optional
 
 | Var | Default | Purpose |
 |---|---|---|
-| `CLAUDE_MODEL` | `claude-3-5-sonnet-20241022` (`src/services/claudeClient.ts:21`) | Claude model ID. Code default is the 3-5 Sonnet above; production Heroku config may override via this var. `.env.example` shows `claude-sonnet-4-20250514` as the reference production value. |
+| `CLAUDE_MODEL` | `claude-3-5-sonnet-20241022` (`src/services/claudeClient.ts:20`) | Claude model ID. Code default is the 3-5 Sonnet above; Heroku production overrides via this env var. `.env.example` documents `claude-sonnet-4-20250514`; the live Heroku app is currently running `claude-opus-4-6-v1`. |
 | `ANTHROPIC_BEDROCK_BASE_URL` | — | Internal Bedrock gateway URL. If set with `ANTHROPIC_AUTH_TOKEN`, Bedrock mode is used. |
 | `ANTHROPIC_AUTH_TOKEN` | — | Auth token for the Bedrock gateway. |
 | `ANTHROPIC_API_KEY` | — | Direct Anthropic API key. Used only if Bedrock vars are not both set. |
@@ -60,7 +60,7 @@ All `process.env.*` reads in the codebase. Required means the process hard-exits
 | `axios` | `claudeClient.ts` (Bedrock), `github.ts`, workers | HTTP client for GHE + Bedrock + Heroku API. |
 | `dotenv` | `src/index.ts:1` etc. | Loads `.env` at startup. |
 | `luxon` | `src/utils/timezone.ts` | Timezone-aware datetime. |
-| `minimatch` | `ontologyEngine.ts` | Glob matching for `domain_file_mappings`. |
+| `minimatch` | (legacy) | Previously used for glob matching. |
 | `pg` | `src/db/client.ts`, migrate.ts | Postgres. |
 
 Dev deps: `typescript` 5.7, `ts-node` 10.9, `@types/*` for `luxon`, `minimatch`, `node`, `pg`.

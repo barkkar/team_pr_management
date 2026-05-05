@@ -4,7 +4,7 @@ Orientation for Claude sessions working in this repo. Keep this file short — d
 
 ## What this repo is
 
-A Slack bot + background-worker system that watches team Slack channels for GitHub Enterprise PR links, tracks them in Postgres, sends review reminders during PST business hours, and posts AI-generated code reviews (via Claude) with suggested reviewers (via a deterministic rule ontology plus file-path/code-author scoring).
+A Slack bot + background-worker system that watches team Slack channels for GitHub Enterprise PR links, tracks them in Postgres, sends review reminders during PST business hours, and posts suggested reviewers using a Claude tool-use loop (Claude decides what PR data to fetch; the worker executes tool calls; Claude returns reviewer suggestions with reasons).
 
 See `README.md` for end-user setup. This file exists for Claude.
 
@@ -22,9 +22,10 @@ All `worker/*` calls to `${HEROKU_API_URL}/api/*` are authenticated with the `X-
 | Path | Role |
 |---|---|
 | `src/index.ts` | Boots Slack app (Socket Mode) + HTTP server on `PORT`. Defines every `/api/*` endpoint and the Slack message-block formatter. |
-| `src/app.ts` | Slack Bolt app: message handler, `/pr-monitor` slash command, feedback button/view handlers, app_home. |
+| `src/app.ts` | Slack Bolt app: message handler, `/pr-monitor` slash command, app_home. |
 | `scripts/checkReminders.ts` | Heroku Scheduler job: `pollChannelsForPRs` + `processPendingReminders`. |
-| `worker/localPRChecker.ts` | Main VPN worker loop (default / `--watch` every 5 min). Also spawns `prAnalyzer.js` as child process. |
+| `worker/localPRChecker.ts` | Main VPN worker loop (default / `--watch` every 5 min). Each tick: poll PR status, then call `runSuggestReviewersLoop()` from `prAnalyzer`. |
+| `worker/prAnalyzer.ts` | Exports `runSuggestReviewersLoop()` (called by `localPRChecker`) and a CLI entry for standalone runs. Invokes Claude via `claudeToolLoop` with four tools. |
 
 ## Documentation layout
 
@@ -35,25 +36,23 @@ Start with the doc that matches the task:
 - `docs/services.md` — per-module notes for `src/services/` and `src/utils/`.
 - `docs/api-endpoints.md` — every HTTP route exposed by `src/index.ts`, grouped by function.
 - `docs/workers.md` — what each `worker/*` and `scripts/*` file does, when to run it, how it's idempotent.
-- `docs/ontology.md` — hybrid deterministic-rules + LLM-classifier design (3-pass AI review).
 - `docs/environment.md` — every `process.env.*` read in the codebase, with required/optional + source location.
 
 ## House rules when editing
 
-- **Don't assume** a change is complete after TypeScript compiles: most runtime behavior requires either Socket Mode connectivity or the worker loop to exercise. Dry-run with `npm run test-review -- <pr-url>` when touching `worker/prAnalyzer.ts` / `worker/testReview.ts`.
+- **Don't assume** a change is complete after TypeScript compiles: most runtime behavior requires either Socket Mode connectivity or the worker loop to exercise. Dry-run with `npm run test-suggest-reviewers -- <pr-url>` when touching `worker/prAnalyzer.ts` / `worker/testSuggestReviewers.ts`.
 - **Migrations are immutable once numbered.** `src/db/migrate.ts` applies `src/db/migrations/*.sql` in filename order, tracks applied files in `schema_migrations`, and has special seeding logic for 001–006 when upgrading an existing DB (`src/db/migrate.ts:21-47`). Add new migrations with the next sequential prefix.
-- **Claude model** is whatever `CLAUDE_MODEL` env var says; the code default in `src/services/claudeClient.ts:21` is `claude-3-5-sonnet-20241022`, but production env sets a newer Sonnet. When updating model IDs, verify both the default string and the deployed config var.
+- **Claude model** is whatever `CLAUDE_MODEL` env var says; the code default in `src/services/claudeClient.ts:20` is `claude-3-5-sonnet-20241022`, but production env currently runs `claude-opus-4-6-v1`. When updating model IDs, verify both the default string and the deployed Heroku config var.
 - **Channel access control is enforced at module load** (`src/services/channelAccessControl.ts`). The app hard-exits if `ALLOWED_CHANNEL_IDS` is missing or empty. Non-allowlisted channels are silently dropped both in Socket Mode and the slash command.
 - **Worker API auth is required.** If `WORKER_API_KEY` is unset on Heroku, every `/api/*` endpoint returns 401 (`src/index.ts:47-50`). `/health` is public.
 - **Errors should funnel through `notifyError`** (`src/utils/errorNotifier.ts`). It throttles to 1 per minute per source+message and gracefully no-ops if `ERROR_SLACK_CHANNEL_ID` is unset.
+- **Claude has tool-use access via `claudeToolLoop`** (`src/services/claudeClient.ts`). The worker executes tools; Claude never makes HTTP calls itself.
 
 ## Common pitfalls
 
-- The `pr_url` column is the de-facto primary key across `tracked_prs`, `pr_analysis_results`, `ai_review_lessons`, `ai_review_feedback`. Joins assume string-equality on the full URL — never substring-match.
+- The `pr_url` column is the de-facto primary key across `tracked_prs` and related tables. Joins assume string-equality on the full URL — never substring-match.
 - The Heroku dyno cannot resolve GHE hostnames. If you add a feature that needs a live GHE call, route it through the worker.
-- `reviewLearner.ts` and `localPRChecker.ts` both perform lesson extraction. Don't add a third; check which one owns the path you're touching.
-- Severity ordering is critical → high → medium → low (`src/services/ontologyEngine.ts:375`). Slack block formatting in `src/index.ts:94-99` depends on that order.
-- Some DB migrations touch the same table (`tracked_prs` 001/003/005/006; `repo_knowledge` 008/017). When reading schema, consult `docs/database.md` for the merged view, not a single migration file.
+- Some DB migrations touch the same table (`tracked_prs` 001/003/005/006/020). When reading schema, consult `docs/database.md` for the merged view, not a single migration file.
 
 ## Tooling
 

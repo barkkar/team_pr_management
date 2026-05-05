@@ -33,4 +33,57 @@ export declare function checkClaudeHealth(): Promise<{
  * Get the configured Claude model name.
  */
 export declare function getClaudeModel(): string;
+export interface ClaudeTool {
+    name: string;
+    description: string;
+    input_schema: {
+        type: 'object';
+        properties: Record<string, any>;
+        required?: string[];
+    };
+}
+export interface ClaudeToolCall {
+    id: string;
+    name: string;
+    input: Record<string, any>;
+}
+export interface ClaudeToolResult {
+    tool_use_id: string;
+    content: string;
+    is_error?: boolean;
+}
+export interface ToolLoopOptions {
+    temperature?: number;
+    maxTokens?: number;
+    maxIterations?: number;
+    onToolCall: (call: ClaudeToolCall) => Promise<ClaudeToolResult>;
+}
+export interface ToolLoopResult {
+    finalText: string;
+    iterations: number;
+    toolCalls: {
+        name: string;
+        input: any;
+    }[];
+}
+/**
+ * Run a Claude conversation with tool use until the model returns end_turn or
+ * we hit maxIterations. The caller provides tool definitions and an executor.
+ *
+ * Conversation shape:
+ *   1. user: <userPrompt>
+ *   2. assistant: [text] + [tool_use]  ← Claude decides to call a tool
+ *   3. user: [tool_result]              ← we run the tool and send back the result
+ *   4. repeat 2–3 until stop_reason === 'end_turn'
+ */
+export declare function claudeToolLoop(systemPrompt: string | undefined, userPrompt: string, tools: ClaudeTool[], options: ToolLoopOptions): Promise<ToolLoopResult>;
+/**
+ * Extract a JSON object from a Claude text response. Handles:
+ *   - Plain JSON ("{...}")
+ *   - Markdown-fenced JSON ("```json\n{...}\n```" or "```\n{...}\n```")
+ *   - JSON with leading/trailing prose
+ *
+ * Returns the parsed object on success, or null if no valid JSON is found.
+ */
+export declare function extractJsonFromClaudeText<T = any>(text: string): T | null;
 //# sourceMappingURL=claudeClient.d.ts.map

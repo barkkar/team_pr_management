@@ -15,6 +15,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getTokenForHost = getTokenForHost;
 exports.requireTokenForHost = requireTokenForHost;
+exports.listConfiguredHosts = listConfiguredHosts;
 let tokenMap = null;
 function loadTokenMap() {
     if (tokenMap)
@@ -59,5 +60,12 @@ function requireTokenForHost(hostname) {
             `Set GHE_TOKENS (JSON map) or GHE_TOKEN (single fallback).`);
     }
     return token;
+}
+/**
+ * Returns configured GHE hostnames in insertion order.
+ * Insertion order = search priority (see design doc §5.3).
+ */
+function listConfiguredHosts() {
+    return [...loadTokenMap().keys()];
 }
 //# sourceMappingURL=gheTokenResolver.js.map
