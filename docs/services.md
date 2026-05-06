@@ -77,6 +77,8 @@ Runs inside `scripts/checkReminders.ts`. Gated by `isWithinBusinessHours()`. For
 3. If reviewed → do nothing (skip; next check will see `has_reviews=TRUE`).
 4. Otherwise, posts a reminder message to the original `channel_id` + `message_ts` (as a thread reply with PR link + `formatTimeAgo`), then `scheduleNextReminder(id, getNextReminderEligibleTime())`.
 
+Rows with `reminders_cancelled = TRUE` are already excluded upstream by `getPendingReminders` (migration 022) — they never reach this loop. Cancellation is set via the `cancel_reminder` Slack message shortcut handled in `src/app.ts`; scope is `(channel_id, message_ts)`, so every PR link in a single Slack post is silenced together. Not reversible via the bot.
+
 - `processPendingReminders(app: App): Promise<void>`
 
 

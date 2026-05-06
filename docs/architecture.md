@@ -6,6 +6,8 @@
                        ┌─────────────────────────┐
                        │  Slack workspace        │
                        │  • /pr-monitor command  │
+                       │  • cancel_reminder      │
+                       │    message shortcut     │
                        │  • PR-link messages     │
                        └──────────┬──────────────┘
                      Socket Mode  │  HTTP (slash/actions)
@@ -62,7 +64,7 @@ GitHub Enterprise (`*.soma.salesforce.com`) is only reachable inside the corpora
 `scripts/checkReminders.ts` runs two steps:
 
 1. **Poll fallback** — `pollChannelsForPRs` walks channels from `monitored_channels` table + `POLL_CHANNEL_IDS` env var (dedup, allowlist-filtered), fetches new messages since last seen ts, and tracks PRs missed by Socket Mode.
-2. **Reminders** — `processPendingReminders` posts reminders for rows in `getPendingReminders()` where `eligible_reminder_at <= NOW()` AND the worker-reported status is `is_open = TRUE, has_reviews = FALSE` (and the status was updated within the last 10 min — otherwise it waits for fresh worker data; see `src/services/reminder.ts:38-44`). Business-hours gate applies (`isWithinBusinessHours()`). Recurring schedule: if still unreviewed after a reminder, `scheduleNextReminder` sets `eligible_reminder_at` to the next 9-AM-PST business point and increments `reminder_count`.
+2. **Reminders** — `processPendingReminders` posts reminders for rows in `getPendingReminders()` where `eligible_reminder_at <= NOW()` AND the worker-reported status is `is_open = TRUE, has_reviews = FALSE` (and the status was updated within the last 10 min — otherwise it waits for fresh worker data; see `src/services/reminder.ts:38-44`). Business-hours gate applies (`isWithinBusinessHours()`). Rows flagged `reminders_cancelled = TRUE` (by the `cancel_reminder` shortcut; §5) are excluded at the query level. Recurring schedule: if still unreviewed after a reminder, `scheduleNextReminder` sets `eligible_reminder_at` to the next 9-AM-PST business point and increments `reminder_count`.
 
 ### 3. VPN worker loop
 
@@ -95,6 +97,19 @@ For each PR, the worker invokes Claude via `claudeToolLoop` (defined at `src/ser
 
 Claude decides what to fetch; the worker executes each tool call against GHE + Heroku and returns results. After up to 6 rounds (`TOOL_CALL_CAP = 6` in `worker/prAnalyzer.ts:38`; matches `claudeToolLoop`'s default `maxIterations`), Claude returns a JSON object with up to 5 suggested reviewers. The JSON is parsed with `extractJsonFromClaudeText` (handles markdown fences and preamble — common Claude Opus 4.x behavior); on parse failure, the worker POSTs `suggestions=[]` to prevent infinite retries. The worker POSTs the list to `/api/pr-reviewers`; the Heroku app resolves Slack IDs via `user_mappings`, sets `tracked_prs.suggestions_sent=TRUE`, and posts a threaded Slack reply when `channel_id !== 'manual'` and `message_ts !== '0'` (CLI one-shots use those sentinel values and silently skip the Slack post).
 
+
+### 5. Cancel-reminder shortcut
+
+Team members can silence reminders for a specific PR-link Slack post by invoking the `cancel_reminder` message shortcut (registered in the Slack app config, handled in `src/app.ts` via `app.shortcut({ callback_id: 'cancel_reminder', type: 'message_action' })`).
+
+Flow:
+1. `ack()` immediately.
+2. `isChannelAllowed(channelId)` — same allowlist gate as `app.message` and `/pr-monitor add`. Non-allowlisted channels get an ephemeral rejection.
+3. `containsPRLink(message.text)` — if the message has no GHE PR link, ephemeral "nothing to cancel".
+4. `cancelRemindersForMessage(channelId, messageTs, userId)` (`src/db/client.ts`) — UPDATEs every `tracked_prs` row matching `(channel_id, message_ts)`, setting `reminders_cancelled=TRUE` and `COALESCE`-preserving the first canceller's `cancelled_by` / `cancelled_at`. Returns the affected `pr_url`s.
+5. Ephemeral confirmation to the invoking user (DM fallback if the bot isn't in the channel). Not reversible via the bot.
+
+Scope is per-message — a single Slack post that linked N PRs silences all N rows. Further reminders are skipped because `getPendingReminders` filters them out.
 
 ## Critical timing / business rules
 

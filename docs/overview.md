@@ -10,6 +10,7 @@ A Slack bot that watches team channels for GitHub Enterprise PR links, chases re
 - **Reviewer suggestions (Claude tool-use)** — for each new PR, Claude picks up to 5 reviewers from team history using four tools: `fetch_pr_files`, `fetch_pr_diff`, `get_past_reviewers`, `get_past_authors`. Posted as a threaded reply with @-mentions.
 - **Proactive user mapping** — on `/pr-monitor add` and when members join, the bot enqueues channel members and the worker resolves their Slack email → GHE login so `@-mentions` work from day one.
 - **Slash commands** — `/pr-monitor add | remove | list | pending | stats | status | help`.
+- **Cancel reminders shortcut** — message shortcut `cancel_reminder` (on any PR-link post) silences all further review reminders for that message. Scoped per-message (every PR link in the post), not reversible, confirmation is ephemeral.
 - **Channel allowlist** — opt-in list of Slack channel IDs the bot is allowed to read (required for `channels:history` / `groups:history`).
 - **Error funnel** — runtime failures posted to a configured Slack error channel (throttled 1/min per source+message).
 
@@ -54,6 +55,7 @@ For a background service, see `README.md` §5 (macOS launchd plist).
 - After 2h with no review (inside business hours): reminder thread reply.
 - `/pr-monitor status` — shows monitored state, allowlist, worker-reported stats.
 - `/pr-monitor pending` — lists PRs still awaiting review with wait times.
+- To stop reminders on a specific PR post: open the message's "More actions" menu → **Cancel reminder**. Confirmation is ephemeral.
 
 ## Requirements at a glance
 

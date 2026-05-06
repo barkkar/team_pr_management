@@ -12,7 +12,7 @@ To run: `npm run migrate` locally, or rely on the Heroku `release` process (`Pro
 
 ## Table catalog (merged view)
 
-### `tracked_prs` — core PR state (001, 003, 005, 006, 020)
+### `tracked_prs` — core PR state (001, 003, 005, 006, 020, 022)
 
 | Column | Type | Notes |
 |---|---|---|
@@ -31,6 +31,9 @@ To run: `npm run migrate` locally, or rely on the Heroku `release` process (`Pro
 | `status_checked_at` | TIMESTAMP | Worker-reported; reminders require freshness ≤10 min |
 | `reminder_count` | INT DEFAULT 0 | |
 | `suggestions_sent` | BOOL DEFAULT FALSE | Added by migration 020; marks if reviewer suggestions posted |
+| `reminders_cancelled` | BOOL DEFAULT FALSE | Added by migration 022; set by the `cancel_reminder` message shortcut — excluded from `getPendingReminders` |
+| `cancelled_by` | TEXT | Slack user ID of the first person to invoke the shortcut (preserved via `COALESCE`) |
+| `cancelled_at` | TIMESTAMP | When reminders were first silenced (preserved via `COALESCE`) |
 | `created_at` | TIMESTAMP DEFAULT NOW() | |
 
 Indexes (all partial, where noted):
@@ -123,8 +126,9 @@ See `src/db/client.ts` for signatures; this is a map of what touches which table
 
 ### PR tracking
 - `insertTrackedPR(pr)` — `INSERT tracked_prs ON CONFLICT (pr_url) DO NOTHING RETURNING *`. (`client.ts:44`)
-- `getPendingReminders()` — `reminder_sent=FALSE AND is_open≠FALSE AND eligible_reminder_at ≤ NOW()`. (`client.ts:66`)
+- `getPendingReminders()` — `reminder_sent=FALSE AND is_open≠FALSE AND reminders_cancelled≠TRUE AND eligible_reminder_at ≤ NOW()`. (`client.ts:66`)
 - `markReminderSent(id)` / `scheduleNextReminder(id, nextAt?)` — the latter keeps `reminder_sent=FALSE` and bumps `reminder_count`. (`client.ts:78, 87`)
+- `cancelRemindersForMessage(channelId, messageTs, cancelledBy)` — UPDATEs all `tracked_prs` rows matching `(channel_id, message_ts)`, setting `reminders_cancelled=TRUE` and `COALESCE`-preserving `cancelled_by` / `cancelled_at`. Returns the list of affected `pr_url`s. Used by the `cancel_reminder` message shortcut in `src/app.ts`.
 - `getOpenUnreviewedPRs()` — `is_open IN (TRUE, NULL)` AND `has_reviews IN (FALSE, NULL)`, ordered by `posted_at ASC`. (`client.ts:105`)
 - `markPRClosed(id)` / `getTrackedPRByUrl(prUrl)` — (`client.ts:116, 120`).
 - `getPRsNeedingStatusCheck()` / `updatePRStatus(prUrl, isOpen, hasReviews)` — status-check picks PRs never checked or stale > 5 min, `LIMIT 50`. (`client.ts:133, 148`)
@@ -154,10 +158,16 @@ pgvector is no longer used in application code; see migration 018.
 ```sql
 -- What's pending and why?
 SELECT pr_url, posted_at, eligible_reminder_at, has_reviews, is_open,
-       status_checked_at, reminder_count
+       status_checked_at, reminder_count, reminders_cancelled
 FROM tracked_prs
 WHERE reminder_sent = FALSE
 ORDER BY eligible_reminder_at;
+
+-- Which PRs have been silenced via the cancel_reminder shortcut?
+SELECT pr_url, channel_id, message_ts, cancelled_by, cancelled_at
+FROM tracked_prs
+WHERE reminders_cancelled = TRUE
+ORDER BY cancelled_at DESC;
 
 -- Who gets suggested reviewer for file X?
 SELECT reviewer_login, COUNT(*)
