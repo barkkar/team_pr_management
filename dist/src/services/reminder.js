@@ -55,12 +55,16 @@ async function processReminder(app, pr) {
     console.log(`  Sending reminder for PR ${pr.pr_url}`);
     const timeAgo = (0, timezone_1.formatTimeAgo)(pr.posted_at);
     const message = buildReminderMessage(pr, timeAgo, false);
-    await app.client.chat.postMessage({
+    const base = {
         channel: pr.channel_id,
         text: message.text,
         blocks: message.blocks,
         unfurl_links: false,
-    });
+    };
+    const threadable = pr.message_ts && pr.message_ts !== '0';
+    await app.client.chat.postMessage(threadable
+        ? { ...base, thread_ts: pr.message_ts, reply_broadcast: true }
+        : base);
     const nextAt = (0, timezone_1.getNextReminderEligibleTime)();
     await (0, client_1.scheduleNextReminder)(pr.id, nextAt);
     console.log(`  Reminder sent for PR ${pr.pr_url}, next reminder at ${nextAt.toISOString()}`);
