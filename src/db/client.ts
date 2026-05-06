@@ -68,11 +68,34 @@ export async function getPendingReminders(): Promise<TrackedPR[]> {
     SELECT * FROM tracked_prs
     WHERE reminder_sent = FALSE
       AND (is_open = TRUE OR is_open IS NULL)
+      AND (reminders_cancelled = FALSE OR reminders_cancelled IS NULL)
       AND eligible_reminder_at <= NOW()
     ORDER BY eligible_reminder_at ASC
   `;
   const result = await pool.query(query);
   return result.rows;
+}
+
+/**
+ * Silence reminders for every PR tracked against a specific Slack message.
+ * Triggered by the `cancel_reminder` message shortcut. COALESCE preserves
+ * the original canceller's identity on repeat invocations.
+ */
+export async function cancelRemindersForMessage(
+  channelId: string,
+  messageTs: string,
+  cancelledBy: string,
+): Promise<string[]> {
+  const result = await pool.query(
+    `UPDATE tracked_prs
+       SET reminders_cancelled = TRUE,
+           cancelled_by = COALESCE(cancelled_by, $3),
+           cancelled_at = COALESCE(cancelled_at, NOW())
+     WHERE channel_id = $1 AND message_ts = $2
+     RETURNING pr_url`,
+    [channelId, messageTs, cancelledBy],
+  );
+  return result.rows.map(r => r.pr_url);
 }
 
 export async function markReminderSent(id: number): Promise<void> {
