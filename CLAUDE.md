@@ -22,7 +22,7 @@ All `worker/*` calls to `${HEROKU_API_URL}/api/*` are authenticated with the `X-
 | Path | Role |
 |---|---|
 | `src/index.ts` | Boots Slack app (Socket Mode) + HTTP server on `PORT`. Defines every `/api/*` endpoint and the Slack message-block formatter. |
-| `src/app.ts` | Slack Bolt app: message handler, `/pr-monitor` slash command, app_home. |
+| `src/app.ts` | Slack Bolt app: message handler, `/pr-monitor` slash command, `cancel_reminder` message shortcut, app_home. |
 | `scripts/checkReminders.ts` | Heroku Scheduler job: `pollChannelsForPRs` + `processPendingReminders`. |
 | `worker/localPRChecker.ts` | Main VPN worker loop (default / `--watch` every 5 min). Each tick: poll PR status, drain bootstrap queue, then call `runSuggestReviewersLoop()` from `prAnalyzer`. |
 | `worker/prAnalyzer.ts` | Exports `runSuggestReviewersLoop()` (called by `localPRChecker`) and a CLI entry for standalone runs. Invokes Claude via `claudeToolLoop` with four tools. |
@@ -56,7 +56,8 @@ Start with the doc that matches the task:
 
 - The `pr_url` column is the de-facto primary key across `tracked_prs` and related tables. Joins assume string-equality on the full URL — never substring-match.
 - The Heroku dyno cannot resolve GHE hostnames. If you add a feature that needs a live GHE call, route it through the worker.
-- Some DB migrations touch the same table (`tracked_prs` 001/003/005/006/020). When reading schema, consult `docs/database.md` for the merged view, not a single migration file.
+- Some DB migrations touch the same table (`tracked_prs` 001/003/005/006/020/022). When reading schema, consult `docs/database.md` for the merged view, not a single migration file.
+- `getPendingReminders` in `src/db/client.ts` now also filters out rows where `reminders_cancelled = TRUE` (migration 022). A team member can silence reminders for a Slack PR-link post via the `cancel_reminder` message shortcut — cancellation is scoped to `(channel_id, message_ts)` and affects every PR link in that message. Not reversible via the bot.
 - The channel bootstrap queue (`channel_bootstrap_members`, migration 021) spans `src/` and `worker/`: the Heroku side enqueues members (`src/services/channelBootstrap.ts`, `src/app.ts` `/pr-monitor add` handler + `member_joined_channel` event), and the VPN worker drains them via `/api/bootstrap-claim` + `/api/bootstrap-complete`.
 
 ## Tooling
