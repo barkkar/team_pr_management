@@ -34,6 +34,12 @@ export interface MonitoredChannel {
 }
 export declare function insertTrackedPR(pr: Omit<TrackedPR, 'id' | 'reminder_sent' | 'created_at'>): Promise<TrackedPR | null>;
 export declare function getPendingReminders(): Promise<TrackedPR[]>;
+/**
+ * Silence reminders for every PR tracked against a specific Slack message.
+ * Triggered by the `cancel_reminder` message shortcut. COALESCE preserves
+ * the original canceller's identity on repeat invocations.
+ */
+export declare function cancelRemindersForMessage(channelId: string, messageTs: string, cancelledBy: string): Promise<string[]>;
 export declare function markReminderSent(id: number): Promise<void>;
 /**
  * Schedule the next reminder (for recurring reminders).

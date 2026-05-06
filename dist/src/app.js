@@ -301,6 +301,65 @@ function createApp() {
             });
         }
     });
+    // Message shortcut: silence reminders for a PR-link message.
+    // Registered in Slack app config with callback_id `cancel_reminder`.
+    app.shortcut({ callback_id: 'cancel_reminder', type: 'message_action' }, async ({ shortcut, ack, client, logger }) => {
+        await ack();
+        try {
+            const s = shortcut;
+            const channelId = s.channel?.id;
+            const messageTs = s.message?.ts;
+            const messageText = s.message?.text || '';
+            const userId = s.user?.id;
+            if (!channelId || !messageTs) {
+                logger.warn('[cancel_reminder] missing channel or message ts on payload');
+                return;
+            }
+            const postEphemeral = async (text) => {
+                try {
+                    await client.chat.postEphemeral({ channel: channelId, user: userId, text });
+                }
+                catch (err) {
+                    // postEphemeral fails if the bot isn't in the channel; fall back to DM.
+                    if (err?.data?.error === 'channel_not_found' || err?.data?.error === 'not_in_channel') {
+                        try {
+                            const im = await client.conversations.open({ users: userId });
+                            const dmId = im.channel?.id;
+                            if (dmId)
+                                await client.chat.postMessage({ channel: dmId, text });
+                        }
+                        catch (dmErr) {
+                            logger.error('[cancel_reminder] ephemeral + DM fallback failed', dmErr);
+                        }
+                    }
+                    else {
+                        throw err;
+                    }
+                }
+            };
+            if (!(0, channelAccessControl_1.isChannelAllowed)(channelId)) {
+                console.warn(`[cancel_reminder] BLOCKED: shortcut used in non-allowlisted channel ${channelId} by ${userId}`);
+                await postEphemeral('❌ This channel is not in the approved allowlist, so the bot cannot act on it.');
+                return;
+            }
+            if (!(0, prParser_1.containsPRLink)(messageText)) {
+                await postEphemeral("No GitHub Enterprise PR link found in that message — nothing to cancel.");
+                return;
+            }
+            const cancelled = await (0, client_1.cancelRemindersForMessage)(channelId, messageTs, userId);
+            if (cancelled.length === 0) {
+                await postEphemeral("No tracked PR found for that message. If it was posted before the bot started monitoring this channel, it isn't in the reminder queue.");
+                return;
+            }
+            const urlList = cancelled.map(u => `• ${u}`).join('\n');
+            const noun = cancelled.length === 1 ? 'PR' : 'PRs';
+            await postEphemeral(`🔕 Reminders silenced for ${cancelled.length} ${noun}:\n${urlList}`);
+        }
+        catch (err) {
+            console.error('[cancel_reminder] handler error:', err);
+            (0, errorNotifier_1.notifyError)('CancelReminder', `cancel_reminder shortcut failed: ${err?.message || err}`);
+        }
+    });
     // Handle app_home_opened event (optional - for app home tab)
     app.event('app_home_opened', async ({ event, client }) => {
         try {

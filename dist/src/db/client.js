@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.pool = void 0;
 exports.insertTrackedPR = insertTrackedPR;
 exports.getPendingReminders = getPendingReminders;
+exports.cancelRemindersForMessage = cancelRemindersForMessage;
 exports.markReminderSent = markReminderSent;
 exports.scheduleNextReminder = scheduleNextReminder;
 exports.getOpenUnreviewedPRs = getOpenUnreviewedPRs;
@@ -60,11 +61,26 @@ async function getPendingReminders() {
     SELECT * FROM tracked_prs
     WHERE reminder_sent = FALSE
       AND (is_open = TRUE OR is_open IS NULL)
+      AND (reminders_cancelled = FALSE OR reminders_cancelled IS NULL)
       AND eligible_reminder_at <= NOW()
     ORDER BY eligible_reminder_at ASC
   `;
     const result = await pool.query(query);
     return result.rows;
+}
+/**
+ * Silence reminders for every PR tracked against a specific Slack message.
+ * Triggered by the `cancel_reminder` message shortcut. COALESCE preserves
+ * the original canceller's identity on repeat invocations.
+ */
+async function cancelRemindersForMessage(channelId, messageTs, cancelledBy) {
+    const result = await pool.query(`UPDATE tracked_prs
+       SET reminders_cancelled = TRUE,
+           cancelled_by = COALESCE(cancelled_by, $3),
+           cancelled_at = COALESCE(cancelled_at, NOW())
+     WHERE channel_id = $1 AND message_ts = $2
+     RETURNING pr_url`, [channelId, messageTs, cancelledBy]);
+    return result.rows.map(r => r.pr_url);
 }
 async function markReminderSent(id) {
     await pool.query('UPDATE tracked_prs SET reminder_sent = TRUE WHERE id = $1', [id]);
