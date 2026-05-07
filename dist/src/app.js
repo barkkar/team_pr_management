@@ -9,6 +9,47 @@ const client_1 = require("./db/client");
 const errorNotifier_1 = require("./utils/errorNotifier");
 const channelAccessControl_1 = require("./services/channelAccessControl");
 const channelBootstrap_1 = require("./services/channelBootstrap");
+const timezone_1 = require("./utils/timezone");
+const DEFAULT_INTERVAL_HOURS = 2;
+const DEFAULT_TIMEZONE = 'America/Los_Angeles';
+/**
+ * Parse `key=value` flags from `/pr-monitor add` arguments. Returns null on
+ * unknown flag, missing value, or any non-flag positional arg — caller must
+ * surface an ephemeral error and abort the add.
+ */
+function parseAddFlags(args) {
+    const out = {};
+    for (const arg of args) {
+        if (!arg)
+            continue;
+        const eq = arg.indexOf('=');
+        if (eq === -1) {
+            return { error: `Unknown argument: \`${arg}\`. Expected \`interval=<1-24>\` or \`timezone=<IANA>\`.` };
+        }
+        const key = arg.slice(0, eq).toLowerCase();
+        const value = arg.slice(eq + 1);
+        if (!value) {
+            return { error: `Missing value for \`${key}\`.` };
+        }
+        if (key === 'interval') {
+            const n = Number(value);
+            if (!Number.isInteger(n) || n < 1 || n > 24) {
+                return { error: `\`interval\` must be an integer between 1 and 24 (got \`${value}\`).` };
+            }
+            out.intervalHours = n;
+        }
+        else if (key === 'timezone' || key === 'tz') {
+            if (!(0, timezone_1.isValidTimezone)(value)) {
+                return { error: `\`${value}\` is not a valid IANA timezone. Examples: \`America/New_York\`, \`Asia/Kolkata\`, \`Europe/Berlin\`.` };
+            }
+            out.timezone = value;
+        }
+        else {
+            return { error: `Unknown flag: \`${key}\`. Expected \`interval=\` or \`timezone=\`.` };
+        }
+    }
+    return out;
+}
 function formatWaitTime(postedAt) {
     const waitMs = Date.now() - new Date(postedAt).getTime();
     const days = Math.floor(waitMs / (1000 * 60 * 60 * 24));
@@ -120,6 +161,15 @@ function createApp() {
                         });
                         break;
                     }
+                    const flagArgs = args.slice(1).filter(Boolean);
+                    const parsed = parseAddFlags(flagArgs);
+                    if (parsed.error) {
+                        await respond({
+                            response_type: 'ephemeral',
+                            text: `❌ ${parsed.error} Channel was not added.`,
+                        });
+                        break;
+                    }
                     // Get channel info for the name
                     let channelName = null;
                     try {
@@ -129,11 +179,16 @@ function createApp() {
                     catch (e) {
                         // Ignore - channel name is optional
                     }
-                    const added = await (0, client_1.addMonitoredChannel)(channelId, channelName, userId);
+                    await (0, client_1.addMonitoredChannel)(channelId, channelName, userId, parsed.intervalHours, parsed.timezone);
+                    const effectiveInterval = parsed.intervalHours ?? DEFAULT_INTERVAL_HOURS;
+                    const effectiveTz = parsed.timezone ?? DEFAULT_TIMEZONE;
+                    const configSuffix = parsed.intervalHours !== undefined || parsed.timezone !== undefined
+                        ? ` (reminder cadence: ${effectiveInterval}h, timezone: ${effectiveTz})`
+                        : '';
                     // Unified reply — no branching on `added`. See spec §5.1 step 5.
                     await respond({
                         response_type: 'in_channel',
-                        text: '✅ This channel is now being monitored for PR review requests. ' +
+                        text: '✅ This channel is now being monitored for PR review requests' + configSuffix + '. ' +
                             "Queuing members for reviewer mapping — I'll follow up here with the count.",
                     });
                     // setImmediate lets the slash-command ack return <1s. Bolt's `respond`
@@ -198,11 +253,119 @@ function createApp() {
                         });
                     }
                     else {
-                        const channelList = channels.map(c => `• <#${c.channel_id}>${c.channel_name ? ` (${c.channel_name})` : ''}`).join('\n');
+                        const channelList = channels.map(c => `• <#${c.channel_id}>${c.channel_name ? ` (${c.channel_name})` : ''} — ${c.reminder_interval_hours}h, ${c.timezone}`).join('\n');
                         await respond({
                             text: `*Monitored Channels (${channels.length}):*\n${channelList}`,
                         });
                     }
+                    break;
+                }
+                case 'interval': {
+                    if (args.length > 2) {
+                        await respond({
+                            response_type: 'ephemeral',
+                            text: `❌ Too many arguments. Usage: \`/pr-monitor interval\` (show) or \`/pr-monitor interval <1-24>\` (set).`,
+                        });
+                        break;
+                    }
+                    const monitored = await (0, client_1.isChannelMonitored)(channelId);
+                    const value = args[1];
+                    if (!value) {
+                        if (!monitored) {
+                            await respond({
+                                response_type: 'ephemeral',
+                                text: `This channel is not being monitored. Run \`/pr-monitor add\` first (defaults: ${DEFAULT_INTERVAL_HOURS}h, ${DEFAULT_TIMEZONE}).`,
+                            });
+                            break;
+                        }
+                        const cfg = await (0, client_1.getChannelReminderConfig)(channelId);
+                        await respond({
+                            response_type: 'ephemeral',
+                            text: `Reminder cadence for this channel: *${cfg.intervalHours}h*. Set with \`/pr-monitor interval <1-24>\`.`,
+                        });
+                        break;
+                    }
+                    if (!monitored) {
+                        await respond({
+                            response_type: 'ephemeral',
+                            text: `This channel is not being monitored. Run \`/pr-monitor add\` first (then re-run \`/pr-monitor interval ${value}\`).`,
+                        });
+                        break;
+                    }
+                    const n = Number(value);
+                    if (!Number.isInteger(n) || n < 1 || n > 24) {
+                        await respond({
+                            response_type: 'ephemeral',
+                            text: `❌ \`interval\` must be an integer between 1 and 24 hours (got \`${value}\`).`,
+                        });
+                        break;
+                    }
+                    const updated = await (0, client_1.setChannelReminderInterval)(channelId, n);
+                    if (!updated) {
+                        await respond({
+                            response_type: 'ephemeral',
+                            text: `Could not update interval — channel may not be monitored. Run \`/pr-monitor add\` first.`,
+                        });
+                        break;
+                    }
+                    await respond({
+                        response_type: 'ephemeral',
+                        text: `✅ Reminder cadence set to *${n}h* for this channel. Applies to the next reminder for each tracked PR.`,
+                    });
+                    break;
+                }
+                case 'timezone':
+                case 'tz': {
+                    if (args.length > 2) {
+                        await respond({
+                            response_type: 'ephemeral',
+                            text: `❌ Too many arguments. Usage: \`/pr-monitor timezone\` (show) or \`/pr-monitor timezone <IANA>\` (set, e.g. \`America/New_York\`).`,
+                        });
+                        break;
+                    }
+                    const monitored = await (0, client_1.isChannelMonitored)(channelId);
+                    const value = args[1];
+                    if (!value) {
+                        if (!monitored) {
+                            await respond({
+                                response_type: 'ephemeral',
+                                text: `This channel is not being monitored. Run \`/pr-monitor add\` first (defaults: ${DEFAULT_INTERVAL_HOURS}h, ${DEFAULT_TIMEZONE}).`,
+                            });
+                            break;
+                        }
+                        const cfg = await (0, client_1.getChannelReminderConfig)(channelId);
+                        await respond({
+                            response_type: 'ephemeral',
+                            text: `Timezone for this channel: *${cfg.timezone}*. Set with \`/pr-monitor timezone <IANA>\` (e.g. \`America/New_York\`, \`Asia/Kolkata\`, \`Europe/Berlin\`).`,
+                        });
+                        break;
+                    }
+                    if (!monitored) {
+                        await respond({
+                            response_type: 'ephemeral',
+                            text: `This channel is not being monitored. Run \`/pr-monitor add\` first (then re-run \`/pr-monitor timezone ${value}\`).`,
+                        });
+                        break;
+                    }
+                    if (!(0, timezone_1.isValidTimezone)(value)) {
+                        await respond({
+                            response_type: 'ephemeral',
+                            text: `❌ \`${value}\` is not a valid IANA timezone. Examples: \`America/New_York\`, \`Asia/Kolkata\`, \`Europe/Berlin\`.`,
+                        });
+                        break;
+                    }
+                    const updated = await (0, client_1.setChannelTimezone)(channelId, value);
+                    if (!updated) {
+                        await respond({
+                            response_type: 'ephemeral',
+                            text: `Could not update timezone — channel may not be monitored. Run \`/pr-monitor add\` first.`,
+                        });
+                        break;
+                    }
+                    await respond({
+                        response_type: 'ephemeral',
+                        text: `✅ Timezone set to *${value}* for this channel. Applies to the next reminder for each tracked PR.`,
+                    });
                     break;
                 }
                 case 'pending': {
@@ -281,9 +444,13 @@ function createApp() {
                 default: {
                     await respond({
                         text: `*PR Monitor Commands:*\n\n` +
-                            `• \`/pr-monitor add\` - Start monitoring this channel for PRs\n` +
+                            `• \`/pr-monitor add [interval=<1-24>] [timezone=<IANA>]\` - Start monitoring this channel for PRs. ` +
+                            `Optional flags configure reminder cadence (default ${DEFAULT_INTERVAL_HOURS}h) and timezone (default ${DEFAULT_TIMEZONE}). ` +
+                            `Example: \`/pr-monitor add interval=4 timezone=America/New_York\`\n` +
                             `• \`/pr-monitor remove\` - Stop monitoring this channel\n` +
-                            `• \`/pr-monitor list\` - Show all monitored channels\n` +
+                            `• \`/pr-monitor list\` - Show all monitored channels with their cadence and timezone\n` +
+                            `• \`/pr-monitor interval [<1-24>]\` - Show or set this channel's reminder cadence (in hours)\n` +
+                            `• \`/pr-monitor timezone [<IANA>]\` - Show or set this channel's timezone (e.g. \`America/New_York\`, \`Asia/Kolkata\`, \`Europe/Berlin\`)\n` +
                             `• \`/pr-monitor pending\` - Show PRs awaiting review with wait times\n` +
                             `• \`/pr-monitor stats\` - Show review statistics and reminder counts\n` +
                             `• \`/pr-monitor status\` - Show current status\n` +
@@ -389,7 +556,7 @@ function createApp() {
                             type: 'section',
                             text: {
                                 type: 'mrkdwn',
-                                text: '*How it works:*\n• Add me to channels where your team posts PR links\n• I\'ll track PRs from `git.soma.salesforce.com`\n• After 2 hours without reviews, I\'ll post a reminder\n• PRs posted after 4 PM PST wait until 10 AM next day',
+                                text: '*How it works:*\n• Add me to channels where your team posts PR links\n• I\'ll track PRs from `git.soma.salesforce.com`\n• After your team\'s configured interval (default 2 hours) without reviews, I\'ll post a reminder\n• Reminders only fire 9 AM – 5 PM Mon–Fri in your team\'s configured timezone (default `America/Los_Angeles`)\n• Configure per channel with `/pr-monitor interval <1-24>` and `/pr-monitor timezone <IANA>`',
                             },
                         },
                     ],

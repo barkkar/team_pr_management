@@ -1,4 +1,4 @@
-import { insertTrackedPR, TrackedPR } from '../db/client';
+import { insertTrackedPR, getChannelReminderConfig } from '../db/client';
 import { parsePRsFromMessage, ParsedPR } from '../utils/prParser';
 import { getEligibleReminderTime } from '../utils/timezone';
 
@@ -21,9 +21,15 @@ export async function trackPRsFromMessage(
     tracked: [],
     skipped: [],
   };
-  
+
+  if (prs.length === 0) {
+    return result;
+  }
+
+  const { intervalHours, timezone } = await getChannelReminderConfig(channelId);
+
   for (const pr of prs) {
-    const eligibleAt = getEligibleReminderTime(postedAt);
+    const eligibleAt = getEligibleReminderTime(postedAt, intervalHours, timezone);
     const inserted = await insertTrackedPR({
       pr_url: pr.url,
       org: pr.org,
@@ -34,7 +40,7 @@ export async function trackPRsFromMessage(
       posted_at: postedAt,
       eligible_reminder_at: eligibleAt,
     });
-    
+
     if (inserted) {
       result.tracked.push(pr);
       console.log(`Tracking PR: ${pr.url} (reminder eligible at ${eligibleAt.toISOString()})`);
@@ -43,6 +49,6 @@ export async function trackPRsFromMessage(
       console.log(`Skipped PR (already tracked): ${pr.url}`);
     }
   }
-  
+
   return result;
 }

@@ -3,48 +3,42 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.getEligibleReminderTime = getEligibleReminderTime;
 exports.isWithinBusinessHours = isWithinBusinessHours;
 exports.getNextReminderEligibleTime = getNextReminderEligibleTime;
+exports.isValidTimezone = isValidTimezone;
 exports.formatTimeAgo = formatTimeAgo;
 const luxon_1 = require("luxon");
-const TIMEZONE = 'America/Los_Angeles'; // PST/PDT
 const CUTOFF_HOUR = 17; // 5:00 PM
 const BUSINESS_START_HOUR = 9; // 9:00 AM
-const REMINDER_DELAY_HOURS = 2;
 /**
- * Calculate when a PR becomes eligible for a reminder
+ * Calculate when a PR becomes eligible for a reminder.
  *
- * Rules:
- * - If posted before 5:00 PM PST: eligible after 2 hours (if within 9 AM - 5 PM)
- * - If posted at 5:00 PM PST or later: eligible at 9:00 AM next business day
- * - If 2-hour delay pushes past 5 PM: eligible at 9:00 AM next business day
+ * Rules (evaluated in the channel's configured timezone):
+ * - If posted before 5:00 PM: eligible after `intervalHours` (if still within 9 AM - 5 PM)
+ * - If posted at 5:00 PM or later: eligible at 9:00 AM next business day
+ * - If the delay pushes past 5 PM: eligible at 9:00 AM next business day
  */
-function getEligibleReminderTime(postedAt) {
-    const postedPST = luxon_1.DateTime.fromJSDate(postedAt).setZone(TIMEZONE);
-    if (postedPST.hour >= CUTOFF_HOUR) {
-        // Posted after 5 PM - wait until 9 AM next business day
-        let nextDay = postedPST.plus({ days: 1 }).set({
+function getEligibleReminderTime(postedAt, intervalHours, timezone) {
+    const postedLocal = luxon_1.DateTime.fromJSDate(postedAt).setZone(timezone);
+    if (postedLocal.hour >= CUTOFF_HOUR) {
+        let nextDay = postedLocal.plus({ days: 1 }).set({
             hour: BUSINESS_START_HOUR,
             minute: 0,
             second: 0,
             millisecond: 0,
         });
-        // Skip weekends
         while (nextDay.weekday === 6 || nextDay.weekday === 7) {
             nextDay = nextDay.plus({ days: 1 });
         }
         return nextDay.toJSDate();
     }
     else {
-        // Posted before 4 PM - eligible after 2 hours
-        const eligibleTime = postedPST.plus({ hours: REMINDER_DELAY_HOURS });
-        // If the 2-hour delay pushes past 5 PM, wait until next day 9 AM
+        const eligibleTime = postedLocal.plus({ hours: intervalHours });
         if (eligibleTime.hour >= CUTOFF_HOUR) {
-            let nextDay = postedPST.plus({ days: 1 }).set({
+            let nextDay = postedLocal.plus({ days: 1 }).set({
                 hour: BUSINESS_START_HOUR,
                 minute: 0,
                 second: 0,
                 millisecond: 0,
             });
-            // Skip weekends
             while (nextDay.weekday === 6 || nextDay.weekday === 7) {
                 nextDay = nextDay.plus({ days: 1 });
             }
@@ -54,27 +48,26 @@ function getEligibleReminderTime(postedAt) {
     }
 }
 /**
- * Check if current time is within business hours (9 AM - 5 PM PST, Mon-Fri)
+ * Check if "now" falls within business hours (9 AM - 5 PM, Mon-Fri) in the
+ * given timezone.
  */
-function isWithinBusinessHours() {
-    const now = luxon_1.DateTime.now().setZone(TIMEZONE);
-    // Check if it's a weekday
+function isWithinBusinessHours(timezone) {
+    const now = luxon_1.DateTime.now().setZone(timezone);
     if (now.weekday === 6 || now.weekday === 7) {
         return false;
     }
-    // Check if within business hours (9 AM - 5 PM)
     return now.hour >= BUSINESS_START_HOUR && now.hour < CUTOFF_HOUR;
 }
 /**
- * Get the next eligible time for a recurring reminder (within 9 AM - 5 PM PST).
+ * Get the next eligible time for a recurring reminder (within 9 AM - 5 PM in
+ * the given timezone).
  * - If now is outside 9-5 or weekend: return 9 AM next business day
- * - If now + 2 hours is still within 9-5: return now + 2 hours
- * - If now + 2 hours would be past 5 PM: return 9 AM next business day
+ * - If now + interval is still within 9-5: return now + interval
+ * - If now + interval would be past 5 PM: return 9 AM next business day
  */
-function getNextReminderEligibleTime() {
-    const now = luxon_1.DateTime.now().setZone(TIMEZONE);
+function getNextReminderEligibleTime(intervalHours, timezone) {
+    const now = luxon_1.DateTime.now().setZone(timezone);
     if (now.weekday === 6 || now.weekday === 7 || now.hour < BUSINESS_START_HOUR || now.hour >= CUTOFF_HOUR) {
-        // Outside business hours - next slot is 9 AM next business day
         let next = now.set({ hour: BUSINESS_START_HOUR, minute: 0, second: 0, millisecond: 0 });
         if (next <= now) {
             next = next.plus({ days: 1 });
@@ -84,11 +77,10 @@ function getNextReminderEligibleTime() {
         }
         return next.toJSDate();
     }
-    const inTwoHours = now.plus({ hours: REMINDER_DELAY_HOURS });
-    if (inTwoHours.hour < CUTOFF_HOUR) {
-        return inTwoHours.toJSDate();
+    const inInterval = now.plus({ hours: intervalHours });
+    if (inInterval.hour < CUTOFF_HOUR) {
+        return inInterval.toJSDate();
     }
-    // Now + 2 hours would be past 5 PM - schedule for 9 AM next business day
     let nextDay = now.plus({ days: 1 }).set({
         hour: BUSINESS_START_HOUR,
         minute: 0,
@@ -99,6 +91,15 @@ function getNextReminderEligibleTime() {
         nextDay = nextDay.plus({ days: 1 });
     }
     return nextDay.toJSDate();
+}
+/**
+ * Validate an IANA timezone string via Luxon. Empty strings are rejected.
+ */
+function isValidTimezone(tz) {
+    if (!tz || typeof tz !== 'string' || tz.trim() === '') {
+        return false;
+    }
+    return luxon_1.DateTime.now().setZone(tz).isValid;
 }
 /**
  * Format a duration for display in messages (e.g., "2 hours", "19 minutes")

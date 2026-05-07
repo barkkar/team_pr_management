@@ -13,8 +13,12 @@ async function trackPRsFromMessage(text, channelId, messageTs, postedAt) {
         tracked: [],
         skipped: [],
     };
+    if (prs.length === 0) {
+        return result;
+    }
+    const { intervalHours, timezone } = await (0, client_1.getChannelReminderConfig)(channelId);
     for (const pr of prs) {
-        const eligibleAt = (0, timezone_1.getEligibleReminderTime)(postedAt);
+        const eligibleAt = (0, timezone_1.getEligibleReminderTime)(postedAt, intervalHours, timezone);
         const inserted = await (0, client_1.insertTrackedPR)({
             pr_url: pr.url,
             org: pr.org,

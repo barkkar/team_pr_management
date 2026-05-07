@@ -31,6 +31,8 @@ export interface MonitoredChannel {
     added_by: string;
     added_at: Date;
     enabled: boolean;
+    reminder_interval_hours: number;
+    timezone: string;
 }
 export declare function insertTrackedPR(pr: Omit<TrackedPR, 'id' | 'reminder_sent' | 'created_at'>): Promise<TrackedPR | null>;
 export declare function getPendingReminders(): Promise<TrackedPR[]>;
@@ -44,9 +46,11 @@ export declare function markReminderSent(id: number): Promise<void>;
 /**
  * Schedule the next reminder (for recurring reminders).
  * Keeps reminder_sent = FALSE so the PR stays in the pending pool.
- * When nextAt is provided, uses that time (e.g. from getNextReminderEligibleTime for 9-5 PST).
+ * `nextAt` must be supplied — callers compute it from the channel's configured
+ * cadence/timezone so a missed call site fails the type check rather than
+ * silently using a stale 2h fallback.
  */
-export declare function scheduleNextReminder(id: number, nextAt?: Date): Promise<void>;
+export declare function scheduleNextReminder(id: number, nextAt: Date): Promise<void>;
 /**
  * Get all open PRs that haven't received reviews yet (for /pr-monitor pending).
  * Unlike getPendingReminders(), this is not gated by eligible_reminder_at or reminder_sent.
@@ -66,9 +70,34 @@ export declare function getPRsNeedingStatusCheck(): Promise<TrackedPR[]>;
  */
 export declare function updatePRStatus(prUrl: string, isOpen: boolean, hasReviews: boolean): Promise<void>;
 /**
- * Add a channel to monitoring
+ * Add a channel to monitoring. Optional `intervalHours` / `timezone` overrides
+ * apply to both the fresh insert and the ON CONFLICT re-enable branch (so
+ * re-adding with new flags overwrites existing config). When omitted on a
+ * brand-new row, DB defaults take over; when omitted on a re-enable, the
+ * existing config is preserved.
  */
-export declare function addMonitoredChannel(channelId: string, channelName: string | null, addedBy: string): Promise<MonitoredChannel | null>;
+export declare function addMonitoredChannel(channelId: string, channelName: string | null, addedBy: string, intervalHours?: number, timezone?: string): Promise<MonitoredChannel | null>;
+/**
+ * Look up a channel's reminder cadence + timezone. Falls back to the system
+ * defaults (2h, America/Los_Angeles) when the channel is not enabled in
+ * monitored_channels — this covers the legacy `POLL_CHANNEL_IDS` env-var path
+ * (see `src/services/channelPoller.ts`) which polls channels that may never
+ * have been registered via `/pr-monitor add`.
+ */
+export declare function getChannelReminderConfig(channelId: string): Promise<{
+    intervalHours: number;
+    timezone: string;
+}>;
+/**
+ * Update a channel's reminder cadence. Returns true if a row was updated.
+ * Throws on invalid input (must be an integer 1–24).
+ */
+export declare function setChannelReminderInterval(channelId: string, hours: number): Promise<boolean>;
+/**
+ * Update a channel's timezone. Caller must pre-validate the IANA string
+ * (see `isValidTimezone` in `src/utils/timezone.ts`).
+ */
+export declare function setChannelTimezone(channelId: string, timezone: string): Promise<boolean>;
 /**
  * Remove a channel from monitoring (soft delete - sets enabled = false)
  */

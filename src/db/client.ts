@@ -39,6 +39,8 @@ export interface MonitoredChannel {
   added_by: string;
   added_at: Date;
   enabled: boolean;
+  reminder_interval_hours: number;
+  timezone: string;
 }
 
 export async function insertTrackedPR(pr: Omit<TrackedPR, 'id' | 'reminder_sent' | 'created_at'>): Promise<TrackedPR | null> {
@@ -105,20 +107,15 @@ export async function markReminderSent(id: number): Promise<void> {
 /**
  * Schedule the next reminder (for recurring reminders).
  * Keeps reminder_sent = FALSE so the PR stays in the pending pool.
- * When nextAt is provided, uses that time (e.g. from getNextReminderEligibleTime for 9-5 PST).
+ * `nextAt` must be supplied — callers compute it from the channel's configured
+ * cadence/timezone so a missed call site fails the type check rather than
+ * silently using a stale 2h fallback.
  */
-export async function scheduleNextReminder(id: number, nextAt?: Date): Promise<void> {
-  if (nextAt) {
-    await pool.query(
-      `UPDATE tracked_prs SET eligible_reminder_at = $2, reminder_count = COALESCE(reminder_count, 0) + 1 WHERE id = $1`,
-      [id, nextAt],
-    );
-  } else {
-    await pool.query(
-      `UPDATE tracked_prs SET eligible_reminder_at = NOW() + INTERVAL '2 hours', reminder_count = COALESCE(reminder_count, 0) + 1 WHERE id = $1`,
-      [id],
-    );
-  }
+export async function scheduleNextReminder(id: number, nextAt: Date): Promise<void> {
+  await pool.query(
+    `UPDATE tracked_prs SET eligible_reminder_at = $2, reminder_count = COALESCE(reminder_count, 0) + 1 WHERE id = $1`,
+    [id, nextAt],
+  );
 }
 
 /**
@@ -182,17 +179,107 @@ export async function updatePRStatus(prUrl: string, isOpen: boolean, hasReviews:
 // ========== Monitored Channels Functions ==========
 
 /**
- * Add a channel to monitoring
+ * Add a channel to monitoring. Optional `intervalHours` / `timezone` overrides
+ * apply to both the fresh insert and the ON CONFLICT re-enable branch (so
+ * re-adding with new flags overwrites existing config). When omitted on a
+ * brand-new row, DB defaults take over; when omitted on a re-enable, the
+ * existing config is preserved.
  */
-export async function addMonitoredChannel(channelId: string, channelName: string | null, addedBy: string): Promise<MonitoredChannel | null> {
+export async function addMonitoredChannel(
+  channelId: string,
+  channelName: string | null,
+  addedBy: string,
+  intervalHours?: number,
+  timezone?: string,
+): Promise<MonitoredChannel | null> {
+  const insertCols = ['channel_id', 'channel_name', 'added_by'];
+  const insertVals: (string | number | null)[] = [channelId, channelName, addedBy];
+  const updateClauses = [
+    'enabled = TRUE',
+    'channel_name = COALESCE($2, monitored_channels.channel_name)',
+  ];
+  if (intervalHours !== undefined) {
+    insertVals.push(intervalHours);
+    insertCols.push('reminder_interval_hours');
+    updateClauses.push(`reminder_interval_hours = $${insertVals.length}`);
+  }
+  if (timezone !== undefined) {
+    insertVals.push(timezone);
+    insertCols.push('timezone');
+    updateClauses.push(`timezone = $${insertVals.length}`);
+  }
+  const placeholders = insertVals.map((_, i) => `$${i + 1}`).join(', ');
+
   const query = `
-    INSERT INTO monitored_channels (channel_id, channel_name, added_by)
-    VALUES ($1, $2, $3)
-    ON CONFLICT (channel_id) DO UPDATE SET enabled = TRUE, channel_name = COALESCE($2, monitored_channels.channel_name)
+    INSERT INTO monitored_channels (${insertCols.join(', ')})
+    VALUES (${placeholders})
+    ON CONFLICT (channel_id) DO UPDATE SET ${updateClauses.join(', ')}
     RETURNING *
   `;
-  const result = await pool.query(query, [channelId, channelName, addedBy]);
+  const result = await pool.query(query, insertVals);
   return result.rows[0] || null;
+}
+
+/**
+ * Look up a channel's reminder cadence + timezone. Falls back to the system
+ * defaults (2h, America/Los_Angeles) when the channel is not enabled in
+ * monitored_channels — this covers the legacy `POLL_CHANNEL_IDS` env-var path
+ * (see `src/services/channelPoller.ts`) which polls channels that may never
+ * have been registered via `/pr-monitor add`.
+ */
+export async function getChannelReminderConfig(
+  channelId: string,
+): Promise<{ intervalHours: number; timezone: string }> {
+  const result = await pool.query(
+    `SELECT reminder_interval_hours, timezone
+     FROM monitored_channels
+     WHERE channel_id = $1 AND enabled = TRUE`,
+    [channelId],
+  );
+  if (result.rows.length === 0) {
+    return { intervalHours: 2, timezone: 'America/Los_Angeles' };
+  }
+  return {
+    intervalHours: result.rows[0].reminder_interval_hours,
+    timezone: result.rows[0].timezone,
+  };
+}
+
+/**
+ * Update a channel's reminder cadence. Returns true if a row was updated.
+ * Throws on invalid input (must be an integer 1–24).
+ */
+export async function setChannelReminderInterval(
+  channelId: string,
+  hours: number,
+): Promise<boolean> {
+  if (!Number.isInteger(hours) || hours < 1 || hours > 24) {
+    throw new Error(`reminder_interval_hours must be an integer between 1 and 24 (got ${hours})`);
+  }
+  const result = await pool.query(
+    `UPDATE monitored_channels
+     SET reminder_interval_hours = $2
+     WHERE channel_id = $1 AND enabled = TRUE`,
+    [channelId, hours],
+  );
+  return (result.rowCount || 0) > 0;
+}
+
+/**
+ * Update a channel's timezone. Caller must pre-validate the IANA string
+ * (see `isValidTimezone` in `src/utils/timezone.ts`).
+ */
+export async function setChannelTimezone(
+  channelId: string,
+  timezone: string,
+): Promise<boolean> {
+  const result = await pool.query(
+    `UPDATE monitored_channels
+     SET timezone = $2
+     WHERE channel_id = $1 AND enabled = TRUE`,
+    [channelId, timezone],
+  );
+  return (result.rowCount || 0) > 0;
 }
 
 /**

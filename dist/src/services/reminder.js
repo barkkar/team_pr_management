@@ -7,14 +7,12 @@ const timezone_1 = require("../utils/timezone");
  * Process pending reminders and send messages for PRs without reviews.
  * Uses only worker-reported status from the database. Heroku cannot reach
  * internal GitHub Enterprise; the local worker must be running to report status.
- * Reminders are only sent between 9 AM - 5 PM PST (Mon-Fri).
+ *
+ * Business-hours gating is per-channel — see `processReminder` — because
+ * different channels can be configured for different timezones.
  */
 async function processPendingReminders(app) {
     console.log('Checking for pending PR reminders...');
-    if (!(0, timezone_1.isWithinBusinessHours)()) {
-        console.log('Outside business hours (9 AM - 5 PM PST). Skipping reminders.');
-        return;
-    }
     const pendingPRs = await (0, client_1.getPendingReminders)();
     console.log(`Found ${pendingPRs.length} PRs eligible for reminders`);
     for (const pr of pendingPRs) {
@@ -51,7 +49,14 @@ async function processReminder(app, pr) {
         await (0, client_1.markReminderSent)(pr.id);
         return;
     }
-    // No reviews - send reminder
+    const { intervalHours, timezone } = await (0, client_1.getChannelReminderConfig)(pr.channel_id);
+    // Per-channel business-hours gate: eligible_reminder_at is already in the
+    // past (otherwise this PR wouldn't be in the pending pool), so leaving the
+    // row untouched lets the next cron tick retry inside business hours.
+    if (!(0, timezone_1.isWithinBusinessHours)(timezone)) {
+        console.log(`  Outside business hours for channel ${pr.channel_id} (tz=${timezone}). Will retry next cron tick.`);
+        return;
+    }
     console.log(`  Sending reminder for PR ${pr.pr_url}`);
     const timeAgo = (0, timezone_1.formatTimeAgo)(pr.posted_at);
     const message = buildReminderMessage(pr, timeAgo, false);
@@ -65,9 +70,9 @@ async function processReminder(app, pr) {
     await app.client.chat.postMessage(threadable
         ? { ...base, thread_ts: pr.message_ts, reply_broadcast: true }
         : base);
-    const nextAt = (0, timezone_1.getNextReminderEligibleTime)();
+    const nextAt = (0, timezone_1.getNextReminderEligibleTime)(intervalHours, timezone);
     await (0, client_1.scheduleNextReminder)(pr.id, nextAt);
-    console.log(`  Reminder sent for PR ${pr.pr_url}, next reminder at ${nextAt.toISOString()}`);
+    console.log(`  Reminder sent for PR ${pr.pr_url}, next reminder at ${nextAt.toISOString()} (tz=${timezone})`);
 }
 function buildReminderMessage(pr, timeAgo, apiNotChecked = false) {
     const text = `:attentionspan: Reminder: This PR has been waiting for review for ${timeAgo}`;

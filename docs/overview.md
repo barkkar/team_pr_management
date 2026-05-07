@@ -5,11 +5,11 @@ A Slack bot that watches team channels for GitHub Enterprise PR links, chases re
 ## Features
 
 - **PR tracking** — detects `*.soma.salesforce.com` PR links in monitored Slack channels and reacts with :robot_face:.
-- **Review reminders** — posts a thread reply 2h after the PR is shared if no review; only 9 AM – 5 PM PST, Mon–Fri; recurring until reviewed.
+- **Review reminders** — posts a thread reply after the channel's configured interval (default 2h) if no review; only 9 AM – 5 PM in the channel's configured timezone (default `America/Los_Angeles`), Mon–Fri; recurring until reviewed.
 - **Status polling** — a VPN-connected worker checks GHE every 5 min for open/closed + has-reviews state.
 - **Reviewer suggestions (Claude tool-use)** — for each new PR, Claude picks up to 5 reviewers from team history using four tools: `fetch_pr_files`, `fetch_pr_diff`, `get_past_reviewers`, `get_past_authors`. Posted as a threaded reply with @-mentions.
 - **Proactive user mapping** — on `/pr-monitor add` and when members join, the bot enqueues channel members and the worker resolves their Slack email → GHE login so `@-mentions` work from day one.
-- **Slash commands** — `/pr-monitor add | remove | list | pending | stats | status | help`.
+- **Slash commands** — `/pr-monitor add | remove | list | pending | stats | status | interval | timezone | help`.
 - **Channel allowlist** — opt-in list of Slack channel IDs the bot is allowed to read (required for `channels:history` / `groups:history`).
 - **Error funnel** — runtime failures posted to a configured Slack error channel (throttled 1/min per source+message).
 
@@ -29,6 +29,15 @@ In the target channel:
 /invite @pr-review-reminder
 /pr-monitor add
 ```
+
+`add` accepts optional inline flags `interval=<1-24>` (hours) and `timezone=<IANA>`, order-independent. Examples:
+
+```
+/pr-monitor add
+/pr-monitor add interval=4 timezone=Asia/Kolkata
+```
+
+Defaults are 2h and `America/Los_Angeles`, and can be changed later via `/pr-monitor interval` and `/pr-monitor timezone`.
 
 `add` registers the channel, queues channel members for reviewer-mapping, and acks with a "queued N member(s)" ephemeral follow-up.
 
@@ -51,9 +60,22 @@ For a background service, see `README.md` §5 (macOS launchd plist).
 
 - Post a test PR link in the channel → bot adds :robot_face:.
 - Within 5 min (next worker tick): reviewer-suggestion thread reply.
-- After 2h with no review (inside business hours): reminder thread reply.
+- After the configured interval (default 2h) with no review, inside the channel's business hours: reminder thread reply.
 - `/pr-monitor status` — shows monitored state, allowlist, worker-reported stats.
 - `/pr-monitor pending` — lists PRs still awaiting review with wait times.
+
+### Adjusting reminder cadence and timezone
+
+`/pr-monitor interval` reads or sets the channel's reminder cadence in hours (1–24); `/pr-monitor timezone` reads or sets the channel's IANA timezone for the 9–5 Mon–Fri business-hours window.
+
+```
+/pr-monitor interval               # read current
+/pr-monitor interval 4             # set to 4h
+/pr-monitor timezone               # read current
+/pr-monitor timezone Asia/Kolkata  # set to IST
+```
+
+Changes apply to the next reminder; PRs already in the queue keep their existing schedule. Config writes reply ephemerally — only the invoking user sees the confirmation.
 
 ## Requirements at a glance
 
