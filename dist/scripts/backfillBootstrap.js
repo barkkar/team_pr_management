@@ -3,7 +3,49 @@ Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
 const web_api_1 = require("@slack/web-api");
 const client_1 = require("../src/db/client");
-const channelBootstrap_1 = require("../src/services/channelBootstrap");
+async function fetchChannelMemberIds(slack, channelId) {
+    const ids = [];
+    let cursor;
+    do {
+        const resp = await slack.conversations.members({ channel: channelId, limit: 1000, cursor });
+        if (!resp.ok)
+            throw new Error(`conversations.members failed: ${resp.error}`);
+        for (const id of resp.members || [])
+            ids.push(id);
+        cursor = resp.response_metadata?.next_cursor || undefined;
+    } while (cursor);
+    return ids;
+}
+async function fetchMemberRows(slack, channelId, memberIds) {
+    const rows = [];
+    for (const slackUserId of memberIds) {
+        try {
+            const resp = await slack.users.info({ user: slackUserId });
+            if (!resp.ok || !resp.user)
+                continue;
+            const u = resp.user;
+            if (u.is_bot)
+                continue;
+            if (u.deleted)
+                continue;
+            const email = u.profile?.email;
+            if (!email)
+                continue;
+            rows.push({ channel_id: channelId, slack_user_id: slackUserId, email });
+        }
+        catch (err) {
+            console.error(`    users.info ${slackUserId} failed: ${err.message}`);
+        }
+    }
+    return rows;
+}
+async function backfillChannel(slack, channelId) {
+    const memberIds = await fetchChannelMemberIds(slack, channelId);
+    console.log(`  ${channelId}: ${memberIds.length} member(s) in channel`);
+    const rows = await fetchMemberRows(slack, channelId, memberIds);
+    const inserted = await (0, client_1.insertBootstrapMembers)(rows);
+    console.log(`  ${channelId}: queued ${inserted} new row(s) (${rows.length} eligible after filtering bots/deleted/no-email)`);
+}
 async function main() {
     const required = ['SLACK_BOT_TOKEN', 'DATABASE_URL'];
     const missing = required.filter((k) => !process.env[k]);
@@ -29,8 +71,7 @@ async function main() {
     console.log(`Backfilling ${channels.length} channel(s): ${channels.join(', ')}`);
     for (const channelId of channels) {
         try {
-            const { queued } = await (0, channelBootstrap_1.enqueueChannelBootstrap)(channelId, slack);
-            console.log(`  ${channelId}: queued ${queued} member(s)`);
+            await backfillChannel(slack, channelId);
         }
         catch (err) {
             console.error(`  ${channelId}: FAILED — ${err.message}`);
