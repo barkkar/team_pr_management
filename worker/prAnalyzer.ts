@@ -36,7 +36,7 @@ const HEROKU_API_URL = process.env.HEROKU_API_URL;
 const WORKER_API_KEY = process.env.WORKER_API_KEY;
 
 const DIFF_MAX_BYTES_DEFAULT = 60000;
-const TOOL_CALL_CAP = 6;
+const TOOL_CALL_CAP = 12;
 
 function log(message: string): void {
   console.log(`[${new Date().toISOString()}] [PRAnalyzer] ${message}`);

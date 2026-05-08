@@ -147,7 +147,7 @@ async function main() {
         }
     };
     const result = await (0, claudeClient_1.claudeToolLoop)(SYSTEM_PROMPT, `PR URL: ${prUrl}\nSlack channel: ${channelId || '(none)'}\n\nSuggest up to 5 reviewers.`, TOOLS, {
-        temperature: 0.2, maxTokens: 2048, maxIterations: 6, onToolCall,
+        temperature: 0.2, maxTokens: 2048, maxIterations: 12, onToolCall,
     });
     log(`Claude made ${result.toolCalls.length} tool call(s), ${result.iterations} rounds`);
     log(`Final text:\n${result.finalText}`);
