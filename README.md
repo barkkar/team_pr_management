@@ -37,7 +37,7 @@ A Slack bot that monitors team channels for GitHub Enterprise PR links and sends
                         └──────────────────┘
 ```
 
-The local worker runs on your VPN-connected laptop. Each 5-minute tick it (1) polls Heroku for PRs whose GHE status needs checking, queries GHE, reports status back, then (2) polls Heroku for PRs that still need reviewer suggestions, invokes Claude with four tools (`fetch_pr_files`, `fetch_pr_diff`, `get_past_reviewers`, `get_past_authors`), and ships the resulting reviewer list back to Heroku which posts a threaded Slack reply.
+The local worker runs on your VPN-connected laptop. Each 5-minute tick it (1) polls Heroku for PRs whose GHE status needs checking, queries GHE, reports status back, then (2) polls Heroku for PRs that still need reviewer suggestions, invokes Claude with five tools (`fetch_pr_files`, `fetch_pr_diff`, `get_channel_members`, `get_file_history`, `get_pr_reviewers`), filters to channel members, and ships the resulting reviewer list back to Heroku which posts a threaded Slack reply.
 
 ## Prerequisites
 
@@ -278,7 +278,6 @@ launchctl list | grep pr-worker
 ├── worker/
 │   ├── localPRChecker.ts         # Local VPN worker: PR-status poll + reviewer-suggestion poll
 │   ├── prAnalyzer.ts             # Reviewer-suggestion engine (exports runSuggestReviewersLoop)
-│   ├── prHarvester.ts            # Batch harvest of PR review history (feeds reviewer candidate DB)
 │   ├── userMapper.ts             # GHE login → Slack user ID mapping builder
 │   └── testSuggestReviewers.ts   # Dry-run reviewer suggestion for a single PR
 ├── package.json
@@ -295,8 +294,7 @@ The Heroku app exposes these endpoints for the local worker:
 |----------|--------|-------------|
 | `/api/pending-prs` | GET | Get PRs needing status check |
 | `/api/pr-status` | POST | Report PR status from worker |
-| `/api/past-reviewers` | POST | Find reviewers who reviewed files in the given paths |
-| `/api/past-authors` | POST | Find authors who changed files in the given paths |
+| `/api/channel-members` | POST | Resolved channel members (GHE login + Slack ID) for reviewer scoping |
 | `/api/prs-needing-reviewer-suggestions` | GET | PRs from last 24h needing reviewer suggestions |
 | `/api/pr-reviewers` | POST | Worker submits suggested reviewers; Heroku posts to Slack |
 | `/health` | GET | Health check |

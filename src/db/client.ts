@@ -386,36 +386,6 @@ export async function getReviewStats(): Promise<ReviewStats> {
 
 // ========== AI Knowledge Base Functions ==========
 
-export interface PRReview {
-  id: number;
-  pr_url: string;
-  pr_number: number;
-  org: string;
-  repo: string;
-  reviewer_login: string;
-  file_path: string | null;
-  diff_hunk: string | null;
-  comment_body: string;
-  review_state: string;
-  submitted_at: Date | null;
-  created_at: Date;
-}
-
-export interface PRFile {
-  id: number;
-  pr_url: string;
-  pr_number: number;
-  org: string;
-  repo: string;
-  file_path: string;
-  change_type: string;
-  additions: number;
-  deletions: number;
-  patch_snippet: string | null;
-  author_login: string | null;
-  created_at: Date;
-}
-
 export interface UserMapping {
   id: number;
   ghe_login: string;
@@ -424,53 +394,6 @@ export interface UserMapping {
   email: string | null;
   discovered_via: string;
   updated_at: Date;
-}
-
-export interface HarvestState {
-  id: number;
-  org: string;
-  repo: string;
-  last_harvested_pr_number: number;
-  last_repo_harvest_sha: string | null;
-  last_harvested_at: Date | null;
-  last_repo_harvested_at: Date | null;
-}
-
-// --- PR Reviews ---
-
-export async function insertPRReview(review: Omit<PRReview, 'id' | 'created_at'>): Promise<PRReview | null> {
-  const query = `
-    INSERT INTO pr_reviews (pr_url, pr_number, org, repo, reviewer_login, file_path, diff_hunk, comment_body, review_state, submitted_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-    RETURNING *
-  `;
-  const result = await pool.query(query, [
-    review.pr_url, review.pr_number, review.org, review.repo,
-    review.reviewer_login, review.file_path, review.diff_hunk,
-    review.comment_body, review.review_state, review.submitted_at,
-  ]);
-  return result.rows[0] || null;
-}
-
-export async function getPRReviewCount(prUrl: string): Promise<number> {
-  const result = await pool.query('SELECT COUNT(*) as count FROM pr_reviews WHERE pr_url = $1', [prUrl]);
-  return parseInt(result.rows[0].count, 10);
-}
-
-// --- PR Files ---
-
-export async function insertPRFile(file: Omit<PRFile, 'id' | 'created_at'>): Promise<PRFile | null> {
-  const query = `
-    INSERT INTO pr_files (pr_url, pr_number, org, repo, file_path, change_type, additions, deletions, patch_snippet, author_login)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-    RETURNING *
-  `;
-  const result = await pool.query(query, [
-    file.pr_url, file.pr_number, file.org, file.repo,
-    file.file_path, file.change_type, file.additions, file.deletions,
-    file.patch_snippet, file.author_login,
-  ]);
-  return result.rows[0] || null;
 }
 
 // --- User Mappings ---
@@ -504,64 +427,6 @@ export async function getUserMapping(gheLogin: string): Promise<UserMapping | nu
 
 export async function getAllUserMappings(): Promise<UserMapping[]> {
   const result = await pool.query('SELECT * FROM user_mappings ORDER BY ghe_login');
-  return result.rows;
-}
-
-// --- Harvest State ---
-
-export async function getHarvestState(org: string, repo: string): Promise<HarvestState | null> {
-  const result = await pool.query('SELECT * FROM harvest_state WHERE org = $1 AND repo = $2', [org, repo]);
-  return result.rows[0] || null;
-}
-
-export async function upsertHarvestState(org: string, repo: string, lastPrNumber: number): Promise<void> {
-  await pool.query(`
-    INSERT INTO harvest_state (org, repo, last_harvested_pr_number, last_harvested_at)
-    VALUES ($1, $2, $3, NOW())
-    ON CONFLICT (org, repo) DO UPDATE SET
-      last_harvested_pr_number = $3,
-      last_harvested_at = NOW()
-  `, [org, repo, lastPrNumber]);
-}
-
-
-// --- Repo Knowledge ---
-
-
-// --- Reviewer discovery (file + code-history based) ---
-
-export async function findReviewersByFiles(filePaths: string[], topK: number = 10): Promise<{ reviewer_login: string; review_count: number; files: string[] }[]> {
-  // Extract unique parent directories for fuzzy matching
-  const dirs = [...new Set(filePaths.map(f => f.split('/').slice(0, -1).join('/')).filter(d => d.length > 0))];
-  const dirPatterns = dirs.map(d => d + '/%');
-
-  const result = await pool.query(`
-    SELECT reviewer_login, COUNT(*) as review_count,
-           array_agg(DISTINCT file_path) as files
-    FROM pr_reviews
-    WHERE file_path = ANY($1)
-       OR file_path LIKE ANY($3)
-    GROUP BY reviewer_login
-    ORDER BY review_count DESC
-    LIMIT $2
-  `, [filePaths, topK, dirPatterns]);
-  return result.rows;
-}
-
-export async function findCodeTouchersByFiles(filePaths: string[], topK: number = 10): Promise<{ author_login: string; change_count: number; files: string[] }[]> {
-  // Extract unique parent directories for fuzzy matching
-  const dirs = [...new Set(filePaths.map(f => f.split('/').slice(0, -1).join('/')).filter(d => d.length > 0))];
-  const dirPatterns = dirs.map(d => d + '/%');
-
-  const result = await pool.query(`
-    SELECT author_login, COUNT(*) as change_count,
-           array_agg(DISTINCT file_path) as files
-    FROM pr_files
-    WHERE (file_path = ANY($1) OR file_path LIKE ANY($3)) AND author_login IS NOT NULL
-    GROUP BY author_login
-    ORDER BY change_count DESC
-    LIMIT $2
-  `, [filePaths, topK, dirPatterns]);
   return result.rows;
 }
 
@@ -681,6 +546,20 @@ export async function updateBootstrapResults(results: BootstrapResult[]): Promis
   } finally {
     client.release();
   }
+}
+
+export async function getChannelMembers(
+  channelId: string,
+): Promise<{ ghe_login: string; slack_user_id: string; display_name: string | null; email: string | null }[]> {
+  const result = await pool.query(
+    `SELECT um.ghe_login, um.slack_user_id, um.display_name, um.email
+     FROM channel_bootstrap_members cbm
+     JOIN user_mappings um ON um.slack_user_id = cbm.slack_user_id
+     WHERE cbm.channel_id = $1 AND cbm.status = 'resolved' AND um.ghe_login IS NOT NULL
+     ORDER BY um.ghe_login`,
+    [channelId],
+  );
+  return result.rows;
 }
 
 export { pool };

@@ -19,20 +19,14 @@ exports.removeMonitoredChannel = removeMonitoredChannel;
 exports.getMonitoredChannels = getMonitoredChannels;
 exports.isChannelMonitored = isChannelMonitored;
 exports.getReviewStats = getReviewStats;
-exports.insertPRReview = insertPRReview;
-exports.getPRReviewCount = getPRReviewCount;
-exports.insertPRFile = insertPRFile;
 exports.upsertUserMapping = upsertUserMapping;
 exports.getUserMapping = getUserMapping;
 exports.getAllUserMappings = getAllUserMappings;
-exports.getHarvestState = getHarvestState;
-exports.upsertHarvestState = upsertHarvestState;
-exports.findReviewersByFiles = findReviewersByFiles;
-exports.findCodeTouchersByFiles = findCodeTouchersByFiles;
 exports.getDistinctRepos = getDistinctRepos;
 exports.insertBootstrapMembers = insertBootstrapMembers;
 exports.claimPendingBootstrap = claimPendingBootstrap;
 exports.updateBootstrapResults = updateBootstrapResults;
+exports.getChannelMembers = getChannelMembers;
 const pg_1 = require("pg");
 const pool = new pg_1.Pool({
     connectionString: process.env.DATABASE_URL,
@@ -288,38 +282,6 @@ async function getReviewStats() {
         avgRemindersBeforeReview,
     };
 }
-// --- PR Reviews ---
-async function insertPRReview(review) {
-    const query = `
-    INSERT INTO pr_reviews (pr_url, pr_number, org, repo, reviewer_login, file_path, diff_hunk, comment_body, review_state, submitted_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-    RETURNING *
-  `;
-    const result = await pool.query(query, [
-        review.pr_url, review.pr_number, review.org, review.repo,
-        review.reviewer_login, review.file_path, review.diff_hunk,
-        review.comment_body, review.review_state, review.submitted_at,
-    ]);
-    return result.rows[0] || null;
-}
-async function getPRReviewCount(prUrl) {
-    const result = await pool.query('SELECT COUNT(*) as count FROM pr_reviews WHERE pr_url = $1', [prUrl]);
-    return parseInt(result.rows[0].count, 10);
-}
-// --- PR Files ---
-async function insertPRFile(file) {
-    const query = `
-    INSERT INTO pr_files (pr_url, pr_number, org, repo, file_path, change_type, additions, deletions, patch_snippet, author_login)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-    RETURNING *
-  `;
-    const result = await pool.query(query, [
-        file.pr_url, file.pr_number, file.org, file.repo,
-        file.file_path, file.change_type, file.additions, file.deletions,
-        file.patch_snippet, file.author_login,
-    ]);
-    return result.rows[0] || null;
-}
 // --- User Mappings ---
 async function upsertUserMapping(mapping, client = pool) {
     const query = `
@@ -345,53 +307,6 @@ async function getUserMapping(gheLogin) {
 }
 async function getAllUserMappings() {
     const result = await pool.query('SELECT * FROM user_mappings ORDER BY ghe_login');
-    return result.rows;
-}
-// --- Harvest State ---
-async function getHarvestState(org, repo) {
-    const result = await pool.query('SELECT * FROM harvest_state WHERE org = $1 AND repo = $2', [org, repo]);
-    return result.rows[0] || null;
-}
-async function upsertHarvestState(org, repo, lastPrNumber) {
-    await pool.query(`
-    INSERT INTO harvest_state (org, repo, last_harvested_pr_number, last_harvested_at)
-    VALUES ($1, $2, $3, NOW())
-    ON CONFLICT (org, repo) DO UPDATE SET
-      last_harvested_pr_number = $3,
-      last_harvested_at = NOW()
-  `, [org, repo, lastPrNumber]);
-}
-// --- Repo Knowledge ---
-// --- Reviewer discovery (file + code-history based) ---
-async function findReviewersByFiles(filePaths, topK = 10) {
-    // Extract unique parent directories for fuzzy matching
-    const dirs = [...new Set(filePaths.map(f => f.split('/').slice(0, -1).join('/')).filter(d => d.length > 0))];
-    const dirPatterns = dirs.map(d => d + '/%');
-    const result = await pool.query(`
-    SELECT reviewer_login, COUNT(*) as review_count,
-           array_agg(DISTINCT file_path) as files
-    FROM pr_reviews
-    WHERE file_path = ANY($1)
-       OR file_path LIKE ANY($3)
-    GROUP BY reviewer_login
-    ORDER BY review_count DESC
-    LIMIT $2
-  `, [filePaths, topK, dirPatterns]);
-    return result.rows;
-}
-async function findCodeTouchersByFiles(filePaths, topK = 10) {
-    // Extract unique parent directories for fuzzy matching
-    const dirs = [...new Set(filePaths.map(f => f.split('/').slice(0, -1).join('/')).filter(d => d.length > 0))];
-    const dirPatterns = dirs.map(d => d + '/%');
-    const result = await pool.query(`
-    SELECT author_login, COUNT(*) as change_count,
-           array_agg(DISTINCT file_path) as files
-    FROM pr_files
-    WHERE (file_path = ANY($1) OR file_path LIKE ANY($3)) AND author_login IS NOT NULL
-    GROUP BY author_login
-    ORDER BY change_count DESC
-    LIMIT $2
-  `, [filePaths, topK, dirPatterns]);
     return result.rows;
 }
 async function getDistinctRepos() {
@@ -494,5 +409,13 @@ async function updateBootstrapResults(results) {
     finally {
         client.release();
     }
+}
+async function getChannelMembers(channelId) {
+    const result = await pool.query(`SELECT um.ghe_login, um.slack_user_id, um.display_name, um.email
+     FROM channel_bootstrap_members cbm
+     JOIN user_mappings um ON um.slack_user_id = cbm.slack_user_id
+     WHERE cbm.channel_id = $1 AND cbm.status = 'resolved' AND um.ghe_login IS NOT NULL
+     ORDER BY um.ghe_login`, [channelId]);
+    return result.rows;
 }
 //# sourceMappingURL=client.js.map

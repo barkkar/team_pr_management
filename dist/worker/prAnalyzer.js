@@ -10,8 +10,9 @@
  * Tools:
  *   - fetch_pr_files(pr_url): returns list of changed file paths
  *   - fetch_pr_diff(pr_url, max_bytes?): returns unified diff text (truncated)
- *   - get_past_reviewers(file_paths): top-K GHE logins who reviewed similar files
- *   - get_past_authors(file_paths): top-K GHE logins who authored similar files
+ *   - get_channel_members(channel_id): resolved channel members with GHE logins
+ *   - get_file_history(pr_url, file_path, limit?): recent commits touching a file
+ *   - get_pr_reviewers(pr_url, pr_number): reviewers of a specific PR
  *
  * Usage:
  *   npm run suggest-reviewers -- https://gitcore.soma.salesforce.com/org/repo/pull/42
@@ -21,6 +22,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.fetchFileCommits = fetchFileCommits;
+exports.fetchPrReviews = fetchPrReviews;
 exports.runSuggestReviewersLoop = runSuggestReviewersLoop;
 require("dotenv/config");
 const axios_1 = __importDefault(require("axios"));
@@ -82,13 +85,40 @@ async function toolFetchPrDiff(prUrl, maxBytes = DIFF_MAX_BYTES_DEFAULT) {
         return diff;
     return diff.substring(0, maxBytes) + `\n...[truncated: ${diff.length - maxBytes} bytes omitted]`;
 }
-async function toolGetPastReviewers(filePaths, prAuthor) {
-    const resp = await axios_1.default.post(`${HEROKU_API_URL}/api/past-reviewers`, { file_paths: filePaths, pr_author: prAuthor, top_k: 10 }, { headers: herokuHeaders(), timeout: 20000 });
-    return resp.data.reviewers || [];
+async function fetchFileCommits(host, org, repo, filePath, limit = 20) {
+    const token = (0, gheTokenResolver_1.requireTokenForHost)(host);
+    const headers = { Authorization: `token ${token}`, Accept: 'application/vnd.github.v3+json' };
+    const resp = await axios_1.default.get(`https://${host}/api/v3/repos/${org}/${repo}/commits?path=${encodeURIComponent(filePath)}&per_page=${limit}`, { headers, timeout: 15000 });
+    return (resp.data || []).map((c) => ({
+        sha: c.sha,
+        author_login: c.author?.login ?? null,
+        date: c.commit?.author?.date || '',
+        message: c.commit?.message || '',
+    }));
 }
-async function toolGetPastAuthors(filePaths, prAuthor) {
-    const resp = await axios_1.default.post(`${HEROKU_API_URL}/api/past-authors`, { file_paths: filePaths, pr_author: prAuthor, top_k: 10 }, { headers: herokuHeaders(), timeout: 20000 });
-    return resp.data.authors || [];
+async function fetchPrReviews(host, org, repo, prNumber) {
+    const token = (0, gheTokenResolver_1.requireTokenForHost)(host);
+    const headers = { Authorization: `token ${token}`, Accept: 'application/vnd.github.v3+json' };
+    const resp = await axios_1.default.get(`https://${host}/api/v3/repos/${org}/${repo}/pulls/${prNumber}/reviews?per_page=100`, { headers, timeout: 15000 });
+    return (resp.data || [])
+        .filter((r) => r.user && r.state !== 'DISMISSED')
+        .map((r) => ({
+        user_login: r.user.login,
+        state: r.state,
+        submitted_at: r.submitted_at || '',
+    }));
+}
+async function toolGetChannelMembers(channelId) {
+    const resp = await axios_1.default.post(`${HEROKU_API_URL}/api/channel-members`, { channel_id: channelId }, { headers: herokuHeaders(), timeout: 15000 });
+    return resp.data.members || [];
+}
+async function toolGetFileHistory(prUrl, filePath, limit = 20) {
+    const { hostname, org, repo } = parsePrUrl(prUrl);
+    return fetchFileCommits(hostname, org, repo, filePath, limit);
+}
+async function toolGetPrReviewers(prUrl, prNumber) {
+    const { hostname, org, repo } = parsePrUrl(prUrl);
+    return fetchPrReviews(hostname, org, repo, prNumber);
 }
 // ---------------------------------------------------------------------------
 // Tool schema
@@ -116,35 +146,54 @@ const TOOLS = [
         },
     },
     {
-        name: 'get_past_reviewers',
-        description: 'Return GHE logins who have previously reviewed the given files (exact path or same directory). Each entry: { ghe_login, review_count, files[] }.',
+        name: 'get_channel_members',
+        description: 'Return the resolved Slack channel members with their GHE logins. ONLY GHE logins returned by this tool are eligible to suggest. Returns an empty list if the channel has no bootstrap data; in that case, return zero suggestions.',
         input_schema: {
             type: 'object',
-            properties: { file_paths: { type: 'array', items: { type: 'string' } } },
-            required: ['file_paths'],
+            properties: { channel_id: { type: 'string' } },
+            required: ['channel_id'],
         },
     },
     {
-        name: 'get_past_authors',
-        description: 'Return GHE logins who have previously authored changes to the given files. Each entry: { ghe_login, change_count, files[] }.',
+        name: 'get_file_history',
+        description: 'Fetch up to N most recent commits touching a single file in the PR\'s repo. Each entry: { sha, author_login, date, message }. author_login may be null when the commit is by an unmatched email.',
         input_schema: {
             type: 'object',
-            properties: { file_paths: { type: 'array', items: { type: 'string' } } },
-            required: ['file_paths'],
+            properties: {
+                pr_url: { type: 'string' },
+                file_path: { type: 'string' },
+                limit: { type: 'number', description: 'Default 20, max 50.' },
+            },
+            required: ['pr_url', 'file_path'],
+        },
+    },
+    {
+        name: 'get_pr_reviewers',
+        description: 'Fetch reviewers of a specific PR (typically a PR discovered via get_file_history). Each entry: { user_login, state, submitted_at }. state ∈ APPROVED | CHANGES_REQUESTED | COMMENTED.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                pr_url: { type: 'string', description: 'A PR URL in the same repo (used to derive host/org/repo).' },
+                pr_number: { type: 'number' },
+            },
+            required: ['pr_url', 'pr_number'],
         },
     },
 ];
 // ---------------------------------------------------------------------------
 // Main: suggestReviewers
 // ---------------------------------------------------------------------------
-const SYSTEM_PROMPT = `You are a reviewer recommender for a software team. Given a pull request URL, you choose up to 5 suggested reviewers from the team's history.
+const SYSTEM_PROMPT = `You are a reviewer recommender for a software team. Given a pull request URL and a Slack channel, suggest up to 5 reviewers who are members of that channel.
 
 Procedure:
-1. Call fetch_pr_files to get the changed file list and PR author.
-2. Call get_past_reviewers and get_past_authors with those file paths to build a candidate pool.
-3. Optionally call fetch_pr_diff if the file names alone are insufficient to judge reviewer fit. Keep diff fetches minimal.
-4. Exclude the PR author. Prefer candidates who both reviewed and authored related code.
-5. Return up to 5 suggestions, ordered best-first, with a short human-readable reason per candidate.
+1. Call get_channel_members FIRST. The GHE logins it returns are the ONLY eligible candidates. If it returns an empty list, return an empty suggestions array — do not suggest non-members.
+2. Call fetch_pr_files to get the changed files and PR author.
+3. For each changed file (up to ~5 most relevant), call get_file_history to find recent commits. Note the commit authors and the PRs those commits came from when visible in the message.
+4. For PRs that look topically related, call get_pr_reviewers to see who reviewed them. Aggregate review counts across files and PRs.
+5. Optionally call fetch_pr_diff if file names alone aren't enough to judge fit.
+6. Exclude the PR author. Rank by recency + frequency among channel members. Return up to 5 best-fit reviewers.
+
+CRITICAL: Every ghe_login in your output MUST be in the list returned by get_channel_members. If you cannot find 5 channel members with file history, return fewer (or zero). Never invent or guess logins.
 
 CRITICAL OUTPUT FORMAT — the FINAL assistant message MUST be ONLY a raw JSON object starting with { and ending with }. No markdown fences. No prose before or after. No code blocks. Just the JSON object itself:
 {"suggestions":[{"ghe_login":"...","reason":"<one short sentence>"}]}`;
@@ -155,15 +204,12 @@ async function suggestReviewers(prUrl, channelId, messageTs) {
     log(`Processing ${prUrl}`);
     // Pre-parse to fail fast if URL is malformed
     parsePrUrl(prUrl);
-    // Track cached author for the tool handlers (populated by fetch_pr_files)
-    let cachedAuthor = '';
     const onToolCall = async (call) => {
         log(`  tool: ${call.name}`);
         try {
             if (call.name === 'fetch_pr_files') {
                 const { pr_url } = call.input;
                 const result = await toolFetchPrFiles(pr_url);
-                cachedAuthor = result.pr_author;
                 return { tool_use_id: call.id, content: JSON.stringify(result) };
             }
             if (call.name === 'fetch_pr_diff') {
@@ -171,15 +217,20 @@ async function suggestReviewers(prUrl, channelId, messageTs) {
                 const diff = await toolFetchPrDiff(pr_url, max_bytes);
                 return { tool_use_id: call.id, content: diff };
             }
-            if (call.name === 'get_past_reviewers') {
-                const { file_paths } = call.input;
-                const rows = await toolGetPastReviewers(file_paths || [], cachedAuthor);
-                return { tool_use_id: call.id, content: JSON.stringify(rows) };
+            if (call.name === 'get_channel_members') {
+                const { channel_id } = call.input;
+                const members = await toolGetChannelMembers(channel_id);
+                return { tool_use_id: call.id, content: JSON.stringify(members) };
             }
-            if (call.name === 'get_past_authors') {
-                const { file_paths } = call.input;
-                const rows = await toolGetPastAuthors(file_paths || [], cachedAuthor);
-                return { tool_use_id: call.id, content: JSON.stringify(rows) };
+            if (call.name === 'get_file_history') {
+                const { pr_url, file_path, limit } = call.input;
+                const commits = await toolGetFileHistory(pr_url, file_path, limit);
+                return { tool_use_id: call.id, content: JSON.stringify(commits) };
+            }
+            if (call.name === 'get_pr_reviewers') {
+                const { pr_url, pr_number } = call.input;
+                const reviews = await toolGetPrReviewers(pr_url, pr_number);
+                return { tool_use_id: call.id, content: JSON.stringify(reviews) };
             }
             return { tool_use_id: call.id, content: `Unknown tool: ${call.name}`, is_error: true };
         }
@@ -210,6 +261,23 @@ async function suggestReviewers(prUrl, channelId, messageTs) {
     suggestions = suggestions
         .filter(s => s && typeof s.ghe_login === 'string' && s.ghe_login.trim().length > 0)
         .slice(0, 5);
+    let notice;
+    const members = await toolGetChannelMembers(channelId);
+    if (members.length === 0) {
+        if (suggestions.length > 0) {
+            log(`  Channel ${channelId} has no bootstrap data; dropping ${suggestions.length} suggestion(s).`);
+        }
+        suggestions = [];
+        notice = 'channel_not_bootstrapped';
+    }
+    else {
+        const allowed = new Set(members.map(m => m.ghe_login.toLowerCase()));
+        const before = suggestions.length;
+        suggestions = suggestions.filter(s => allowed.has(s.ghe_login.toLowerCase()));
+        const dropped = before - suggestions.length;
+        if (dropped > 0)
+            log(`  Dropped ${dropped} suggestion(s) not in channel members.`);
+    }
     log(`  Claude returned ${suggestions.length} suggestion(s)`);
     // Report to Heroku: stores the list and triggers Slack thread reply
     try {
@@ -218,6 +286,7 @@ async function suggestReviewers(prUrl, channelId, messageTs) {
             channel_id: channelId,
             message_ts: messageTs,
             suggestions,
+            ...(notice ? { notice } : {}),
         }, { headers: herokuHeaders(), timeout: 30000 });
         log('  ✅ Reviewer suggestions reported.');
     }

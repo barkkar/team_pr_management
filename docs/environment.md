@@ -36,7 +36,6 @@ All `process.env.*` reads in the codebase. Required means the process hard-exits
 | `PORT` | `3000` | HTTP server port (`src/index.ts:141`). Heroku sets this automatically. |
 | `NODE_ENV` | — | If `production`, Postgres SSL uses `rejectUnauthorized: false` (`src/db/client.ts:6`). |
 | `CHANNEL_BOOTSTRAP_PACE_MS` | `2100` | Milliseconds to sleep between rows in the bootstrap drain loop (`worker/channelBootstrap.ts:33`). Keeps GHE search well under the secondary-rate-limit threshold. Ignored if non-numeric. |
-| `HARVEST_ALL` | — | Set to `'1'` to make `worker/prHarvester.ts` re-process all tracked PRs (`worker/prHarvester.ts:21`). Otherwise runs incrementally. |
 | `USER_MAPPINGS_JSON` | — | JSON map for manual GHE → Slack overrides in `worker/userMapper.ts:331`. |
 | `TEST_PR_URL` | — | Optional PR URL for `scripts/testGheConnectivity.ts:193` to exercise an authenticated fetch. |
 | `CHANNEL_ID` | — | Used by `scripts/deleteBotMessages.ts:16` as the target channel when no CLI arg is given. |

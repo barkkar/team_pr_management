@@ -27,12 +27,13 @@ All workers authenticate with `X-Worker-API-Key` against `WORKER_API_KEY`. Base 
 - **Primary consumer**: `localPRChecker.ts` imports `runSuggestReviewersLoop()` (exported) and calls it every tick. The `run()` entry is guarded by `require.main === module` so importing does NOT trigger the standalone flow.
 - **Env**: GHE + Claude (`ANTHROPIC_BEDROCK_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`, or `ANTHROPIC_API_KEY` as fallback).
 - **Pipeline (per PR, tool-use loop)**:
-  1. Invoke Claude via `claudeToolLoop` with four tools: `fetch_pr_files`, `fetch_pr_diff`, `get_past_reviewers`, `get_past_authors`.
-  2. Claude decides what to fetch; the worker executes each tool call against GHE (`fetch_pr_*`) or Heroku API (`get_past_*`), returns results as `tool_result` blocks.
+  1. Invoke Claude via `claudeToolLoop` with five tools: `fetch_pr_files`, `fetch_pr_diff`, `get_channel_members`, `get_file_history`, `get_pr_reviewers`. The system prompt directs Claude to call `get_channel_members` first and only suggest reviewers from that set.
+  2. Claude decides what to fetch; the worker executes each tool call against GHE directly (`fetch_pr_*`, `get_file_history` via `fetchFileCommits`, `get_pr_reviewers` via `fetchPrReviews`) or the Heroku API (`get_channel_members` via `/api/channel-members`), and returns results as `tool_result` blocks. Reviewer history is now read live from GHE — no harvest tables involved.
   3. After up to 6 rounds (`maxIterations` cap in `claudeToolLoop`), Claude returns a JSON object `{suggestions: [{ghe_login, reason}]}` (up to 5).
   4. `extractJsonFromClaudeText` parses the output, tolerating markdown fences and prose preamble (Claude Opus 4.x behavior).
-  5. `POST /api/pr-reviewers` → Heroku resolves Slack IDs via `user_mappings`, marks `suggestions_sent=TRUE`, and posts a threaded reply (when the PR was posted in a real channel, not a CLI one-shot).
-  6. On parse failure, the worker POSTs `suggestions=[]` anyway to prevent infinite retries.
+  5. Post-Claude guard: the worker filters `suggestions` to GHE logins that appear in the channel-members list. If the channel has zero resolved members, the worker skips Claude entirely and `/api/pr-reviewers` posts a "channel not bootstrapped" Slack notice instead.
+  6. `POST /api/pr-reviewers` → Heroku resolves Slack IDs via `user_mappings`, marks `suggestions_sent=TRUE`, and posts a threaded reply (when the PR was posted in a real channel, not a CLI one-shot).
+  7. On parse failure, the worker POSTs `suggestions=[]` anyway to prevent infinite retries.
 
 
 ### `worker/channelBootstrap.ts`
@@ -48,13 +49,7 @@ All workers authenticate with `X-Worker-API-Key` against `WORKER_API_KEY`. Base 
   5. If `rows.length ≥ 4` and `unresolved/claimed > 0.5`, emit a `notifyError('ChannelBootstrap', 'High unresolved ratio on bootstrap drain', 'warn')` with throttling.
   6. `POST /api/bootstrap-complete` with the per-row results.
 
-## Batch / harvest workers
-
-### `worker/prHarvester.ts`
-
-- **CLI**: `npm run harvest` (incremental — skips PRs already in `pr_reviews`), `npm run harvest:incremental` (alias via `--incremental` flag), `HARVEST_ALL=1 npm run harvest` (re-harvest every tracked PR).
-- **Env**: `HEROKU_API_URL`, `WORKER_API_KEY`, `GHE_TOKEN` or `GHE_TOKENS`, optional `HARVEST_ALL=1`.
-- Pulls PR details, review comments (`/pulls/{n}/comments`), top-level reviews (`/pulls/{n}/reviews`, only those with a body), and changed files (`/pulls/{n}/files`) for each tracked PR. `diff_hunk` truncated to 2000 chars, `patch_snippet` to 3000. Uploads via `POST /api/harvest-data`. 300ms between PRs.
+## Batch workers
 
 ### `worker/userMapper.ts`
 
@@ -66,7 +61,7 @@ All workers authenticate with `X-Worker-API-Key` against `WORKER_API_KEY`. Base 
 
 - **CLI**: `npm run test-suggest-reviewers -- <pr-url>` (dry-run with detailed logging); append `--post --channel=C123` to actually post via `/api/pr-reviewers`.
 - **Env**: GHE + Claude for the dry-run; also `SLACK_BOT_TOKEN` if `--post` is used.
-- **Pipeline**: same tool-use flow as `prAnalyzer` — `claudeToolLoop` with the four tools `fetch_pr_files`, `fetch_pr_diff`, `get_past_reviewers`, `get_past_authors` — but inline (no DB writes) and with detailed logging. Use this before shipping any prAnalyzer changes.
+- **Pipeline**: same tool-use flow as `prAnalyzer` — `claudeToolLoop` with the five tools `fetch_pr_files`, `fetch_pr_diff`, `get_channel_members`, `get_file_history`, `get_pr_reviewers` — but inline (no DB writes) and with detailed logging. The same post-Claude channel-membership filter applies. Use this before shipping any prAnalyzer changes.
 
 ## Scripts
 
@@ -117,7 +112,6 @@ Diagnostic for GHE host configuration.
 | `worker/localPRChecker.ts` | — | ✅ (needs GHE; orchestrates bootstrap + reviewer loops) |
 | `worker/prAnalyzer.ts` | — | ✅ (needs GHE + Claude) |
 | `worker/channelBootstrap.ts` | — | ✅ (needs GHE) |
-| `worker/prHarvester.ts` | — | ✅ (needs GHE) |
 | `worker/userMapper.ts` | — | ✅ (Slack + GHE) |
 | `worker/testSuggestReviewers.ts` | — | ✅ (needs GHE + Claude) |
 

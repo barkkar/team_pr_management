@@ -123,34 +123,6 @@ export interface ReviewStats {
     avgRemindersBeforeReview: number;
 }
 export declare function getReviewStats(): Promise<ReviewStats>;
-export interface PRReview {
-    id: number;
-    pr_url: string;
-    pr_number: number;
-    org: string;
-    repo: string;
-    reviewer_login: string;
-    file_path: string | null;
-    diff_hunk: string | null;
-    comment_body: string;
-    review_state: string;
-    submitted_at: Date | null;
-    created_at: Date;
-}
-export interface PRFile {
-    id: number;
-    pr_url: string;
-    pr_number: number;
-    org: string;
-    repo: string;
-    file_path: string;
-    change_type: string;
-    additions: number;
-    deletions: number;
-    patch_snippet: string | null;
-    author_login: string | null;
-    created_at: Date;
-}
 export interface UserMapping {
     id: number;
     ghe_login: string;
@@ -160,33 +132,9 @@ export interface UserMapping {
     discovered_via: string;
     updated_at: Date;
 }
-export interface HarvestState {
-    id: number;
-    org: string;
-    repo: string;
-    last_harvested_pr_number: number;
-    last_repo_harvest_sha: string | null;
-    last_harvested_at: Date | null;
-    last_repo_harvested_at: Date | null;
-}
-export declare function insertPRReview(review: Omit<PRReview, 'id' | 'created_at'>): Promise<PRReview | null>;
-export declare function getPRReviewCount(prUrl: string): Promise<number>;
-export declare function insertPRFile(file: Omit<PRFile, 'id' | 'created_at'>): Promise<PRFile | null>;
 export declare function upsertUserMapping(mapping: Omit<UserMapping, 'id' | 'updated_at'>, client?: Pool | PoolClient): Promise<UserMapping | null>;
 export declare function getUserMapping(gheLogin: string): Promise<UserMapping | null>;
 export declare function getAllUserMappings(): Promise<UserMapping[]>;
-export declare function getHarvestState(org: string, repo: string): Promise<HarvestState | null>;
-export declare function upsertHarvestState(org: string, repo: string, lastPrNumber: number): Promise<void>;
-export declare function findReviewersByFiles(filePaths: string[], topK?: number): Promise<{
-    reviewer_login: string;
-    review_count: number;
-    files: string[];
-}[]>;
-export declare function findCodeTouchersByFiles(filePaths: string[], topK?: number): Promise<{
-    author_login: string;
-    change_count: number;
-    files: string[];
-}[]>;
 export declare function getDistinctRepos(): Promise<{
     org: string;
     repo: string;
@@ -215,5 +163,11 @@ export declare function claimPendingBootstrap(limit: number): Promise<BootstrapC
  *   'aged_out' once the attempt count reaches 3.
  */
 export declare function updateBootstrapResults(results: BootstrapResult[]): Promise<void>;
+export declare function getChannelMembers(channelId: string): Promise<{
+    ghe_login: string;
+    slack_user_id: string;
+    display_name: string | null;
+    email: string | null;
+}[]>;
 export { pool };
 //# sourceMappingURL=client.d.ts.map

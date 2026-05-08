@@ -33,7 +33,6 @@
 │  │   └─ runSuggestReviewersLoop() from prAnalyzer        │
 │  ├─ worker/prAnalyzer.ts      (reviewer-suggestion loop) │
 │  ├─ worker/channelBootstrap.ts (email→GHE-login drain)   │
-│  ├─ worker/prHarvester.ts     (batch)                    │
 │  ├─ worker/userMapper.ts      (GHE↔Slack mappings)       │
 │  └─ worker/testSuggestReviewers.ts (dry-run)             │
 │                                                          │
@@ -87,13 +86,18 @@ The VPN worker drains the queue on every `localPRChecker` tick (§3 step 4). Res
 - **Automatic**: `localPRChecker.ts` calls it every tick of the `--watch` loop (§3 step 4). This is the normal operating mode.
 - **Standalone CLI**: `npm run suggest-reviewers` (polling) or `npm run suggest-reviewers -- <pr-url>` (one-shot — but note this uses `channel_id='manual'` / `message_ts='0'`, which the server explicitly skips for Slack posting: no thread reply for CLI one-shots).
 
-For each PR, the worker invokes Claude via `claudeToolLoop` (defined at `src/services/claudeClient.ts:298`) with four tools:
+For each PR, the worker invokes Claude via `claudeToolLoop` (defined at `src/services/claudeClient.ts:298`) with five tools:
 - `fetch_pr_files(pr_url)` → `{ file_paths: string[], pr_author: string }` (paginates GHE `/pulls/{n}/files`, capped at 10 pages/1000 files).
 - `fetch_pr_diff(pr_url, max_bytes?)` → unified diff text (default cap 60000 bytes).
-- `get_past_reviewers(file_paths)` → top-K GHE logins who reviewed these files, via `POST /api/past-reviewers`.
-- `get_past_authors(file_paths)` → top-K GHE logins who authored changes, via `POST /api/past-authors`.
+- `get_channel_members(channel_id)` → resolved channel members from `/api/channel-members` (Heroku DB join of `channel_bootstrap_members` × `user_mappings`).
+- `get_file_history(host, org, repo, file_path, limit?)` → recent commits touching `file_path` via `fetchFileCommits` (live GHE call to `/repos/{org}/{repo}/commits?path=`).
+- `get_pr_reviewers(host, org, repo, pr_number)` → reviewers + reviewers-as-commenters for the given PR via `fetchPrReviews` (live GHE call to `/pulls/{n}/reviews` and `/pulls/{n}/comments`).
 
-Claude decides what to fetch; the worker executes each tool call against GHE + Heroku and returns results. After up to 6 rounds (`TOOL_CALL_CAP = 6` in `worker/prAnalyzer.ts:38`; matches `claudeToolLoop`'s default `maxIterations`), Claude returns a JSON object with up to 5 suggested reviewers. The JSON is parsed with `extractJsonFromClaudeText` (handles markdown fences and preamble — common Claude Opus 4.x behavior); on parse failure, the worker POSTs `suggestions=[]` to prevent infinite retries. The worker POSTs the list to `/api/pr-reviewers`; the Heroku app resolves Slack IDs via `user_mappings`, sets `tracked_prs.suggestions_sent=TRUE`, and posts a threaded Slack reply when `channel_id !== 'manual'` and `message_ts !== '0'` (CLI one-shots use those sentinel values and silently skip the Slack post).
+The system prompt instructs Claude to call `get_channel_members` first and only suggest reviewers from that set. The worker executes each tool call against GHE directly (`fetch_pr_*`, `get_file_history`, `get_pr_reviewers`) or the Heroku API (`get_channel_members`) and returns results. After up to 6 rounds (`TOOL_CALL_CAP = 6` in `worker/prAnalyzer.ts:38`; matches `claudeToolLoop`'s default `maxIterations`), Claude returns a JSON object with up to 5 suggested reviewers.
+
+Post-Claude, the worker filters the suggestions to GHE logins that appear in the channel-members list (defence in depth — Claude is also told this). If the channel has zero resolved members, the worker skips Claude entirely and `/api/pr-reviewers` posts a "channel not bootstrapped" Slack notice instead of a reviewer list.
+
+The JSON is parsed with `extractJsonFromClaudeText` (handles markdown fences and preamble — common Claude Opus 4.x behavior); on parse failure, the worker POSTs `suggestions=[]` to prevent infinite retries. The worker POSTs the filtered list to `/api/pr-reviewers`; the Heroku app resolves Slack IDs via `user_mappings`, sets `tracked_prs.suggestions_sent=TRUE`, and posts a threaded Slack reply when `channel_id !== 'manual'` and `message_ts !== '0'` (CLI one-shots use those sentinel values and silently skip the Slack post).
 
 
 ## Critical timing / business rules

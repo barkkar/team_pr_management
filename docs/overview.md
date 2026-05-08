@@ -7,7 +7,7 @@ A Slack bot that watches team channels for GitHub Enterprise PR links, chases re
 - **PR tracking** — detects `*.soma.salesforce.com` PR links in monitored Slack channels and reacts with :robot_face:.
 - **Review reminders** — posts a thread reply after the channel's configured interval (default 2h) if no review; only 9 AM – 5 PM in the channel's configured timezone (default `America/Los_Angeles`), Mon–Fri; recurring until reviewed.
 - **Status polling** — a VPN-connected worker checks GHE every 5 min for open/closed + has-reviews state.
-- **Reviewer suggestions (Claude tool-use)** — for each new PR, Claude picks up to 5 reviewers from team history using four tools: `fetch_pr_files`, `fetch_pr_diff`, `get_past_reviewers`, `get_past_authors`. Posted as a threaded reply with @-mentions.
+- **Reviewer suggestions (Claude tool-use)** — for each new PR, Claude picks up to 5 reviewers (scoped to resolved channel members) using five tools: `fetch_pr_files`, `fetch_pr_diff`, `get_channel_members`, `get_file_history`, `get_pr_reviewers`. Posted as a threaded reply with @-mentions.
 - **Proactive user mapping** — on `/pr-monitor add` and when members join, the bot enqueues channel members and the worker resolves their Slack email → GHE login so `@-mentions` work from day one.
 - **Slash commands** — `/pr-monitor add | remove | list | pending | stats | status | interval | timezone | help`.
 - **Channel allowlist** — opt-in list of Slack channel IDs the bot is allowed to read (required for `channels:history` / `groups:history`).

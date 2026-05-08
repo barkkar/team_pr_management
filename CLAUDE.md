@@ -25,11 +25,10 @@ All `worker/*` calls to `${HEROKU_API_URL}/api/*` are authenticated with the `X-
 | `src/app.ts` | Slack Bolt app: message handler, `/pr-monitor` slash command, app_home. |
 | `scripts/checkReminders.ts` | Heroku Scheduler job: `pollChannelsForPRs` + `processPendingReminders`. |
 | `worker/localPRChecker.ts` | Main VPN worker loop (default / `--watch` every 5 min). Each tick: poll PR status, drain bootstrap queue, then call `runSuggestReviewersLoop()` from `prAnalyzer`. |
-| `worker/prAnalyzer.ts` | Exports `runSuggestReviewersLoop()` (called by `localPRChecker`) and a CLI entry for standalone runs. Invokes Claude via `claudeToolLoop` with four tools. |
+| `worker/prAnalyzer.ts` | Exports `runSuggestReviewersLoop()` (called by `localPRChecker`) and a CLI entry for standalone runs. Invokes Claude via `claudeToolLoop` with five tools. |
 | `worker/channelBootstrap.ts` | Exports `runBootstrapDrainLoop()` (called by `localPRChecker`). Claims rows from `channel_bootstrap_members`, resolves Slack emails to GHE logins via configured GHE hosts, posts results to `/api/bootstrap-complete`. |
-| `worker/prHarvester.ts` | Batch job (`npm run harvest` / `harvest:incremental` / `HARVEST_ALL=1`). Pulls review comments, reviews, and changed files for tracked PRs and uploads to `/api/harvest-data`. |
 | `worker/userMapper.ts` | Batch job (`npm run map-users`). Discovers GHE↔Slack mappings by email lookup + name fuzzy-match + `USER_MAPPINGS_JSON` overrides. |
-| `worker/testSuggestReviewers.ts` | Dry-run harness for the reviewer-suggestion tool-loop (`npm run test-suggest-reviewers -- <pr-url>`). Same four tools; no DB writes unless `--post --channel=C123` is passed. |
+| `worker/testSuggestReviewers.ts` | Dry-run harness for the reviewer-suggestion tool-loop (`npm run test-suggest-reviewers -- <pr-url>`). Same five tools; no DB writes unless `--post --channel=C123` is passed. |
 
 ## Documentation layout
 

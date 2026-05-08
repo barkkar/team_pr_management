@@ -200,44 +200,6 @@ async function main() {
                 res.end(JSON.stringify({ updated }));
                 return;
             }
-            // Reviewer discovery: past reviewers of the given files
-            if (url === '/api/past-reviewers' && method === 'POST') {
-                if (!validateApiKey(req)) {
-                    res.writeHead(401, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Unauthorized' }));
-                    return;
-                }
-                const body = await parseJsonBody(req);
-                const filePaths = body.file_paths || [];
-                const prAuthor = body.pr_author || '';
-                const topK = Math.min(parseInt(body.top_k ?? 10, 10) || 10, 20);
-                const rows = await (0, client_1.findReviewersByFiles)(filePaths, topK);
-                const reviewers = rows
-                    .filter(r => r.reviewer_login !== prAuthor)
-                    .map(r => ({ ghe_login: r.reviewer_login, review_count: r.review_count, files: r.files }));
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ reviewers }));
-                return;
-            }
-            // Reviewer discovery: past authors of the given files
-            if (url === '/api/past-authors' && method === 'POST') {
-                if (!validateApiKey(req)) {
-                    res.writeHead(401, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Unauthorized' }));
-                    return;
-                }
-                const body = await parseJsonBody(req);
-                const filePaths = body.file_paths || [];
-                const prAuthor = body.pr_author || '';
-                const topK = Math.min(parseInt(body.top_k ?? 10, 10) || 10, 20);
-                const rows = await (0, client_1.findCodeTouchersByFiles)(filePaths, topK);
-                const authors = rows
-                    .filter(r => r.author_login !== prAuthor)
-                    .map(r => ({ ghe_login: r.author_login, change_count: r.change_count, files: r.files }));
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ authors }));
-                return;
-            }
             // PRs needing reviewer suggestions: tracked in last 24h, not yet suggested
             if (url === '/api/prs-needing-reviewer-suggestions' && method === 'GET') {
                 if (!validateApiKey(req)) {
@@ -259,26 +221,6 @@ async function main() {
                 return;
             }
             // ========== AI Knowledge Base API Endpoints ==========
-            // Get tracked PRs that haven't been harvested yet
-            if (url === '/api/tracked-prs-for-harvest' && method === 'GET') {
-                if (!validateApiKey(req)) {
-                    res.writeHead(401, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Unauthorized' }));
-                    return;
-                }
-                const result = await client_1.pool.query(`
-          SELECT DISTINCT tp.pr_url, tp.org, tp.repo, tp.pr_number, tp.channel_id, tp.message_ts
-          FROM tracked_prs tp
-          LEFT JOIN (
-            SELECT DISTINCT pr_url FROM pr_reviews
-          ) pr ON tp.pr_url = pr.pr_url
-          WHERE pr.pr_url IS NULL
-          ORDER BY tp.pr_number ASC
-        `);
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ prs: result.rows }));
-                return;
-            }
             // Get ALL tracked PRs (for full re-harvest)
             if (url === '/api/all-tracked-prs' && method === 'GET') {
                 if (!validateApiKey(req)) {
@@ -315,47 +257,6 @@ async function main() {
                 res.end(JSON.stringify({ repos: reposWithHost }));
                 return;
             }
-            // Get harvest state for a repo
-            if (url.startsWith('/api/harvest-state') && method === 'GET') {
-                if (!validateApiKey(req)) {
-                    res.writeHead(401, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Unauthorized' }));
-                    return;
-                }
-                const params = new URL(url, `http://${req.headers.host}`).searchParams;
-                const org = params.get('org') || '';
-                const repo = params.get('repo') || '';
-                const state = await (0, client_1.getHarvestState)(org, repo);
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ state }));
-                return;
-            }
-            // Receive harvested PR data (reviews + files)
-            if (url === '/api/harvest-data' && method === 'POST') {
-                if (!validateApiKey(req)) {
-                    res.writeHead(401, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Unauthorized' }));
-                    return;
-                }
-                const body = await parseJsonBody(req);
-                let reviewCount = 0;
-                let fileCount = 0;
-                for (const review of (body.reviews || [])) {
-                    await (0, client_1.insertPRReview)(review);
-                    reviewCount++;
-                }
-                for (const file of (body.files || [])) {
-                    await (0, client_1.insertPRFile)(file);
-                    fileCount++;
-                }
-                if (body.harvest_state) {
-                    await (0, client_1.upsertHarvestState)(body.harvest_state.org, body.harvest_state.repo, body.harvest_state.last_pr_number);
-                }
-                console.log(`[Worker API] Harvested ${reviewCount} reviews, ${fileCount} files`);
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ reviews: reviewCount, files: fileCount }));
-                return;
-            }
             // Receive user mappings
             if (url === '/api/user-mappings' && method === 'POST') {
                 if (!validateApiKey(req)) {
@@ -374,79 +275,6 @@ async function main() {
                 res.end(JSON.stringify({ count }));
                 return;
             }
-            // Get suggested reviewers by file paths
-            if (url === '/api/suggested-reviewers' && method === 'POST') {
-                if (!validateApiKey(req)) {
-                    res.writeHead(401, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Unauthorized' }));
-                    return;
-                }
-                const body = await parseJsonBody(req);
-                const filePaths = body.file_paths || [];
-                const prAuthor = body.pr_author || '';
-                // Combine file-based reviewers and code touchers
-                const reviewers = await (0, client_1.findReviewersByFiles)(filePaths, 10);
-                const touchers = await (0, client_1.findCodeTouchersByFiles)(filePaths, 10);
-                // Build candidate list with scores — track signals separately
-                const candidateMap = new Map();
-                const ensureCandidate = (login) => {
-                    if (!candidateMap.has(login)) {
-                        candidateMap.set(login, {
-                            ghe_login: login, score: 0, files: [],
-                            hasReviewed: false, hasAuthored: false,
-                        });
-                    }
-                    return candidateMap.get(login);
-                };
-                // Signal 1: Past reviewers of similar files (capped)
-                for (const r of reviewers) {
-                    if (r.reviewer_login === prAuthor)
-                        continue;
-                    const c = ensureCandidate(r.reviewer_login);
-                    c.score += Math.min(r.review_count, 20) * 2;
-                    c.files = [...new Set([...c.files, ...r.files])];
-                    c.hasReviewed = true;
-                }
-                // Signal 2: Past authors of changes to similar files (capped)
-                for (const t of touchers) {
-                    if (t.author_login === prAuthor)
-                        continue;
-                    const c = ensureCandidate(t.author_login);
-                    c.score += Math.min(t.change_count, 20);
-                    c.files = [...new Set([...c.files, ...t.files])];
-                    c.hasAuthored = true;
-                }
-                // Generate natural reasons
-                for (const c of candidateMap.values()) {
-                    const parts = [];
-                    if (c.hasReviewed && c.hasAuthored) {
-                        parts.push("you've reviewed and contributed to similar files in this area");
-                    }
-                    else if (c.hasReviewed) {
-                        parts.push("you've reviewed similar files in this area before");
-                    }
-                    else if (c.hasAuthored) {
-                        parts.push("you've made changes to related code");
-                    }
-                    c.reason = parts.join(' ') || 'familiar with this area of the codebase';
-                }
-                // Resolve Slack IDs and filter to only mapped users
-                const sorted = Array.from(candidateMap.values()).sort((a, b) => b.score - a.score);
-                const mapped = [];
-                for (const c of sorted) {
-                    if (mapped.length >= 5)
-                        break;
-                    const mapping = await (0, client_1.getUserMapping)(c.ghe_login);
-                    if (!mapping?.slack_user_id)
-                        continue; // Skip users not in channel/mapping
-                    c.slack_user_id = mapping.slack_user_id;
-                    c.display_name = mapping.display_name || null;
-                    mapped.push(c);
-                }
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ reviewers: mapped }));
-                return;
-            }
             // Receive reviewer suggestions from worker and post to Slack
             if (url === '/api/pr-reviewers' && method === 'POST') {
                 if (!validateApiKey(req)) {
@@ -455,7 +283,7 @@ async function main() {
                     return;
                 }
                 const body = await parseJsonBody(req);
-                const { pr_url, channel_id, message_ts, suggestions } = body;
+                const { pr_url, channel_id, message_ts, suggestions, notice } = body;
                 if (!pr_url || !Array.isArray(suggestions)) {
                     res.writeHead(400, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ error: 'pr_url and suggestions[] are required' }));
@@ -478,7 +306,18 @@ async function main() {
                 // Post Slack thread reply
                 if (channel_id && channel_id !== 'manual' && message_ts && message_ts !== '0') {
                     try {
-                        const slackMessage = formatReviewerMessage(resolved, pr_url);
+                        const slackMessage = (notice === 'channel_not_bootstrapped' && resolved.length === 0)
+                            ? {
+                                text: ':warning: Channel onboarding not yet complete.',
+                                blocks: [{
+                                        type: 'section',
+                                        text: {
+                                            type: 'mrkdwn',
+                                            text: ":warning: This channel hasn't completed onboarding yet. Run `/pr-monitor add` (or wait for the next bootstrap pass) so reviewer suggestions can be scoped to channel members.",
+                                        },
+                                    }],
+                            }
+                            : formatReviewerMessage(resolved, pr_url);
                         await app.client.chat.postMessage({
                             channel: channel_id,
                             thread_ts: message_ts,
@@ -579,6 +418,24 @@ async function main() {
                 res.end(JSON.stringify({ ok: true, updated: results.length }));
                 return;
             }
+            if (url === '/api/channel-members' && method === 'POST') {
+                if (!validateApiKey(req)) {
+                    res.writeHead(401, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Unauthorized' }));
+                    return;
+                }
+                const body = await parseJsonBody(req);
+                const channelId = body.channel_id;
+                if (typeof channelId !== 'string' || channelId.length === 0) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'channel_id is required' }));
+                    return;
+                }
+                const members = await (0, client_1.getChannelMembers)(channelId);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ members }));
+                return;
+            }
             // Not found
             res.writeHead(404, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'Not Found' }));
@@ -594,7 +451,7 @@ async function main() {
         console.log(`HTTP server listening on port ${port}`);
         console.log(`  - Health check: GET /health`);
         console.log(`  - Worker API: GET /api/pending-prs, POST /api/pr-status`);
-        console.log(`  - Reviewer API: /api/pending-prs, /api/pr-status, /api/pr-reviewers, /api/past-reviewers, /api/past-authors, /api/prs-needing-reviewer-suggestions`);
+        console.log(`  - Reviewer API: /api/pending-prs, /api/pr-status, /api/pr-reviewers, /api/prs-needing-reviewer-suggestions`);
     });
 }
 main().catch(async (error) => {

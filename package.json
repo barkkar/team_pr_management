@@ -14,8 +14,6 @@
     "worker:watch": "node dist/worker/localPRChecker.js --watch",
     "delete-bot-messages": "npx ts-node scripts/deleteBotMessages.ts",
     "test-ghe": "node dist/scripts/testGheConnectivity.js",
-    "harvest": "node dist/worker/prHarvester.js",
-    "harvest:incremental": "node dist/worker/prHarvester.js --incremental",
     "map-users": "node dist/worker/userMapper.js",
     "suggest-reviewers": "node dist/worker/prAnalyzer.js",
     "test-suggest-reviewers": "npx ts-node worker/testSuggestReviewers.ts"

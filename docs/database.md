@@ -47,13 +47,13 @@ Indexes (all partial, where noted):
 
 `id SERIAL PK`, `channel_id VARCHAR(20) UNIQUE NOT NULL`, `channel_name VARCHAR(100)`, `added_by VARCHAR(20) NOT NULL`, `added_at TIMESTAMP DEFAULT NOW()`, `enabled BOOL DEFAULT TRUE`. Populated by `/pr-monitor add|remove`.
 
-### `pr_reviews` (008)
+### `pr_reviews` (removed)
 
-Inline review comments pulled from GHE. Columns: `id SERIAL PK`, `pr_url`, `pr_number`, `org`, `repo`, `reviewer_login`, `file_path`, `diff_hunk`, `comment_body`, `review_state`, `submitted_at`, `created_at`. Indexes: `idx_pr_reviews_repo ON (org, repo)`, `idx_pr_reviews_reviewer ON (reviewer_login)`, `idx_pr_reviews_file ON (file_path)`.
+Removed in migration 024.
 
-### `pr_files` (008)
+### `pr_files` (removed)
 
-Changed files per PR. Columns: `id SERIAL PK`, `pr_url`, `pr_number`, `org`, `repo`, `file_path`, `change_type`, `additions`, `deletions`, `patch_snippet`, `author_login`, `created_at`. Indexes: `idx_pr_files_repo ON (org, repo)`, `idx_pr_files_file ON (file_path)`, `idx_pr_files_author ON (author_login)`.
+Removed in migration 024.
 
 ### `pr_embeddings` (removed)
 
@@ -103,9 +103,9 @@ Removed in migration 019.
 
 `ghe_login UNIQUE`, `slack_user_id`, `display_name`, `email`, `discovered_via` ('email'|'name'|'manual'). Indexed on `slack_user_id`.
 
-### `harvest_state` (008)
+### `harvest_state` (removed)
 
-`(org, repo) UNIQUE`, `last_harvested_pr_number`, `last_repo_harvest_sha`, `last_harvested_at`, `last_repo_harvested_at`. Updated by `prHarvester`.
+Removed in migration 024.
 
 ### `channel_bootstrap_members` (021)
 
@@ -134,11 +134,9 @@ See `src/db/client.ts` for signatures; this is a map of what touches which table
 ### Monitored channels
 - `addMonitoredChannel`, `removeMonitoredChannel`, `getMonitoredChannels`, `isChannelMonitored`. (`client.ts:164, 178, 189, 199`)
 
-### Harvest + reviewer scoring
-- `insertPRReview`, `getPRReviewCount`, `insertPRFile`. (`client.ts:331, 345, 352`)
-- `upsertUserMapping`, `getUserMapping`, `getAllUserMappings` — `upsertUserMapping` accepts an optional `client: Pool | PoolClient` parameter so it can participate in the bootstrap transaction. (`client.ts:368, 390, 395`)
-- `getHarvestState`, `upsertHarvestState`. (`client.ts:402, 407`)
-- `findReviewersByFiles(filePaths, topK=10)` / `findCodeTouchersByFiles(filePaths, topK=10)` — aggregate over `pr_reviews`/`pr_files`, match exact path or `LIKE` dir prefix, excluding NULL authors for touchers. Consumed by `/api/past-reviewers`, `/api/past-authors`, and `/api/suggested-reviewers`. (`client.ts:423, 441`)
+### User mappings + channel members
+- `upsertUserMapping`, `getUserMapping`, `getAllUserMappings` — `upsertUserMapping` accepts an optional `client: Pool | PoolClient` parameter so it can participate in the bootstrap transaction.
+- `getChannelMembers(channelId)` — joins `channel_bootstrap_members` × `user_mappings` on `slack_user_id`, restricted to `status='resolved'`. Returns `{ ghe_login, slack_user_id, display_name, email }[]` for the resolved members of the channel. Consumed by `/api/channel-members`.
 
 ### Channel bootstrap queue
 - `insertBootstrapMembers(rows)` — bulk `INSERT ... ON CONFLICT (channel_id, slack_user_id) DO NOTHING` into `channel_bootstrap_members`; returns the count of freshly inserted rows. Called by `enqueueChannelBootstrap` and the `member_joined_channel` handler in `src/app.ts`. (`client.ts:470`)
@@ -159,8 +157,10 @@ FROM tracked_prs
 WHERE reminder_sent = FALSE
 ORDER BY eligible_reminder_at;
 
--- Who gets suggested reviewer for file X?
-SELECT reviewer_login, COUNT(*)
-FROM pr_reviews WHERE file_path = 'src/foo.ts' GROUP BY 1 ORDER BY 2 DESC;
+-- Who's been resolved as a member of channel C0123?
+SELECT um.ghe_login, um.slack_user_id, um.display_name, um.email
+FROM channel_bootstrap_members cbm
+JOIN user_mappings um ON um.slack_user_id = cbm.slack_user_id
+WHERE cbm.channel_id = 'C0123' AND cbm.status = 'resolved';
 
 ```
